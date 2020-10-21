@@ -165,3 +165,7 @@ pub use crate::sys_common::{AsInner, FromInner, IntoInner};
 pub trait TryIntoInner<Inner>: Sized {
     fn try_into_inner(self) -> Result<Inner, Self>;
 }
+
+pub fn alloc_tcs() {
+    println!("[alloc_tcs]");
+}

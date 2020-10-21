@@ -1,4 +1,5 @@
 #![cfg_attr(test, allow(dead_code))] // why is this necessary?
+use crate::alloc;
 use crate::ffi::CStr;
 use crate::io;
 use crate::time::Duration;
@@ -48,6 +49,13 @@ mod task_queue {
 }
 
 impl Thread {
+    pub fn alloc_tcs() {
+        println!("[thread] alloc new tcs");
+        let page = alloc::alloc_sgx2_region(0x1000);
+        println!("[thread] tcs page = {:?}", page);
+
+    }
+
     // unsafe: see thread::Builder::spawn_unchecked for safety requirements
     pub unsafe fn new(_stack: usize, p: Box<dyn FnOnce()>) -> io::Result<Thread> {
         let mut queue_lock = task_queue::lock();

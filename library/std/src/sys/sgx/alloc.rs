@@ -33,6 +33,17 @@ impl Sgx {
     }
 }
 
+/// Allocates a new, regular, dynamically allocated memory page
+/// Some SGXv2 features (e.g., adding a TCS structure) require SGXv2 memory space to later be able
+/// to change their property (e.g., regular vs TCS page)
+pub fn alloc_sgx2_region(size: usize) -> Option<*mut u8> {
+    if size % Sgx::PAGE_SIZE != 0 {
+        None
+    }
+    let lock = DLMALLOC.lock();
+    Sgx::allocator().alloc(size)
+}
+
 impl dlmalloc::System for Sgx {
     /// Allocs system resources
     unsafe fn alloc(size: usize) -> (*mut u8, usize, u32) {
