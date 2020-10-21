@@ -1,7 +1,7 @@
 #![cfg_attr(test, allow(dead_code))] // why is this necessary?
-use crate::alloc;
 use crate::ffi::CStr;
 use crate::io;
+use crate::sys::alloc;
 use crate::time::Duration;
 
 use super::abi::usercalls;
@@ -51,7 +51,7 @@ mod task_queue {
 impl Thread {
     pub fn alloc_tcs() {
         println!("[thread] alloc new tcs");
-        let page = alloc::alloc_sgx2_region(0x1000);
+        let page = alloc::alloc_page();
         println!("[thread] tcs page = {:?}", page);
 
     }

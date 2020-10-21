@@ -497,6 +497,7 @@ pub mod future;
 mod sys_common;
 mod sys;
 #[cfg(all(target_vendor = "fortanix", target_env = "sgx"))]
+#[unstable(feature = "sgx_platform", issue = "56975")]
 pub use sys::alloc_tcs;
 
 pub mod alloc;

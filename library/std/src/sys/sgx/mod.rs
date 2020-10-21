@@ -7,6 +7,7 @@
 use crate::io::ErrorKind;
 use crate::os::raw::c_char;
 use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sys::thread::Thread;
 
 pub mod abi;
 mod waitqueue;
@@ -166,6 +167,9 @@ pub trait TryIntoInner<Inner>: Sized {
     fn try_into_inner(self) -> Result<Inner, Self>;
 }
 
+/// Test function
+#[unstable(feature = "sgx_platform", issue = "56975")]
 pub fn alloc_tcs() {
     println!("[alloc_tcs]");
+    Thread::alloc_tcs();
 }
