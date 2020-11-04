@@ -12,6 +12,7 @@ pub(crate) unsafe fn rel_ptr_mut<T>(offset: u64) -> *mut T {
 
 extern "C" {
     static ENCLAVE_SIZE: usize;
+    static TCS_LIST: u64;
 }
 
 // Do not remove inline: will result in relocation failure
@@ -51,4 +52,11 @@ pub fn is_user_range(p: *const u8, len: usize) -> bool {
     let start = p as u64;
     let end = start + (len as u64);
     end <= image_base() || start >= image_base() + (unsafe { ENCLAVE_SIZE } as u64) // unsafe ok: link-time constant
+}
+
+/// Returns the location of the TCS array. Each item in the array is a pointer (relative from
+/// enclave base) to a TCS created at enclave build time.
+#[unstable(feature = "sgx_platform", issue = "56975")]
+pub fn tcs_ptr_array() -> *const u64 {
+    unsafe { rel_ptr_mut(TCS_LIST) }
 }
