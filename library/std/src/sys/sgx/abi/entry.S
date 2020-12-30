@@ -101,6 +101,7 @@ IMAGE_BASE:
 .equ tcsls_user_r15,            0x58
 .equ tcsls_tls_ptr,             0x60
 .equ tcsls_tcs_addr,            0x68
+.equ tcsls_tcs_list_item,       0x70 /*  linked list of offsets to the TCS and the next item in the list; size = 16 bytes */
 
 .macro load_tcsls_flag_secondary_bool reg:req comments:vararg
     .ifne tcsls_flag_secondary /* to convert to a bool, must be the first bit */

@@ -36,24 +36,14 @@ mod tcs_queue {
     static TCS_QUEUE_INIT: Once = Once::new();
 
     fn init_tcs_queue() -> Vec<Tcs> {
-        let mut tcs_queue = Vec::new();
-
-        unsafe {
-            for offset in 0.. {
-                let tcs_ptr = sgx_mem::tcs_ptr_array().offset(offset);
-                if *tcs_ptr == 0 {
-                    break;
+        sgx_mem::tcses()
+            .iter()
+            .filter_map(|addr| if NonNull::new(*addr as _) != Some(thread::current()) {
+                    Some(Tcs::new(NonNull::new(*addr as _).expect("Compile-time value unexpected NULL")))
                 } else {
-                    let address = *tcs_ptr + sgx_mem::image_base();
-                    let address = NonNull::new(address as _).unwrap();
-
-                    if address != thread::current() {
-                        tcs_queue.push(Tcs::new(address));
-                    }
-                }
-            }
-        }
-        tcs_queue
+                    None
+                })
+            .collect()
     }
 
     fn lock() -> MutexGuard<'static, Vec<Tcs>> {
@@ -134,7 +124,7 @@ impl Thread {
     pub unsafe fn new(_stack: usize, p: Box<dyn FnOnce()>) -> io::Result<Thread> {
         let tcs = tcs_queue::take_tcs().ok_or(io::Error::from(io::ErrorKind::WouldBlock))?;
         let mut tasks = task_queue::lock();
-        unsafe { usercalls::launch_thread(tcs.address().as_ptr() as _)? };
+        unsafe { usercalls::launch_thread(Some(*tcs.address()))? };
         let (task, handle) = task_queue::Task::new(tcs, p);
         tasks.push(task);
         Ok(Thread(handle))

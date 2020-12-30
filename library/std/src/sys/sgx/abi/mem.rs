@@ -1,3 +1,5 @@
+use crate::ptr;
+
 // Do not remove inline: will result in relocation failure
 #[inline(always)]
 pub(crate) unsafe fn rel_ptr<T>(offset: u64) -> *const T {
@@ -54,9 +56,28 @@ pub fn is_user_range(p: *const u8, len: usize) -> bool {
     end <= image_base() || start >= image_base() + (unsafe { ENCLAVE_SIZE } as u64) // unsafe ok: link-time constant
 }
 
-/// Returns the location of the TCS array. Each item in the array is a pointer (relative from
-/// enclave base) to a TCS created at enclave build time.
+#[repr(C, packed)]
+#[derive(Default)]
+struct TcslsTcsListItem {
+    tcs_offset: u64,
+    next_offset: u64,
+}
+
+/// Returns the location of all TCSes available at compile time in the enclave
 #[unstable(feature = "sgx_platform", issue = "56975")]
-pub fn tcs_ptr_array() -> *const u64 {
-    unsafe { rel_ptr_mut(TCS_LIST) }
+pub fn tcses() -> Vec<u64> {
+    unsafe {
+        let mut item: *const TcslsTcsListItem = rel_ptr(TCS_LIST);
+        let mut tcses = Vec::new();
+
+        while item != ptr::null() {
+            tcses.push((*item).tcs_offset + image_base());
+            item = if (*item).next_offset != 0 {
+                ((*item).next_offset + image_base()) as _
+            } else {
+                ptr::null()
+            }
+        }
+        tcses
+    }
 }
