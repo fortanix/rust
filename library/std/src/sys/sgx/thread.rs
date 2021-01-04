@@ -36,7 +36,7 @@ mod tcs_queue {
     static TCS_QUEUE_INIT: Once = Once::new();
 
     fn init_tcs_queue() -> Vec<Tcs> {
-        sgx_mem::tcses()
+        sgx_mem::static_tcses()
             .iter()
             .filter_map(|addr| if NonNull::new(*addr as _) != Some(thread::current()) {
                     Some(Tcs::new(NonNull::new(*addr as _).expect("Compile-time value unexpected NULL")))

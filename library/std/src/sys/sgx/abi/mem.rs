@@ -1,5 +1,3 @@
-use crate::ptr;
-
 // Do not remove inline: will result in relocation failure
 #[inline(always)]
 pub(crate) unsafe fn rel_ptr<T>(offset: u64) -> *const T {
@@ -14,7 +12,6 @@ pub(crate) unsafe fn rel_ptr_mut<T>(offset: u64) -> *mut T {
 
 extern "C" {
     static ENCLAVE_SIZE: usize;
-    static TCS_LIST: u64;
 }
 
 // Do not remove inline: will result in relocation failure
@@ -63,19 +60,27 @@ struct TcslsTcsListItem {
     next_offset: u64,
 }
 
+extern "C" {
+    fn next_tcsls() -> *const u8;
+    fn static_tcs_offset() -> u64;
+    fn clist_next_offset() -> u64;
+}
+
 /// Returns the location of all TCSes available at compile time in the enclave
 #[unstable(feature = "sgx_platform", issue = "56975")]
-pub fn tcses() -> Vec<u64> {
+pub fn static_tcses() -> Vec<*const u8> {
     unsafe {
-        let mut item: *const TcslsTcsListItem = rel_ptr(TCS_LIST);
+        let mut tcsls = next_tcsls();
         let mut tcses = Vec::new();
 
-        while item != ptr::null() {
-            tcses.push((*item).tcs_offset + image_base());
-            item = if (*item).next_offset != 0 {
-                ((*item).next_offset + image_base()) as _
+        loop {
+            let tcs_addr = rel_ptr(*rel_ptr::<u64>(tcsls as u64 + static_tcs_offset()));
+            tcsls = *(rel_ptr::<*const u8>(tcsls as u64 + clist_next_offset()));
+
+            if tcses.first() != Some(&tcs_addr) {
+                tcses.push(tcs_addr);
             } else {
-                ptr::null()
+                break;
             }
         }
         tcses

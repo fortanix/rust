@@ -68,8 +68,6 @@ IMAGE_BASE:
     globvar EH_FRM_OFFSET 8
     /*  The size in bytes of enclacve .eh_frame section */
     globvar EH_FRM_LEN 8
-    /*  The base address (relative to enclave start) of the TCS list */
-    globvar TCS_LIST 8
 
 .org .Lxsave_clear+512
 .Lxsave_header:
@@ -101,7 +99,8 @@ IMAGE_BASE:
 .equ tcsls_user_r15,            0x58
 .equ tcsls_tls_ptr,             0x60
 .equ tcsls_tcs_addr,            0x68
-.equ tcsls_tcs_list_item,       0x70 /*  linked list of offsets to the TCS and the next item in the list; size = 16 bytes */
+.equ tcsls_static_tcs_addr,     0x70 /*  initialized by loader to *offset* from image base to static TCS */
+.equ tcsls_clist_next,          0x78 /*  initialized by loader to *offset* from image base to next TCLS, circular linked list */
 
 .macro load_tcsls_flag_secondary_bool reg:req comments:vararg
     .ifne tcsls_flag_secondary /* to convert to a bool, must be the first bit */
@@ -370,6 +369,27 @@ set_tls_ptr:
 take_debug_panic_buf_ptr:
     xor %rax,%rax
     xchg %gs:tcsls_debug_panic_buf_ptr,%rax
+    pop %r11
+    lfence
+    jmp *%r11
+
+.global next_tcsls
+next_tcsls:
+    mov %gs:tcsls_clist_next,%rax
+    pop %r11
+    lfence
+    jmp *%r11
+
+.global static_tcs_offset
+static_tcs_offset:
+    mov $tcsls_static_tcs_addr, %rax
+    pop %r11
+    lfence
+    jmp *%r11
+
+.global clist_next_offset
+clist_next_offset:
+    mov $tcsls_clist_next, %rax
     pop %r11
     lfence
     jmp *%r11
