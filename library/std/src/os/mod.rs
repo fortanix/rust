@@ -123,4 +123,4 @@ mod imp {
 pub use imp::*;
 
 #[cfg(any(unix, target_os = "wasi", doc))]
-mod fd;
+pub(crate) mod fd;

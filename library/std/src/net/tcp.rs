@@ -11,6 +11,8 @@ use crate::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use crate::sys_common::net as net_imp;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::time::Duration;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use fortanix_vme_abi::{Request, Response};
 
 /// A TCP stream between a local and a remote socket.
 ///
