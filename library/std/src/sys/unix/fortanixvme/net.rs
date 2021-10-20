@@ -9,7 +9,7 @@ use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
 use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
-use crate::sys::cvt;
+use crate::sys::{cvt, cvt_r};
 use fortanix_vme_abi;
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, Fortanixvme};
@@ -176,6 +176,17 @@ impl Socket {
     // This is used by sys_common code to abstract over Windows and Unix.
     pub fn as_raw(&self) -> RawFd {
         self.as_raw_fd()
+    }
+
+    pub fn accept(&self, storage: *mut libc::sockaddr, len: *mut libc::socklen_t) -> io::Result<Socket> {
+        // Unfortunately the only known way right now to accept a socket and
+        // atomically set the CLOEXEC flag is to use the `accept4` syscall on
+        // platforms that support it. On Linux, this was added in 2.6.28,
+        // glibc 2.10 and musl 0.9.5.
+        unsafe {
+            let fd = cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
+            Ok(Socket(FileDesc::from_raw_fd(fd)))
+        }
     }
 }
     
@@ -364,8 +375,12 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    pub fn bind(_addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
-        not_available!()
+    pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
+        let addr = io_err_to_addr(addr)?;
+        let mut runner = Client::<Fortanixvme>::new(fortanix_vme_abi::SERVER_PORT)?;
+        let (listener, port) = runner.bind_socket(addr)?;
+        let socket = unsafe{ Socket::from_raw_fd(listener.into_raw_fd()) };
+        unsafe { Ok(TcpListener { inner: socket }) }
     }
 
     pub fn socket(&self) -> &Socket {
@@ -381,7 +396,14 @@ impl TcpListener {
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-        not_available!()
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let mut len = mem::size_of_val(&storage) as libc::socklen_t;
+        let sock = self.inner.accept(&mut storage as *mut _ as *mut _, &mut len)?;
+        // TODO retrieve proper addr
+        let addr = SocketAddr::V4(FromInner::from_inner(unsafe {
+            *(&storage as *const _ as *const libc::sockaddr_in)
+        }));
+        Ok((TcpStream { inner: sock }, addr))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
