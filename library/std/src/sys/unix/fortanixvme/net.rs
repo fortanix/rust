@@ -1,5 +1,8 @@
 use core::convert::TryFrom;
-use crate::io::{self, IoSlice, IoSliceMut};
+use crate::cmp;
+use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
+use crate::lazy::SyncOnceCell;
+use crate::sync::{Arc, Mutex};
 use crate::sys::fd::FileDesc;
 use crate::sys_common::{FromInner, IntoInner};
 use crate::time::Duration;
@@ -10,10 +13,10 @@ use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
 use crate::sys::{cvt, cvt_r};
-use fortanix_vme_abi;
+use fortanix_vme_abi::{self, Addr};
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, Fortanixvme};
-use vsock::VsockStream;
+use vsock::{SockAddr as VsockAddr, VsockStream};
 
 pub(crate) extern crate libc as netc;
 
@@ -112,6 +115,59 @@ macro_rules! not_available {
             &"Not available on Fortanixvme",
         ))
     };
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FdInfo {
+    fd: RawFd,
+    fd_runner: i32,
+}
+static FD_INFO: SyncOnceCell<Arc<Mutex<Vec<FdInfo>>>> = SyncOnceCell::new();
+
+fn fd_info() -> Arc<Mutex<Vec<FdInfo>>> {
+    FD_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+}
+
+fn store_fd_info(info: FdInfo) {
+    fd_info().lock().unwrap().push(info);
+}
+
+fn get_fd_info(local_fd: RawFd) -> Option<FdInfo> {
+    fd_info().lock().unwrap().iter().find_map(|info| if local_fd == info.fd {
+            Some(info.to_owned())
+        } else {
+            None
+        })
+}
+
+#[derive(Clone, Debug)]
+struct IncomingInfo {
+    peer: Addr,
+    runner_port: u32,
+}
+static INCOMING_INFO: SyncOnceCell<Arc<Mutex<Vec<IncomingInfo>>>> = SyncOnceCell::new();
+
+fn incoming_info() -> Arc<Mutex<Vec<IncomingInfo>>> {
+    INCOMING_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+}
+
+fn store_incoming_connection_info(info: IncomingInfo) {
+    incoming_info().lock().unwrap().push(info)
+}
+
+fn take_incoming_connection_info(runner_port: u32) -> Option<IncomingInfo> {
+    let info = incoming_info();
+    let mut info = info.lock().unwrap();
+    info.iter()
+        .enumerate()
+        .find_map(|(idx, info)| {
+            if info.runner_port == runner_port {
+                Some(idx)
+            } else {
+                None
+            }
+        })
+        .map(|idx| info.remove(idx))
 }
 
 pub struct Socket(FileDesc);
@@ -364,6 +420,35 @@ impl FromInner<Socket> for TcpStream {
     }
 }
 
+fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
+    match addr {
+        Addr::IPv4 { port, ip } => {
+            unsafe {
+                let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+                let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in;
+                (*sockaddr).sin_family = libc::AF_INET as libc::sa_family_t;
+                (*sockaddr).sin_port = port;
+                (*sockaddr).sin_addr = libc::in_addr { s_addr: u32::from_le_bytes(ip) as libc::in_addr_t };
+                assert!(mem::size_of::<libc::sockaddr_in>() <= mem::size_of::<libc::sockaddr_storage>());
+                SocketAddr::V4(FromInner::from_inner(*sockaddr))
+            }
+        }
+        Addr::IPv6 { ip, port, flowinfo, scope_id } => {
+            unsafe {
+                let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+                let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in6;
+                (*sockaddr).sin6_family = libc::AF_INET6 as libc::sa_family_t;
+                (*sockaddr).sin6_port = port;
+                (*sockaddr).sin6_flowinfo = flowinfo;
+                (*sockaddr).sin6_addr = libc::in6_addr { s6_addr: ip };
+                (*sockaddr).sin6_scope_id = scope_id;
+                assert_eq!(mem::size_of::<libc::sockaddr_in6>(), mem::size_of::<libc::sockaddr_storage>());
+                SocketAddr::V6(FromInner::from_inner(*sockaddr))
+            }
+        }
+    }
+}
+
 impl IntoRawFd for TcpStream {
     fn into_raw_fd(self) -> RawFd {
         self.inner.into_raw_fd()
@@ -377,8 +462,14 @@ pub struct TcpListener {
 impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
-        let mut runner = Client::<Fortanixvme>::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (listener, port) = runner.bind_socket(addr)?;
+        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+        let (listener, port, fd) = runner.bind_socket(addr)?;
+        // Store the fd the runner uses for the proxy TCP connection so we can tell it on which
+        // socket to accept new connections. It would be cleaner to keep such information in
+        // the TcpListener itself. Unfortunately, the code quite heavily relies on the fact
+        // that a `TcpListener` only has a `Socket` field, and a `Socket` is a wrapper around a
+        // `FileDesc`.
+        store_fd_info(FdInfo{ fd: listener.as_raw_fd(), fd_runner: fd });
         let socket = unsafe{ Socket::from_raw_fd(listener.into_raw_fd()) };
         unsafe { Ok(TcpListener { inner: socket }) }
     }
@@ -396,14 +487,47 @@ impl TcpListener {
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
+        /* +-----------+
+         * |   remote  |
+         * +-----------+
+         *       ^
+         *       |
+         *      TCP
+         *       | (1) Accept new connection
+         *       v
+         * +----[ ]-----+            +-------------+
+         * |   Runner   |            |   enclave   | (2) store peer/runner_port mapping
+         * +--[ ]--[ ]--+            +-[ ]----[ ]--+
+         *     \    \-----  enclave ----/      / (3) Accept new incoming connection from runner
+         *      \-------- proxy --------------/
+         */
+        // (1) Tell the runner to accept an incoming connection on a specific socket.
+        let fd_info = get_fd_info(self.inner.as_raw_fd())
+            .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
+        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+        // When `accept` returns, the runner has accepted a new connection for peer. It will try
+        // to connect to the enclave from `runner_port`
+        let (peer, runner_port) = runner.accept(fd_info.fd_runner)?;
+
+        // (2) Store a mapping `runner_port` -> `peer`, where `runner_port` is the port the runner
+        // will connect to the enclave in (3). `peer` is the address of the
+        // remote client trying to connect to the enclave
+        store_incoming_connection_info(IncomingInfo{ peer: peer.clone(), runner_port });
+
+        // (3) Accept the incoming connection from the runner
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
         let mut len = mem::size_of_val(&storage) as libc::socklen_t;
-        let sock = self.inner.accept(&mut storage as *mut _ as *mut _, &mut len)?;
-        // TODO retrieve proper addr
-        let addr = SocketAddr::V4(FromInner::from_inner(unsafe {
-            *(&storage as *const _ as *const libc::sockaddr_in)
-        }));
-        Ok((TcpStream { inner: sock }, addr))
+        let sock_runner = self.inner.accept(&mut storage as *mut _ as *mut _, &mut len)?;
+        // Find the previously stored peer address. Unfortunately, we need to store it in a
+        // global variable and fetch it here again because of a subtle race condition. When
+        // multiple clients are trying to connect on the same port, the peer address received
+        // in (2), may not be the one proxied through the incoming connection.
+        let runner_addr = &mut storage as *const _ as *mut libc::sockaddr_vm;
+        let runner_addr = unsafe { VsockAddr::try_from(*runner_addr).expect("Vsock connection") };
+        let peer_info = take_incoming_connection_info(runner_addr.port())
+            .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
+        let peer = addr_to_sockaddr(peer_info.peer);
+        Ok((TcpStream { inner: sock_runner }, peer))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {

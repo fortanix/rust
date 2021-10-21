@@ -1,6 +1,6 @@
 use crate::io::{self, ErrorKind, Read};
-use fortanix_vme_abi::{Response, Request};
-use vsock::{self, Platform, VsockStream};
+use fortanix_vme_abi::{Addr, Response, Request};
+use vsock::{self, Platform, VsockListener, VsockStream};
 
 const MIN_READ_BUFF: usize = 0x2000;
 
@@ -68,8 +68,47 @@ impl Client {
             addr
         };
         self.send(&connect)?;
-        let Response::Connected { proxy_port, .. } = self.receive()?;
-        Self::connect(proxy_port)
+        if let Response::Connected { proxy_port, .. } = self.receive()? {
+            Self::connect(proxy_port)
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
+    /// Bind a TCP socket in the parent VM to the specified address. Returns the `VsockListener`
+    /// listening for incoming connections forwarded by the parent VM and the TCP port the runner
+    /// is listening on
+    pub fn bind_socket(&mut self, addr: String) -> Result<(VsockListener<Fortanixvme>, u16, i32), io::Error> {
+        // Start listener socket within enclave, waiting for incoming connections from enclave
+        // runner
+        let listener = VsockListener::bind_with_cid(vsock::VMADDR_CID_ANY)?;
+        let enclave_port = listener.local_addr()?.port();
+
+        // Tell runner to start listening on the specified address and forward trafic to the
+        // specified port
+        let bind = Request::Bind {
+            addr,
+            enclave_port,
+        };
+        self.send(&bind)?;
+        if let Response::Bound { port, fd } = self.receive()? {
+            Ok((listener, port, fd))
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
+    pub fn accept(&mut self, fd: i32) -> Result<(Addr, u32), io::Error> {
+        let accept = Request::Accept {
+            fd
+        };
+        self.send(&accept)?;
+
+        if let Response::IncomingConnection { peer, proxy_port } = self.receive()? {
+            Ok((peer, proxy_port))
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
     }
 
     fn send(&mut self, req: &Request) -> Result<(), io::Error> {
