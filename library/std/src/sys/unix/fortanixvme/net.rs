@@ -1,22 +1,21 @@
-pub mod net {
-    use core::convert::TryFrom;
-    use crate::cmp;
-    use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
-    use crate::sys::fd::FileDesc;
-    use crate::sys_common::{AsInner, FromInner, IntoInner};
-    use crate::time::Duration;
-    use crate::fmt;
-    use crate::mem;
-    use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
-    use crate::os::fd::raw::AsRawFd;
-    use crate::os::fd::owned::{AsFd, BorrowedFd};
-    use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
-    use crate::sys::{cvt, cvt_r};
-    use fortanix_vme_abi::{self, Client, Error, Response, Request};
-    use libc::{self, c_int, c_void, size_t, MSG_PEEK, MSG_NOSIGNAL};
-    use vsock::{Platform, VsockStream};
+use core::convert::TryFrom;
+use crate::cmp;
+use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
+use crate::sys::fd::FileDesc;
+use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::time::Duration;
+use crate::fmt;
+use crate::mem;
+use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
+use crate::os::fd::raw::AsRawFd;
+use crate::os::fd::owned::{AsFd, BorrowedFd};
+use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
+use crate::sys::{cvt, cvt_r};
+use fortanix_vme_abi::{self, Client, Error, Response, Request};
+use libc::{self, c_int, c_void, size_t, MSG_PEEK, MSG_NOSIGNAL};
+use vsock::{Platform, VsockStream};
 
-    type wrlen_t = size_t;
+type wrlen_t = size_t;
 
     pub(crate) extern crate libc as netc;
 
@@ -605,4 +604,3 @@ pub mod net {
             write!(f, "UDP sockets not supported on Fortanixvme.")
         }
     }
-}
