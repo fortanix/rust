@@ -369,8 +369,6 @@ extern crate unwind;
 #[cfg(test)]
 extern crate std as realstd;
 
-#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-extern crate fortanix_vme_abi;
 // The standard macros that are not built-in to the compiler.
 #[macro_use]
 mod macros;
