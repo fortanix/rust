@@ -2,7 +2,7 @@ use core::convert::TryFrom;
 use crate::cmp;
 use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
 use crate::sys::fd::FileDesc;
-use crate::sys_common::{AsInner, FromInner, IntoInner};
+use crate::sys_common::{FromInner, IntoInner};
 use crate::time::Duration;
 use crate::fmt;
 use crate::mem;
@@ -10,36 +10,15 @@ use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
 use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
-use crate::sys::{cvt, cvt_r};
-use fortanix_vme_abi::{self, Client, Error, Response, Request};
+use crate::sys::cvt;
+use fortanix_vme_abi;
 use libc::{self, c_int, c_void, size_t, MSG_PEEK, MSG_NOSIGNAL};
-use vsock::{Platform, VsockStream};
+use super::client::{Client, Fortanixvme};
+use vsock::VsockStream;
 
 type wrlen_t = size_t;
 
     pub(crate) extern crate libc as netc;
-
-    struct Fortanixvme;
-
-    impl Platform for Fortanixvme {
-        fn last_os_error() -> vsock::Error {
-            vsock::Error::SystemError(super::super::os::errno() as i32)
-        }
-    }
-
-    #[unstable(feature = "fortanixvme", issue = "none")]
-    impl From<Error> for io::Error {
-        fn from(error: Error) -> io::Error {
-            match error {
-                Error::SerializationError(e) => io::Error::new(ErrorKind::InvalidData, format!("Serialization error: {}", e)),
-                Error::DeserializationError(e) => io::Error::new(ErrorKind::InvalidData, format!("Deserialization error: {}", e)),
-                Error::ConnectFailed => io::Error::new(ErrorKind::InvalidData, "Connection failed".to_string()),
-                Error::WriteFailed => io::Error::new(ErrorKind::BrokenPipe, "Write failed".to_string()),
-                Error::ReadFailed => io::Error::new(ErrorKind::BrokenPipe, "Read failed".to_string()),
-                Error::UnexpectedResponse => io::Error::new(ErrorKind::InvalidData, "Unexpected response from runner".to_string()),
-            }
-        }
-    }
 
     #[derive(Debug)]
     struct NonIpSockAddr {
@@ -109,8 +88,6 @@ type wrlen_t = size_t;
     fn io_err_to_addr(result: io::Result<&SocketAddr>) -> io::Result<String> {
         match result {
             Ok(saddr) => Ok(saddr.to_string()),
-            // need to downcast twice because io::Error::into_inner doesn't return the original
-            // value if the conversion fails
             Err(e) => {
                 e.get_ref().and_then(|e| if let Some(addr) = e.downcast_ref::<NonIpSockAddr>() {
                     Some(addr.host().to_owned())
@@ -131,12 +108,12 @@ type wrlen_t = size_t;
         }
     }
 
-    macro_rules! unimpl {
+    macro_rules! not_available {
         () => {
             return Err(io::Error::new_const(
                 io::ErrorKind::Unsupported,
-                &"Unimplemented on Fortanixvme",
-            ));
+                &"Not available on Fortanixvme",
+            ))
         };
     }
 
@@ -255,13 +232,13 @@ type wrlen_t = size_t;
     impl TcpStream {
         pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
             let addr = io_err_to_addr(addr)?;
-            let mut runner = Client::<Fortanixvme>::new(fortanix_vme_abi::SERVER_PORT)?;
+            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
             let stream = runner.open_proxy_connection(addr)?;
             Ok(stream.into())
         }
 
-        pub fn connect_timeout(addr: &SocketAddr, timeout: Duration) -> io::Result<TcpStream> {
-            unimpl!()
+        pub fn connect_timeout(_addr: &SocketAddr, _timeout: Duration) -> io::Result<TcpStream> {
+            not_available!()
         }
 
         pub fn socket(&self) -> &Socket {
@@ -272,20 +249,20 @@ type wrlen_t = size_t;
             self.inner
         }
 
-        pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
-            unimpl!()
+        pub fn set_read_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
+            not_available!()
         }
 
-        pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
-            unimpl!()
+        pub fn set_write_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -306,11 +283,7 @@ type wrlen_t = size_t;
         }
 
         pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-            let len = cmp::min(buf.len(), <wrlen_t>::MAX as usize) as wrlen_t;
-            let ret = cvt(unsafe {
-                libc::send(self.inner.as_raw(), buf.as_ptr() as *const c_void, len, MSG_NOSIGNAL)
-            })?;
-            Ok(ret as usize)
+            self.inner.write(buf)
         }
 
         pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -323,11 +296,11 @@ type wrlen_t = size_t;
         }
 
         pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -338,36 +311,36 @@ type wrlen_t = size_t;
             self.inner.duplicate().map(|s| TcpStream { inner: s })
         }
 
-        pub fn set_linger(&self, linger: Option<Duration>) -> io::Result<()> {
-            unimpl!()
+        pub fn set_linger(&self, _linger: Option<Duration>) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn linger(&self) -> io::Result<Option<Duration>> {
-            unimpl!()
+            not_available!()
         }
 
-        pub fn set_nodelay(&self, nodelay: bool) -> io::Result<()> {
-            unimpl!()
+        pub fn set_nodelay(&self, _nodelay: bool) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn nodelay(&self) -> io::Result<bool> {
-            unimpl!()
+            not_available!()
         }
 
-        pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-            unimpl!()
+        pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn ttl(&self) -> io::Result<u32> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn take_error(&self) -> io::Result<Option<io::Error>> {
             self.inner.take_error()
         }
 
-        pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-            unimpl!()
+        pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
+            not_available!()
         }
     }
 
@@ -394,8 +367,8 @@ type wrlen_t = size_t;
     }
 
     impl TcpListener {
-        pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
-            unimpl!()
+        pub fn bind(_addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
+            not_available!()
         }
 
         pub fn socket(&self) -> &Socket {
@@ -407,39 +380,39 @@ type wrlen_t = size_t;
         }
 
         pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn duplicate(&self) -> io::Result<TcpListener> {
-            unimpl!()
+            not_available!()
         }
 
-        pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-            unimpl!()
+        pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn ttl(&self) -> io::Result<u32> {
-            unimpl!()
+            not_available!()
         }
 
-        pub fn set_only_v6(&self, only_v6: bool) -> io::Result<()> {
-            unimpl!()
+        pub fn set_only_v6(&self, _only_v6: bool) -> io::Result<()> {
+            not_available!()
         }
 
         pub fn only_v6(&self) -> io::Result<bool> {
-            unimpl!()
+            not_available!()
         }
 
         pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-            unimpl!()
+            not_available!()
         }
 
-        pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
-            unimpl!()
+        pub fn set_nonblocking(&self, _nonblocking: bool) -> io::Result<()> {
+            not_available!()
         }
     }
 
@@ -461,7 +434,7 @@ type wrlen_t = size_t;
 
     impl UdpSocket {
         pub fn bind(_: io::Result<&SocketAddr>) -> io::Result<UdpSocket> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn socket(&self) -> &Socket {
@@ -473,123 +446,123 @@ type wrlen_t = size_t;
         }
 
         pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn recv_from(&self, _: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn peek_from(&self, _: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn send_to(&self, _: &[u8], _: &SocketAddr) -> io::Result<usize> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn duplicate(&self) -> io::Result<UdpSocket> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_read_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_write_timeout(&self, _: Option<Duration>) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn write_timeout(&self) -> io::Result<Option<Duration>> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_broadcast(&self, _: bool) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn broadcast(&self) -> io::Result<bool> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_multicast_loop_v4(&self, _: bool) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn multicast_loop_v4(&self) -> io::Result<bool> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_multicast_ttl_v4(&self, _: u32) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn multicast_ttl_v4(&self) -> io::Result<u32> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_multicast_loop_v6(&self, _: bool) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn multicast_loop_v6(&self) -> io::Result<bool> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn join_multicast_v4(&self, _: &Ipv4Addr, _: &Ipv4Addr) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn join_multicast_v6(&self, _: &Ipv6Addr, _: u32) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn leave_multicast_v4(&self, _: &Ipv4Addr, _: &Ipv4Addr) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn leave_multicast_v6(&self, _: &Ipv6Addr, _: u32) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_ttl(&self, _: u32) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn ttl(&self) -> io::Result<u32> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn set_nonblocking(&self, _: bool) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn recv(&self, _: &mut [u8]) -> io::Result<usize> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn peek(&self, _: &mut [u8]) -> io::Result<usize> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn send(&self, _: &[u8]) -> io::Result<usize> {
-            unimpl!();
+            not_available!();
         }
 
         pub fn connect(&self, _: io::Result<&SocketAddr>) -> io::Result<()> {
-            unimpl!();
+            not_available!();
         }
     }
 

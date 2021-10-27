@@ -81,7 +81,7 @@ pub mod thread;
 #[cfg(any(
     target_os = "android",
     all(target_os = "linux",
-        not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))),
+        not(all(target_arch = "x86_64", target_env = "fortanixvme"))),
     target_os = "dragonfly",
     target_os = "freebsd",
     target_os = "ios",
