@@ -112,7 +112,14 @@ rustc-workspace-hack = { path = 'src/tools/rustc-workspace-hack' }
 rustc-std-workspace-core = { path = 'library/rustc-std-workspace-core' }
 rustc-std-workspace-alloc = { path = 'library/rustc-std-workspace-alloc' }
 rustc-std-workspace-std = { path = 'library/rustc-std-workspace-std' }
-libc = { git = "https://github.com/fortanix/libc.git", branch = "fortanixvme", default-features = false }
+libc = { git = "https://github.com/raoulstrackx/libc.git", branch = "raoul/fortanixvme_rebase_106" }
+getrandom = { git = "https://github.com/raoulstrackx/getrandom.git", branch = "raoul/fortanixvme_target" }
+getrandom_v_1_16 = { git = "https://github.com/raoulstrackx/getrandom.git", branch = "raoul/patch_v0_1_16", package = "getrandom" }
+half = { git = "https://github.com/raoulstrackx/half-rs.git", branch = "raoul/stdlib" }
+half_v_1_2_1 = { git = "https://github.com/raoulstrackx/half-rs.git", branch = "raoul/patch_0.2.1", package = "half" }
+half_v_1_8_2 = { git = "https://github.com/raoulstrackx/half-rs.git", branch = "raoul/stdlib_1_8_2", package = "half" }
+serde = { git = "https://github.com/raoulstrackx/serde.git", branch = "raoul/stdlib" }
+vsock = { git = "https://github.com/raoulstrackx/vsock-rs.git", branch = "raoul/fortanixvme" }
 
 [patch."https://github.com/rust-lang/rust-clippy"]
 clippy_lints = { path = "src/tools/clippy/clippy_lints" }

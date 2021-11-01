@@ -11,7 +11,7 @@ cfg-if = { version = "0.1.8", features = ['rustc-dep-of-std'] }
 getopts = { version = "0.2.21", features = ['rustc-dep-of-std'] }
 std = { path = "../std" }
 core = { path = "../core" }
-libc = { git = "https://github.com/fortanix/libc.git", branch = "fortanixvme", default-features = false }
+libc = { version = "0.2", default-features = false }
 panic_unwind = { path = "../panic_unwind" }
 panic_abort = { path = "../panic_abort" }
 

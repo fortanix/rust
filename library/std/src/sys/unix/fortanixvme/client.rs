@@ -15,9 +15,11 @@ impl Platform for Fortanixvme {
     }
 }
 
+#[allow(ineffective_unstable_trait_impl)]
 #[unstable(feature = "fortanixvme", issue = "none")]
 impl crate::error::Error for vsock::Error {}
 
+#[allow(ineffective_unstable_trait_impl)]
 #[unstable(feature = "fortanixvme", issue = "none")]
 impl From<vsock::Error> for io::Error {
     fn from(err: vsock::Error) -> io::Error {
