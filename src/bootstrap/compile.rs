@@ -206,7 +206,8 @@ fn copy_self_contained_objects(
     // and link with them manually in the self-contained mode.
     if target.contains("musl") || target.contains("fortanixvme") {
         let srcdir = builder.musl_libdir(target).unwrap_or_else(|| {
-            panic!("Target {:?} does not have a \"musl-libdir\" key", target.triple)
+            //panic!("Target {:?} does not have a \"musl-libdir\" key", target.triple)
+            std::path::PathBuf::from("/usr/local/x86_64-linux-musl/lib")
         });
         for &obj in &["crt1.o", "Scrt1.o", "rcrt1.o", "crti.o", "crtn.o"] {
             copy_and_stamp(
