@@ -1,4 +1,3 @@
-use core::convert::{TryFrom, TryInto};
 use crate::io::{self, ErrorKind, Read};
 use fortanix_vme_abi::{Response, Request};
 use vsock::{self, Platform, VsockStream};
@@ -42,7 +41,6 @@ impl Read for VsockStream<Fortanixvme> {
 
 pub struct Client {
     stream: VsockStream<Fortanixvme>,
-    buff: Vec<u8>,
 }
 
 impl Client {
@@ -53,14 +51,13 @@ impl Client {
                 // When debugging, there may not be a hypervisor. Fall back to local communication
                 // on the same host.
                 VsockStream::connect_with_cid_port(vsock::VMADDR_CID_LOCAL, port)
-                    .map_err(|e1| io::Error::new(ErrorKind::InvalidData, e0))
+                    .map_err(|_e1| io::Error::new(ErrorKind::InvalidData, e0))
             })
     }
 
     pub fn new(port: u32) -> Result<Self, io::Error> {
         Ok(Client {
             stream: Self::connect(port)?,
-            buff: Vec::new(),
         })
     }
 
@@ -74,7 +71,7 @@ impl Client {
     }
 
     fn send(&mut self, req: &Request) -> Result<(), io::Error> {
-        let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
+        let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|_e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
         self.stream.write(req.as_slice())?;
         Ok(())
     }

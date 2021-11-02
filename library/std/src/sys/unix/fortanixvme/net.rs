@@ -1,6 +1,5 @@
 use core::convert::TryFrom;
-use crate::cmp;
-use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
+use crate::io::{self, IoSlice, IoSliceMut};
 use crate::sys::fd::FileDesc;
 use crate::sys_common::{FromInner, IntoInner};
 use crate::time::Duration;
@@ -12,11 +11,9 @@ use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
 use crate::sys::cvt;
 use fortanix_vme_abi;
-use libc::{self, c_int, c_void, size_t, MSG_PEEK, MSG_NOSIGNAL};
+use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, Fortanixvme};
 use vsock::VsockStream;
-
-type wrlen_t = size_t;
 
     pub(crate) extern crate libc as netc;
 
