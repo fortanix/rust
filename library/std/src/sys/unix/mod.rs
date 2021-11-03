@@ -18,6 +18,8 @@ pub mod condvar;
 pub mod env;
 pub mod fd;
 pub mod fs;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+pub mod fortanixvme;
 pub mod futex;
 pub mod io;
 #[cfg(any(target_os = "linux", target_os = "android"))]
@@ -26,10 +28,13 @@ pub mod kernel_copy;
 mod l4re;
 pub mod memchr;
 pub mod mutex;
-#[cfg(not(target_os = "l4re"))]
+#[cfg(not(any(target_os = "l4re",
+              all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))))]
 pub mod net;
 #[cfg(target_os = "l4re")]
 pub use self::l4re::net;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+pub use self::fortanixvme::net;
 pub mod os;
 pub mod os_str;
 pub mod path;

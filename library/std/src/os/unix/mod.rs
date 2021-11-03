@@ -71,6 +71,7 @@ mod platform {
 pub mod ffi;
 pub mod fs;
 pub mod io;
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 pub mod net;
 pub mod process;
 pub mod raw;
@@ -79,7 +80,8 @@ pub mod thread;
 #[unstable(feature = "peer_credentials_unix_socket", issue = "42839", reason = "unstable")]
 #[cfg(any(
     target_os = "android",
-    target_os = "linux",
+    all(target_os = "linux",
+        not(all(target_arch = "x86_64", target_env = "fortanixvme"))),
     target_os = "dragonfly",
     target_os = "freebsd",
     target_os = "ios",

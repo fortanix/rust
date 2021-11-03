@@ -1,0 +1,103 @@
+use crate::io::{self, ErrorKind, Read};
+use fortanix_vme_abi::{Response, Request};
+use vsock::{self, Platform, VsockStream};
+
+const MIN_READ_BUFF: usize = 0x2000;
+
+#[unstable(feature = "fortanixvme", issue = "none")]
+pub struct Fortanixvme;
+
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl Platform for Fortanixvme {
+    fn last_os_error() -> vsock::Error {
+        vsock::Error::SystemError(super::super::os::errno() as i32)
+    }
+}
+
+// Compiler bug in nightly-2021-09-08-x86_64-unknown-linux-gnu requires both annotations
+#[allow(ineffective_unstable_trait_impl)]
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl crate::error::Error for vsock::Error {}
+
+// Compiler bug in nightly-2021-09-08-x86_64-unknown-linux-gnu requires both annotations
+#[allow(ineffective_unstable_trait_impl)]
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl From<vsock::Error> for io::Error {
+    fn from(err: vsock::Error) -> io::Error {
+        match err {
+            vsock::Error::EntropyError        => io::Error::new(ErrorKind::Other, err),
+            vsock::Error::ReservedPort        => io::Error::new(ErrorKind::InvalidInput, err),
+            vsock::Error::SystemError(errno)  => io::Error::from_raw_os_error(errno),
+            vsock::Error::WrongAddressType    => io::Error::new(ErrorKind::InvalidInput, err),
+            vsock::Error::ZeroDurationTimeout => io::Error::new(ErrorKind::InvalidInput, err),
+        }
+    }
+}
+
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl Read for VsockStream<Fortanixvme> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
+        VsockStream::<Fortanixvme>::read(&mut &*self, buf).map_err(|e| e.into())
+    }
+}
+
+pub struct Client {
+    stream: VsockStream<Fortanixvme>,
+}
+
+impl Client {
+    fn connect(port: u32) -> Result<VsockStream<Fortanixvme>, io::Error> {
+        // Try to contact the enclave runner through the hypervisor
+        VsockStream::connect_with_cid_port(vsock::VMADDR_CID_HOST, port)
+            .or_else(|e0| {
+                // When debugging, there may not be a hypervisor. Fall back to local communication
+                // on the same host.
+                VsockStream::connect_with_cid_port(vsock::VMADDR_CID_LOCAL, port)
+                    .map_err(|_e1| io::Error::new(ErrorKind::InvalidData, e0))
+            })
+    }
+
+    pub fn new(port: u32) -> Result<Self, io::Error> {
+        Ok(Client {
+            stream: Self::connect(port)?,
+        })
+    }
+
+    pub fn open_proxy_connection(&mut self, addr: String) -> Result<VsockStream<Fortanixvme>, io::Error> {
+        let connect = Request::Connect {
+            addr
+        };
+        self.send(&connect)?;
+        let Response::Connected { proxy_port, .. } = self.receive()?;
+        Self::connect(proxy_port)
+    }
+
+    fn send(&mut self, req: &Request) -> Result<(), io::Error> {
+        let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|_e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
+        self.stream.write(req.as_slice())?;
+        Ok(())
+    }
+
+    fn receive(&mut self) -> Result<Response, io::Error> {
+        // We'd like to have used a streaming deserializer. Unfortunately, that implies that we
+        // are able to create a `Deserializer` from a reader (i.e., the socket). Unfortunately
+        // that requires enabling the std feature of serde_cbor and that's obvious not possible
+        fn read<P: Platform>(stream: &mut VsockStream<P>, mut buff: Vec<u8>) -> Result<Response, io::Error> {
+            let old_size = buff.len();
+            let new_size = crate::cmp::max(old_size.next_power_of_two(), MIN_READ_BUFF);
+            buff.resize(new_size, 0);
+            let n = stream.read(&mut buff[old_size..])?;
+            buff.truncate(old_size + n);
+
+            match serde_cbor::from_slice(buff.as_slice()) {
+                Ok(resp)  => Ok(resp),
+                Err(e)    => if e.is_eof() {
+                        read(stream, buff)
+                    } else {
+                        Err(io::Error::new(ErrorKind::InvalidData, "Deserialization failed"))
+                    },
+            }
+        }
+        read(&mut self.stream, Vec::new())
+    }
+}
