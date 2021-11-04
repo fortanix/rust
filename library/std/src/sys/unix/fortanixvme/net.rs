@@ -145,10 +145,10 @@ struct IncomingInfo {
     peer: Addr,
     runner_port: u32,
 }
-static INCOMING_INFO: SyncOnceCell<Arc<Mutex<Vec<IncomingInfo>>>> = SyncOnceCell::new();
+static INCOMING_INFO: SyncOnceCell<Mutex<Vec<IncomingInfo>>> = SyncOnceCell::new();
 
-fn incoming_info() -> Arc<Mutex<Vec<IncomingInfo>>> {
-    INCOMING_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+fn incoming_info() -> &'static Mutex<Vec<IncomingInfo>> {
+    INCOMING_INFO.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 fn store_incoming_connection_info(info: IncomingInfo) {
