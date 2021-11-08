@@ -98,11 +98,11 @@ fn io_err_to_addr(result: io::Result<&SocketAddr>) -> io::Result<String> {
     }
 }
 
-fn getsockopt<T: Copy>(sock: &Socket, opt: c_int, val: c_int) -> io::Result<T> {
+fn getsockopt<T: Copy>(fd: RawFd, opt: c_int, val: c_int) -> io::Result<T> {
     unsafe {
         let mut slot: T = mem::zeroed();
         let mut len = mem::size_of::<T>() as libc::socklen_t;
-        cvt(libc::getsockopt(sock.as_raw(), opt, val, &mut slot as *mut _ as *mut _, &mut len))?;
+        cvt(libc::getsockopt(fd, opt, val, &mut slot as *mut _ as *mut _, &mut len))?;
         assert_eq!(len as usize, mem::size_of::<T>());
         Ok(slot)
     }
@@ -115,6 +115,18 @@ macro_rules! not_available {
             &"Not available on Fortanixvme",
         ))
     };
+}
+
+pub(crate) fn close_listener(local_fd: RawFd) -> Result<(), io::Error> {
+    if Socket::is_listener(local_fd)? {
+        let local_vsock = VsockAddr::from_raw_fd::<Fortanixvme>(local_fd)?;
+        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+        runner.close_listener_socket(local_vsock.port())
+    } else {
+        // Not a listening socket, no need to close it. Could even not be a socket at all (but a
+        // file, ...)!
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -235,8 +247,12 @@ impl Socket {
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
-        let raw: c_int = getsockopt(self, libc::SOL_SOCKET, libc::SO_ERROR)?;
+        let raw: c_int = getsockopt(self.as_raw(), libc::SOL_SOCKET, libc::SO_ERROR)?;
         if raw == 0 { Ok(None) } else { Ok(Some(io::Error::from_raw_os_error(raw as i32))) }
+    }
+
+    fn is_listener(fd: RawFd) -> io::Result<bool> {
+        getsockopt(fd, libc::SOL_SOCKET, libc::SO_ACCEPTCONN).map(|ret: c_int| ret != 0)
     }
 
     // This is used by sys_common code to abstract over Windows and Unix.

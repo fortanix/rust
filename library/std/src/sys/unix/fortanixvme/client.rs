@@ -112,6 +112,19 @@ impl Client {
         }
     }
 
+    pub fn close_listener_socket(&mut self, enclave_port: u32) -> Result<(), io::Error> {
+        let close = Request::Close {
+            enclave_port
+        };
+        self.send(&close)?;
+
+        if let Response::Closed = self.receive()? {
+            Ok(())
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
     fn send(&mut self, req: &Request) -> Result<(), io::Error> {
         let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|_e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
         self.stream.write(req.as_slice())?;
