@@ -8,7 +8,7 @@ use crate::sys_common::{FromInner, IntoInner};
 use crate::time::Duration;
 use crate::fmt;
 use crate::mem;
-use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
+use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, ToSocketAddrs};
 use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
@@ -117,9 +117,10 @@ macro_rules! not_available {
     };
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct FdInfo {
     fd_enclave: RawFd,
+    local_addr: String,
     fd_runner: i32,
 }
 static LISTENER_INFO: SyncOnceCell<Arc<Mutex<Vec<FdInfo>>>> = SyncOnceCell::new();
@@ -473,15 +474,23 @@ impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (listener, port, fd) = runner.bind_socket(addr)?;
+        let (listener, port, fd) = runner.bind_socket(addr.clone())?;
         // Store the fd the runner uses for the proxy TCP connection so we can tell it on which
         // socket to accept new connections. It would be cleaner to keep such information in
         // the TcpListener itself. Unfortunately, the code quite heavily relies on the fact
         // that a `TcpListener` only has a `Socket` field, and a `Socket` is a wrapper around a
         // `FileDesc`.
-        store_listener_info(FdInfo{ fd_enclave: listener.as_raw_fd(), fd_runner: fd });
+        store_listener_info(FdInfo{
+            fd_enclave: listener.as_raw_fd(),
+            local_addr: addr,
+            fd_runner: fd
+        });
         let socket = unsafe{ Socket::from_raw_fd(listener.into_raw_fd()) };
         unsafe { Ok(TcpListener { inner: socket }) }
+    }
+
+   fn listener_info(&self) -> Option<FdInfo> {
+        get_listener_info(self.inner.as_raw_fd())
     }
 
     pub fn socket(&self) -> &Socket {
@@ -493,7 +502,13 @@ impl TcpListener {
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        not_available!()
+        self
+            .listener_info()
+            .ok_or(io::ErrorKind::InvalidData)?
+            .local_addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or(io::Error::new(io::ErrorKind::AddrNotAvailable, "Address not recorded"))
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -512,7 +527,7 @@ impl TcpListener {
          *      \-------- proxy --------------/
          */
         // (1) Tell the runner to accept an incoming connection on a specific socket.
-        let listener_info = get_listener_info(self.inner.as_raw_fd())
+        let listener_info = self.listener_info()
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
