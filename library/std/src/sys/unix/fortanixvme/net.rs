@@ -402,8 +402,23 @@ impl TcpStream {
         self.inner.is_write_vectored()
     }
 
+    /// Returns the address of the peer.
+    ///
+    /// # Warning
+    ///
+    /// There is no guarantee that the `TcpStream` actually communicates with the returned `SocketAddr`.
+    /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        not_available!()
+        if let Some(peer) = &self.inner.peer {
+            peer.to_socket_addrs()?
+                .next()
+                .ok_or(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+        } else {
+            // The socket doesn't have the peer address as it was created though the
+            // `FromInner<FileDesc>` trait
+            // PLAT-367 Contact runner to locate the information
+            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+        }
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
