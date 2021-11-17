@@ -16,7 +16,7 @@ use crate::sys::{cvt, cvt_r};
 use fortanix_vme_abi::{self, Addr};
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, Fortanixvme};
-use vsock::{SockAddr as VsockAddr, VsockStream};
+use vsock::{SockAddr as VsockAddr, VsockStream, VsockListener};
 
 pub(crate) extern crate libc as netc;
 
@@ -171,7 +171,13 @@ fn take_incoming_connection_info(runner_port: u32) -> Option<IncomingInfo> {
         .map(|idx| info.remove(idx))
 }
 
-pub struct Socket(FileDesc);
+pub struct Socket{
+    inner: FileDesc,
+    /// The peer the socket is connected to.
+    /// Unfortunately we need to make this an `Option`. `TcpStream` and `TcpListener` need to 
+    /// implement `from_raw_fd`. So we don't always have sufficient information
+    peer: Option<String>,
+}
 
 impl Socket {
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -185,7 +191,10 @@ impl Socket {
     }
 
     pub fn duplicate(&self) -> io::Result<Socket> {
-        self.0.duplicate().map(Socket)
+        Ok(Socket {
+            inner: self.inner.duplicate()?,
+            peer: self.peer.clone(),
+        })
     }
 
     fn recv_with_flags(&self, buf: &mut [u8], flags: c_int) -> io::Result<usize> {
@@ -200,12 +209,12 @@ impl Socket {
     }
 
     pub fn read_vectored(&self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
-        self.0.read_vectored(bufs)
+        self.inner.read_vectored(bufs)
     }
 
     #[inline]
     pub fn is_read_vectored(&self) -> bool {
-        self.0.is_read_vectored()
+        self.inner.is_read_vectored()
     }
 
     pub fn peek(&self, buf: &mut [u8]) -> io::Result<usize> {
@@ -213,16 +222,16 @@ impl Socket {
     }
 
     pub fn write(&self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.inner.write(buf)
     }
 
     pub fn write_vectored(&self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
-        self.0.write_vectored(bufs)
+        self.inner.write_vectored(bufs)
     }
 
     #[inline]
     pub fn is_write_vectored(&self) -> bool {
-        self.0.is_write_vectored()
+        self.inner.is_write_vectored()
     }
 
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
@@ -242,44 +251,54 @@ impl Socket {
         // glibc 2.10 and musl 0.9.5.
         unsafe {
             let fd = cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
-            Ok(Socket(FileDesc::from_raw_fd(fd)))
+            Ok(Socket {
+                inner: FileDesc::from_raw_fd(fd),
+                peer: None
+            })
         }
     }
 }
 
 impl FromInner<FileDesc> for Socket {
     fn from_inner(fd: FileDesc) -> Socket {
-        Socket(fd)
+        Socket {
+            inner: fd,
+            peer: None,
+        }
     }
 }
 
+
 impl IntoInner<FileDesc> for Socket {
     fn into_inner(self) -> FileDesc {
-        self.0
+        self.inner
     }
 }
 
 impl AsFd for Socket {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.0.as_fd()
+        self.inner.as_fd()
     }
 }
 
 impl AsRawFd for Socket {
     fn as_raw_fd(&self) -> RawFd {
-        self.0.as_raw_fd()
+        self.inner.as_raw_fd()
     }
 }
 
 impl IntoRawFd for Socket {
     fn into_raw_fd(self) -> RawFd {
-        self.0.into_raw_fd()
+        self.inner.into_raw_fd()
     }
 }
 
 impl FromRawFd for Socket {
     unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
-        Self(FromRawFd::from_raw_fd(raw_fd))
+        Socket {
+            inner: FromRawFd::from_raw_fd(raw_fd),
+            peer: None,
+        }
     }
 }
 
@@ -287,10 +306,21 @@ pub struct TcpStream {
     pub(crate) inner: Socket,
 }
 
-impl From<VsockStream<Fortanixvme>> for TcpStream {
-    fn from(stream: VsockStream<Fortanixvme>) -> TcpStream {
-        let socket = unsafe{ Socket::from_raw_fd(stream.into_raw_fd()) };
-        TcpStream { inner: socket }
+impl From<(VsockStream<Fortanixvme>, String)> for Socket {
+    fn from(stream: (VsockStream<Fortanixvme>, String)) -> Socket {
+        Socket {
+            inner: unsafe{ FromRawFd::from_raw_fd(stream.0.into_raw_fd()) },
+            peer: Some(stream.1),
+        }
+    }
+}
+
+impl From<(VsockListener<Fortanixvme>, String)> for Socket {
+    fn from(listener: (VsockListener<Fortanixvme>, String)) -> Socket {
+        Socket {
+            inner: unsafe{ FromRawFd::from_raw_fd(listener.0.into_raw_fd()) },
+            peer: Some(listener.1),
+        }
     }
 }
 
@@ -298,8 +328,10 @@ impl TcpStream {
     pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let stream = runner.open_proxy_connection(addr)?;
-        Ok(stream.into())
+        let stream = runner.open_proxy_connection(addr.clone())?;
+        Ok(TcpStream {
+            inner: (stream, addr).into(),
+        })
     }
 
     pub fn connect_timeout(_addr: &SocketAddr, _timeout: Duration) -> io::Result<TcpStream> {
@@ -482,11 +514,12 @@ impl TcpListener {
         // `FileDesc`.
         store_listener_info(FdInfo{
             fd_enclave: listener.as_raw_fd(),
-            local_addr: addr,
+            local_addr: addr.clone(),
             fd_runner: fd
         });
-        let socket = unsafe{ Socket::from_raw_fd(listener.into_raw_fd()) };
-        unsafe { Ok(TcpListener { inner: socket }) }
+        Ok(TcpListener {
+            inner: (listener, addr).into()
+            })
     }
 
    fn listener_info(&self) -> Option<FdInfo> {
@@ -545,7 +578,7 @@ impl TcpListener {
         // (3) Accept the incoming connection from the runner
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
         let mut len = mem::size_of_val(&storage) as libc::socklen_t;
-        let sock_runner = self.inner.accept(&mut storage as *mut _ as *mut _, &mut len)?;
+        let sock_runner = self.inner.accept(&mut storage as *mut _ as *mut _, &mut len)?.inner;
         // Find the previously stored peer address. Unfortunately, we need to store it in a
         // global variable and fetch it here again because of a subtle race condition. When
         // multiple clients are trying to connect on the same port, the peer address received
@@ -555,6 +588,10 @@ impl TcpListener {
         let peer_info = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
         let peer = addr_to_sockaddr(peer_info.peer);
+        let sock_runner = Socket {
+            inner: sock_runner,
+            peer: Some(peer.to_string()),
+        };
         Ok((TcpStream { inner: sock_runner }, peer))
     }
 
