@@ -518,6 +518,9 @@ impl TcpListener {
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
         let (peer, runner_port) = runner.accept(listener_info.fd_runner)?;
+        // Small optimization: No need to keep the connection to the runner while we wait for an
+        // incoming vsock connection in step 3
+        drop(runner);
 
         // (2) Store a mapping `runner_port` -> `peer`, where `runner_port` is the port the runner
         // will connect to the enclave in (3). `peer` is the address of the
