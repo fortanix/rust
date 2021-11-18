@@ -119,21 +119,21 @@ macro_rules! not_available {
 
 #[derive(Clone, Copy, Debug)]
 struct FdInfo {
-    fd: RawFd,
+    fd_enclave: RawFd,
     fd_runner: i32,
 }
-static FD_INFO: SyncOnceCell<Arc<Mutex<Vec<FdInfo>>>> = SyncOnceCell::new();
+static LISTENER_INFO: SyncOnceCell<Arc<Mutex<Vec<FdInfo>>>> = SyncOnceCell::new();
 
-fn fd_info() -> Arc<Mutex<Vec<FdInfo>>> {
-    FD_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
+fn listener_info() -> Arc<Mutex<Vec<FdInfo>>> {
+    LISTENER_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
 }
 
-fn store_fd_info(info: FdInfo) {
-    fd_info().lock().unwrap().push(info);
+fn store_listener_info(info: FdInfo) {
+    listener_info().lock().unwrap().push(info);
 }
 
-fn get_fd_info(local_fd: RawFd) -> Option<FdInfo> {
-    fd_info().lock().unwrap().iter().find_map(|info| if local_fd == info.fd {
+fn get_listener_info(local_fd: RawFd) -> Option<FdInfo> {
+    listener_info().lock().unwrap().iter().find_map(|info| if local_fd == info.fd_enclave {
             Some(info.to_owned())
         } else {
             None
@@ -245,7 +245,7 @@ impl Socket {
         }
     }
 }
-    
+
 impl FromInner<FileDesc> for Socket {
     fn from_inner(fd: FileDesc) -> Socket {
         Socket(fd)
@@ -313,12 +313,22 @@ impl TcpStream {
         self.inner
     }
 
-    pub fn set_read_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
-        not_available!()
+    pub fn set_read_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        if dur == Some(Duration::default()) {
+            Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot set a 0 duration timeout"))
+        } else {
+            // PLAT-368 provide proper implementation
+            Ok(())
+        }
     }
 
-    pub fn set_write_timeout(&self, _dur: Option<Duration>) -> io::Result<()> {
-        not_available!()
+    pub fn set_write_timeout(&self, dur: Option<Duration>) -> io::Result<()> {
+        if dur == Some(Duration::default()) {
+            Err(io::Error::new(io::ErrorKind::InvalidInput, "cannot set a 0 duration timeout"))
+        } else {
+            // PLAT-368 provide proper implementation
+            Ok(())
+        }
     }
 
     pub fn read_timeout(&self) -> io::Result<Option<Duration>> {
@@ -469,7 +479,7 @@ impl TcpListener {
         // the TcpListener itself. Unfortunately, the code quite heavily relies on the fact
         // that a `TcpListener` only has a `Socket` field, and a `Socket` is a wrapper around a
         // `FileDesc`.
-        store_fd_info(FdInfo{ fd: listener.as_raw_fd(), fd_runner: fd });
+        store_listener_info(FdInfo{ fd_enclave: listener.as_raw_fd(), fd_runner: fd });
         let socket = unsafe{ Socket::from_raw_fd(listener.into_raw_fd()) };
         unsafe { Ok(TcpListener { inner: socket }) }
     }
@@ -502,12 +512,12 @@ impl TcpListener {
          *      \-------- proxy --------------/
          */
         // (1) Tell the runner to accept an incoming connection on a specific socket.
-        let fd_info = get_fd_info(self.inner.as_raw_fd())
+        let listener_info = get_listener_info(self.inner.as_raw_fd())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
-        let (peer, runner_port) = runner.accept(fd_info.fd_runner)?;
+        let (peer, runner_port) = runner.accept(listener_info.fd_runner)?;
 
         // (2) Store a mapping `runner_port` -> `peer`, where `runner_port` is the port the runner
         // will connect to the enclave in (3). `peer` is the address of the
