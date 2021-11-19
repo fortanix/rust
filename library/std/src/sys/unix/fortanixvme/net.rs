@@ -187,6 +187,22 @@ pub struct Socket{
 }
 
 impl Socket {
+    fn from_stream(stream: VsockStream<Fortanixvme>, local: Addr, peer: Addr) -> Self {
+        Socket {
+            inner: unsafe{ FromRawFd::from_raw_fd(stream.into_raw_fd()) },
+            local: Some(local),
+            peer: Some(peer),
+        }
+    }
+
+    fn from_listener(listener: VsockListener<Fortanixvme>, local: Addr) -> Self {
+        Socket {
+            inner: unsafe{ FromRawFd::from_raw_fd(listener.into_raw_fd()) },
+            local: Some(local),
+            peer: None,
+        }
+    }
+
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
         let how = match how {
             Shutdown::Write => libc::SHUT_WR,
@@ -317,33 +333,13 @@ pub struct TcpStream {
     pub(crate) inner: Socket,
 }
 
-impl From<(VsockStream<Fortanixvme>, Addr, Addr)> for Socket {
-    fn from(stream: (VsockStream<Fortanixvme>, Addr, Addr)) -> Socket {
-        Socket {
-            inner: unsafe{ FromRawFd::from_raw_fd(stream.0.into_raw_fd()) },
-            local: Some(stream.1),
-            peer: Some(stream.2),
-        }
-    }
-}
-
-impl From<(VsockListener<Fortanixvme>, Addr)> for Socket {
-    fn from(listener: (VsockListener<Fortanixvme>, Addr)) -> Socket {
-        Socket {
-            inner: unsafe{ FromRawFd::from_raw_fd(listener.0.into_raw_fd()) },
-            local: Some(listener.1),
-            peer: None,
-        }
-    }
-}
-
 impl TcpStream {
     pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
         let (stream, local, peer) = runner.open_proxy_connection(addr.clone())?;
         Ok(TcpStream {
-            inner: (stream, local, peer).into(),
+            inner: Socket::from_stream(stream, local, peer),
         })
     }
 
@@ -559,7 +555,7 @@ impl TcpListener {
             fd_runner: fd
         });
         Ok(TcpListener {
-            inner: (listener, local).into()
+            inner: Socket::from_listener(listener, local)
             })
     }
 
