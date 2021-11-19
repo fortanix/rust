@@ -143,6 +143,7 @@ fn get_listener_info(local_fd: RawFd) -> Option<FdInfo> {
 
 #[derive(Clone, Debug)]
 struct IncomingInfo {
+    local: Addr,
     peer: Addr,
     runner_port: u32,
 }
@@ -173,9 +174,15 @@ fn take_incoming_connection_info(runner_port: u32) -> Option<IncomingInfo> {
 
 pub struct Socket{
     inner: FileDesc,
-    /// The peer the socket is connected to.
+    /// The local address the socket is bound to.
     /// Unfortunately we need to make this an `Option`. `TcpStream` and `TcpListener` need to 
     /// implement `from_raw_fd`. So we don't always have sufficient information
+    local: Option<Addr>,
+    /// The peer the socket is connected to.
+    /// Unfortunately we need to make this an `Option`. Value `None` is used when:
+    ///  - There isn't a peer as this Socket is bound to a local address and waiting for incoming
+    ///    connections
+    ///  - The `Socket is created from a raw file descriptor
     peer: Option<Addr>,
 }
 
@@ -193,6 +200,7 @@ impl Socket {
     pub fn duplicate(&self) -> io::Result<Socket> {
         Ok(Socket {
             inner: self.inner.duplicate()?,
+            local: self.local.clone(),
             peer: self.peer.clone(),
         })
     }
@@ -253,7 +261,8 @@ impl Socket {
             let fd = cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
             Ok(Socket {
                 inner: FileDesc::from_raw_fd(fd),
-                peer: None
+                local: None,
+                peer: None,
             })
         }
     }
@@ -263,6 +272,7 @@ impl FromInner<FileDesc> for Socket {
     fn from_inner(fd: FileDesc) -> Socket {
         Socket {
             inner: fd,
+            local: None,
             peer: None,
         }
     }
@@ -297,6 +307,7 @@ impl FromRawFd for Socket {
     unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
         Socket {
             inner: FromRawFd::from_raw_fd(raw_fd),
+            local: None,
             peer: None,
         }
     }
@@ -306,11 +317,12 @@ pub struct TcpStream {
     pub(crate) inner: Socket,
 }
 
-impl From<(VsockStream<Fortanixvme>, Addr)> for Socket {
-    fn from(stream: (VsockStream<Fortanixvme>, Addr)) -> Socket {
+impl From<(VsockStream<Fortanixvme>, Addr, Addr)> for Socket {
+    fn from(stream: (VsockStream<Fortanixvme>, Addr, Addr)) -> Socket {
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(stream.0.into_raw_fd()) },
-            peer: Some(stream.1),
+            local: Some(stream.1),
+            peer: Some(stream.2),
         }
     }
 }
@@ -319,7 +331,8 @@ impl From<(VsockListener<Fortanixvme>, Addr)> for Socket {
     fn from(listener: (VsockListener<Fortanixvme>, Addr)) -> Socket {
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(listener.0.into_raw_fd()) },
-            peer: Some(listener.1),
+            local: Some(listener.1),
+            peer: None,
         }
     }
 }
@@ -328,9 +341,9 @@ impl TcpStream {
     pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (stream, addr) = runner.open_proxy_connection(addr.clone())?;
+        let (stream, local, peer) = runner.open_proxy_connection(addr.clone())?;
         Ok(TcpStream {
-            inner: (stream, addr).into(),
+            inner: (stream, local, peer).into(),
         })
     }
 
@@ -420,7 +433,14 @@ impl TcpStream {
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        not_available!()
+        if let Some(local) = &self.inner.local {
+            Ok(addr_to_sockaddr(local.clone()))
+        } else {
+            // The socket doesn't have the peer address as it was created though the
+            // `FromInner<FileDesc>` trait
+            // PLAT-367 Contact runner to locate the information
+            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+        }
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -548,13 +568,14 @@ impl TcpListener {
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        self
-            .listener_info()
-            .ok_or(io::ErrorKind::InvalidData)?
-            .local_addr
-            .to_socket_addrs()?
-            .next()
-            .ok_or(io::Error::new(io::ErrorKind::AddrNotAvailable, "Address not recorded"))
+        if let Some(local) = &self.inner.local {
+            Ok(addr_to_sockaddr(local.clone()))
+        } else {
+            // The socket doesn't have the local address as it was created though the
+            // `FromInner<FileDesc>` trait
+            // PLAT-367 Contact runner to locate the information
+            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Local address not recorded"))
+        }
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -578,7 +599,7 @@ impl TcpListener {
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
-        let (peer, runner_port) = runner.accept(listener_info.fd_runner)?;
+        let (local, peer, runner_port) = runner.accept(listener_info.fd_runner)?;
         // Small optimization: No need to keep the connection to the runner while we wait for an
         // incoming vsock connection in step 3
         drop(runner);
@@ -586,7 +607,7 @@ impl TcpListener {
         // (2) Store a mapping `runner_port` -> `peer`, where `runner_port` is the port the runner
         // will connect to the enclave in (3). `peer` is the address of the
         // remote client trying to connect to the enclave
-        store_incoming_connection_info(IncomingInfo{ peer: peer.clone(), runner_port });
+        store_incoming_connection_info(IncomingInfo{ local, peer, runner_port });
 
         // (3) Accept the incoming connection from the runner
         let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
@@ -598,13 +619,14 @@ impl TcpListener {
         // in (2), may not be the one proxied through the incoming connection.
         let runner_addr = &mut storage as *const _ as *mut libc::sockaddr_vm;
         let runner_addr = unsafe { VsockAddr::try_from(*runner_addr).expect("Vsock connection") };
-        let peer_info = take_incoming_connection_info(runner_addr.port())
+        let IncomingInfo{ local, peer, .. } = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
         let sock_runner = Socket {
             inner: sock_runner,
-            peer: Some(peer),
+            local: Some(local),
+            peer: Some(peer.clone()),
         };
-        Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer_info.peer)))
+        Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer)))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
