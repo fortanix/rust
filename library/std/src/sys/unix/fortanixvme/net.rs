@@ -497,13 +497,21 @@ impl FromInner<Socket> for TcpStream {
 }
 
 fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
+    fn hton16(x: u16) -> u16 {
+        u16::from_be(x)
+    }
+
+    fn hton32(x: u32) -> u32 {
+        u32::from_be(x)
+    }
+
     match addr {
         Addr::IPv4 { port, ip } => {
             unsafe {
                 let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
                 let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in;
                 (*sockaddr).sin_family = libc::AF_INET as libc::sa_family_t;
-                (*sockaddr).sin_port = port;
+                (*sockaddr).sin_port = hton16(port);
                 (*sockaddr).sin_addr = libc::in_addr { s_addr: u32::from_le_bytes(ip) as libc::in_addr_t };
                 assert!(mem::size_of::<libc::sockaddr_in>() <= mem::size_of::<libc::sockaddr_storage>());
                 SocketAddr::V4(FromInner::from_inner(*sockaddr))
@@ -514,10 +522,10 @@ fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
                 let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
                 let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in6;
                 (*sockaddr).sin6_family = libc::AF_INET6 as libc::sa_family_t;
-                (*sockaddr).sin6_port = port;
-                (*sockaddr).sin6_flowinfo = flowinfo;
+                (*sockaddr).sin6_port = hton16(port);
+                (*sockaddr).sin6_flowinfo = hton32(flowinfo);
                 (*sockaddr).sin6_addr = libc::in6_addr { s6_addr: ip };
-                (*sockaddr).sin6_scope_id = scope_id;
+                (*sockaddr).sin6_scope_id = hton32(scope_id);
                 assert_eq!(mem::size_of::<libc::sockaddr_in6>(), mem::size_of::<libc::sockaddr_storage>());
                 SocketAddr::V6(FromInner::from_inner(*sockaddr))
             }
