@@ -428,6 +428,11 @@ impl TcpStream {
         }
     }
 
+    /// Returns the local address.
+    ///
+    /// # Warning
+    ///
+    /// There is no guarantee that the `TcpStream` actually communicates from the `SocketAddr`.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
         if let Some(local) = &self.inner.local {
             Ok(addr_to_sockaddr(local.clone()))
