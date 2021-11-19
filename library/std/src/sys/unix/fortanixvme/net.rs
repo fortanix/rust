@@ -176,7 +176,7 @@ pub struct Socket{
     /// The peer the socket is connected to.
     /// Unfortunately we need to make this an `Option`. `TcpStream` and `TcpListener` need to 
     /// implement `from_raw_fd`. So we don't always have sufficient information
-    peer: Option<String>,
+    peer: Option<Addr>,
 }
 
 impl Socket {
@@ -306,8 +306,8 @@ pub struct TcpStream {
     pub(crate) inner: Socket,
 }
 
-impl From<(VsockStream<Fortanixvme>, String)> for Socket {
-    fn from(stream: (VsockStream<Fortanixvme>, String)) -> Socket {
+impl From<(VsockStream<Fortanixvme>, Addr)> for Socket {
+    fn from(stream: (VsockStream<Fortanixvme>, Addr)) -> Socket {
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(stream.0.into_raw_fd()) },
             peer: Some(stream.1),
@@ -315,8 +315,8 @@ impl From<(VsockStream<Fortanixvme>, String)> for Socket {
     }
 }
 
-impl From<(VsockListener<Fortanixvme>, String)> for Socket {
-    fn from(listener: (VsockListener<Fortanixvme>, String)) -> Socket {
+impl From<(VsockListener<Fortanixvme>, Addr)> for Socket {
+    fn from(listener: (VsockListener<Fortanixvme>, Addr)) -> Socket {
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(listener.0.into_raw_fd()) },
             peer: Some(listener.1),
@@ -328,7 +328,7 @@ impl TcpStream {
     pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let stream = runner.open_proxy_connection(addr.clone())?;
+        let (stream, addr) = runner.open_proxy_connection(addr.clone())?;
         Ok(TcpStream {
             inner: (stream, addr).into(),
         })
@@ -410,9 +410,7 @@ impl TcpStream {
     /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         if let Some(peer) = &self.inner.peer {
-            peer.to_socket_addrs()?
-                .next()
-                .ok_or(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+            Ok(addr_to_sockaddr(peer.clone()))
         } else {
             // The socket doesn't have the peer address as it was created though the
             // `FromInner<FileDesc>` trait
@@ -521,7 +519,7 @@ impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (listener, port, fd) = runner.bind_socket(addr.clone())?;
+        let (listener, local, fd) = runner.bind_socket(addr.clone())?;
         // Store the fd the runner uses for the proxy TCP connection so we can tell it on which
         // socket to accept new connections. It would be cleaner to keep such information in
         // the TcpListener itself. Unfortunately, the code quite heavily relies on the fact
@@ -533,7 +531,7 @@ impl TcpListener {
             fd_runner: fd
         });
         Ok(TcpListener {
-            inner: (listener, addr).into()
+            inner: (listener, local).into()
             })
     }
 
@@ -602,12 +600,11 @@ impl TcpListener {
         let runner_addr = unsafe { VsockAddr::try_from(*runner_addr).expect("Vsock connection") };
         let peer_info = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
-        let peer = addr_to_sockaddr(peer_info.peer);
         let sock_runner = Socket {
             inner: sock_runner,
-            peer: Some(peer.to_string()),
+            peer: Some(peer),
         };
-        Ok((TcpStream { inner: sock_runner }, peer))
+        Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer_info.peer)))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
