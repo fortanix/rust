@@ -63,13 +63,14 @@ impl Client {
         })
     }
 
-    pub fn open_proxy_connection(&mut self, addr: String) -> Result<VsockStream<Fortanixvme>, io::Error> {
+    pub fn open_proxy_connection(&mut self, addr: String) -> Result<(VsockStream<Fortanixvme>, Addr, Addr), io::Error> {
         let connect = Request::Connect {
             addr
         };
         self.send(&connect)?;
-        if let Response::Connected { proxy_port, .. } = self.receive()? {
-            Self::connect(proxy_port)
+        if let Response::Connected { proxy_port, local, peer } = self.receive()? {
+            let proxy = Self::connect(proxy_port)?;
+            Ok((proxy, local, peer))
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
@@ -78,7 +79,7 @@ impl Client {
     /// Bind a TCP socket in the parent VM to the specified address. Returns the `VsockListener`
     /// listening for incoming connections forwarded by the parent VM and the TCP port the runner
     /// is listening on
-    pub fn bind_socket(&mut self, addr: String) -> Result<(VsockListener<Fortanixvme>, u16, i32), io::Error> {
+    pub fn bind_socket(&mut self, addr: String) -> Result<(VsockListener<Fortanixvme>, Addr, i32), io::Error> {
         // Start listener socket within enclave, waiting for incoming connections from enclave
         // runner
         let listener = VsockListener::bind_with_cid(vsock::VMADDR_CID_ANY)?;
@@ -91,21 +92,21 @@ impl Client {
             enclave_port,
         };
         self.send(&bind)?;
-        if let Response::Bound { port, fd } = self.receive()? {
-            Ok((listener, port, fd))
+        if let Response::Bound { local, fd } = self.receive()? {
+            Ok((listener, local, fd))
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
     }
 
-    pub fn accept(&mut self, fd: i32) -> Result<(Addr, u32), io::Error> {
+    pub fn accept(&mut self, fd: i32) -> Result<(Addr, Addr, u32), io::Error> {
         let accept = Request::Accept {
             fd
         };
         self.send(&accept)?;
 
-        if let Response::IncomingConnection { peer, proxy_port } = self.receive()? {
-            Ok((peer, proxy_port))
+        if let Response::IncomingConnection { local, peer, proxy_port } = self.receive()? {
+            Ok((local, peer, proxy_port))
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
