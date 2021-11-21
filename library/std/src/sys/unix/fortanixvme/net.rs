@@ -134,7 +134,7 @@ fn store_listener_info(info: FdInfo) {
 }
 
 fn get_listener_info(local_fd: RawFd) -> Option<FdInfo> {
-    listener_info().lock().unwrap().iter().find_map(|info| if local_fd == info.fd_enclave {
+    listener_info().lock().unwrap().iter().rev().find_map(|info| if local_fd == info.fd_enclave {
             Some(info.to_owned())
         } else {
             None
