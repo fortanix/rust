@@ -1253,7 +1253,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#54678e0074abcb739474aa57859acf688dd1fe9a"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#c20372154cc363498df268cec7cd01e015575b35"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
@@ -5643,7 +5643,7 @@ checksum = "5fecdca9a5291cc2b8dcf7dc02453fee791a280f3743cb0905f8822ae463b3fe"
 [[package]]
 name = "vsock"
 version = "0.2.4"
-source = "git+https://github.com/fortanix/vsock-rs.git?branch=fortanixvme#a090e2a1268f087bbef0c0b9785bab94c394f3dc"
+source = "git+https://github.com/fortanix/vsock-rs.git?branch=fortanixvme#8c0a6b75e9e0c8f2ce68ad4b7b6d6898852810e7"
 dependencies = [
  "compiler_builtins",
  "getrandom 0.2.3",
