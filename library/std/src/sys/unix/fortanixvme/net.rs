@@ -118,30 +118,6 @@ macro_rules! not_available {
 }
 
 #[derive(Clone, Debug)]
-struct FdInfo {
-    fd_enclave: RawFd,
-    local_addr: String,
-    fd_runner: i32,
-}
-static LISTENER_INFO: SyncOnceCell<Arc<Mutex<Vec<FdInfo>>>> = SyncOnceCell::new();
-
-fn listener_info() -> Arc<Mutex<Vec<FdInfo>>> {
-    LISTENER_INFO.get_or_init(|| Arc::new(Mutex::new(Vec::new()))).clone()
-}
-
-fn store_listener_info(info: FdInfo) {
-    listener_info().lock().unwrap().push(info);
-}
-
-fn get_listener_info(local_fd: RawFd) -> Option<FdInfo> {
-    listener_info().lock().unwrap().iter().rev().find_map(|info| if local_fd == info.fd_enclave {
-            Some(info.to_owned())
-        } else {
-            None
-        })
-}
-
-#[derive(Clone, Debug)]
 struct IncomingInfo {
     local: Addr,
     peer: Addr,
@@ -548,24 +524,10 @@ impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (listener, local, fd) = runner.bind_socket(addr.clone())?;
-        // Store the fd the runner uses for the proxy TCP connection so we can tell it on which
-        // socket to accept new connections. It would be cleaner to keep such information in
-        // the TcpListener itself. Unfortunately, the code quite heavily relies on the fact
-        // that a `TcpListener` only has a `Socket` field, and a `Socket` is a wrapper around a
-        // `FileDesc`.
-        store_listener_info(FdInfo{
-            fd_enclave: listener.as_raw_fd(),
-            local_addr: addr.clone(),
-            fd_runner: fd
-        });
+        let (listener, local) = runner.bind_socket(addr.clone())?;
         Ok(TcpListener {
             inner: Socket::from_listener(listener, local)
             })
-    }
-
-   fn listener_info(&self) -> Option<FdInfo> {
-        get_listener_info(self.inner.as_raw_fd())
     }
 
     pub fn socket(&self) -> &Socket {
@@ -576,15 +538,26 @@ impl TcpListener {
         self.inner
     }
 
-    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+    fn local_addr(&self) -> io::Result<Addr> {
         if let Some(local) = &self.inner.local {
-            Ok(addr_to_sockaddr(local.clone()))
+            Ok(local.clone())
         } else {
             // The socket doesn't have the local address as it was created though the
             // `FromInner<FileDesc>` trait
             // PLAT-367 Contact runner to locate the information
             Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Local address not recorded"))
         }
+    }
+
+    pub fn socket_addr(&self) -> io::Result<SocketAddr> {
+        self.local_addr()
+            .map(|addr| addr_to_sockaddr(addr))
+    }
+
+    fn local_vsock_addr(&self) -> VsockAddr {
+        // Warning: ensure socket isn't closed when its dropped
+        let fd = self.inner.as_raw_fd();
+        VsockAddr::from_raw_fd::<Fortanixvme>(fd).expect("Internal Error: Not a vsock addr")
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -602,13 +575,12 @@ impl TcpListener {
          *     \    \-----  enclave ----/      / (3) Accept new incoming connection from runner
          *      \-------- proxy --------------/
          */
-        // (1) Tell the runner to accept an incoming connection on a specific socket.
-        let listener_info = self.listener_info()
-            .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
+        let local = self.local_vsock_addr();
+        // (1) Tell the runner to accept an incoming connection on a specific port.
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
-        let (local, peer, runner_port) = runner.accept(listener_info.fd_runner)?;
+        let (local, peer, runner_port) = runner.accept(local.port())?;
         // Small optimization: No need to keep the connection to the runner while we wait for an
         // incoming vsock connection in step 3
         drop(runner);
