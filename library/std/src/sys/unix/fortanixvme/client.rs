@@ -1,4 +1,5 @@
 use crate::io::{self, ErrorKind, Read};
+use crate::sys::net::TcpStream;
 use fortanix_vme_abi::{Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
@@ -120,6 +121,34 @@ impl Client {
 
         if let Response::Closed = self.receive()? {
             Ok(())
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
+    pub fn info_listener(&mut self, enclave_port: u32) -> Result<Addr, io::Error> {
+        let info = Request::Info {
+            enclave_port,
+            runner_port: None,
+        };
+        self.send(&info)?;
+
+        if let Response::Info { local, peer } = self.receive()? {
+            Ok(local)
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
+    pub fn info_connection(&mut self, enclave_port: u32, runner_port: u32) -> Result<(Addr, Option<Addr>), io::Error> {
+        let info = Request::Info {
+            enclave_port,
+            runner_port: Some(runner_port),
+        };
+        self.send(&info)?;
+
+        if let Response::Info { local, peer } = self.receive()? {
+            Ok((local, peer))
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }

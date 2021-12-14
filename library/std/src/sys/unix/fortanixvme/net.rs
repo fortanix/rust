@@ -558,10 +558,8 @@ impl TcpListener {
         if let Some(local) = &self.inner.local {
             Ok(local.clone())
         } else {
-            // The socket doesn't have the local address as it was created though the
-            // `FromInner<FileDesc>` trait
-            // PLAT-367 Contact runner to locate the information
-            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Local address not recorded"))
+            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+            runner.info_listener(self.local_vsock_addr()?.port())
         }
     }
 
