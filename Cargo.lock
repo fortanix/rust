@@ -1253,7 +1253,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#c20372154cc363498df268cec7cd01e015575b35"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#4c77b210335d8fdd3422a1ef922244844d22d6ea"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
