@@ -403,6 +403,23 @@ impl TcpStream {
         self.inner.is_write_vectored()
     }
 
+    fn local_vsock_addr(&self) -> io::Result<VsockAddr> {
+        VsockAddr::from_raw_fd::<Fortanixvme>(self.inner.as_raw_fd()).map_err(|e| e.into())
+    }
+
+    fn peer_vsock_addr(&self) -> io::Result<VsockAddr> {
+        VsockAddr::peer_from_raw_fd::<Fortanixvme>(self.inner.as_raw_fd()).map_err(|e| e.into())
+    }
+
+    fn connection_info(&self) -> io::Result<(Addr, Option<Addr>)> {
+        // The socket doesn't have the peer address as it was created though the
+        // `FromInner<FileDesc>` trait
+        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+        let enclave_port = self.local_vsock_addr()?.port();
+        let runner_port = self.peer_vsock_addr()?.port();
+        runner.info_connection(enclave_port, runner_port)
+    }
+
     /// Returns the address of the peer.
     ///
     /// # Warning
@@ -415,8 +432,8 @@ impl TcpStream {
         } else {
             // The socket doesn't have the peer address as it was created though the
             // `FromInner<FileDesc>` trait
-            // PLAT-367 Contact runner to locate the information
-            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+            let peer = self.connection_info()?.1.ok_or(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not available"))?;
+            Ok(addr_to_sockaddr(peer))
         }
     }
 
@@ -432,7 +449,8 @@ impl TcpStream {
             // The socket doesn't have the peer address as it was created though the
             // `FromInner<FileDesc>` trait
             // PLAT-367 Contact runner to locate the information
-            Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "Peer address not recorded"))
+            let peer = self.connection_info()?.0;
+            Ok(addr_to_sockaddr(peer))
         }
     }
 
