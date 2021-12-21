@@ -1,4 +1,5 @@
 use crate::io::{self, ErrorKind, Read};
+use crate::sys::net::TcpStream;
 use fortanix_vme_abi::{Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
@@ -38,6 +39,35 @@ impl From<vsock::Error> for io::Error {
 impl Read for VsockStream<Fortanixvme> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         VsockStream::<Fortanixvme>::read(&mut &*self, buf).map_err(|e| e.into())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ConnectionInfo {
+    Listener {
+        /// The local address the socket is bound to.
+        local: Addr,
+    },
+    Stream {
+        /// The local address the socket is bound to.
+        local: Addr,
+        /// The peer the socket is connected to.
+        peer: Addr,
+    },
+}
+
+impl ConnectionInfo {
+    pub(crate) fn new_stream_info(local: Addr, peer: Addr) -> Self {
+        ConnectionInfo::Stream {
+            local,
+            peer,
+        }
+    }
+
+    pub(crate) fn new_listener_info(local: Addr) -> Self {
+        ConnectionInfo::Listener {
+            local,
+        }
     }
 }
 
@@ -122,6 +152,32 @@ impl Client {
             Ok(())
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
+        }
+    }
+
+    pub(crate) fn info_listener(&mut self, enclave_port: u32) -> Result<ConnectionInfo, io::Error> {
+        let info = Request::Info {
+            enclave_port,
+            runner_port: None,
+        };
+        self.send(&info)?;
+        if let Response::Info { local, peer: None } = self.receive()? {
+            Ok(ConnectionInfo::new_listener_info(local))
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
+        }
+    }
+
+    pub(crate) fn info_connection(&mut self, enclave_port: u32, runner_port: u32) -> Result<ConnectionInfo, io::Error> {
+        let info = Request::Info {
+            enclave_port,
+            runner_port: Some(runner_port),
+        };
+        self.send(&info)?;
+        if let Response::Info { local, peer: Some(peer) } = self.receive()? {
+            Ok(ConnectionInfo::new_stream_info(local, peer))
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
         }
     }
 
