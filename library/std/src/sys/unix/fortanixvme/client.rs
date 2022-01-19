@@ -1,8 +1,10 @@
 use crate::io::{self, ErrorKind, Read};
+use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sys::net::TcpStream;
 use fortanix_vme_abi::{Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
+static INIT: AtomicBool = AtomicBool::new(false);
 const MIN_READ_BUFF: usize = 0x2000;
 
 #[unstable(feature = "fortanixvme", issue = "none")]
@@ -32,6 +34,12 @@ impl From<vsock::Error> for io::Error {
             vsock::Error::WrongAddressType    => io::Error::new(ErrorKind::InvalidInput, err),
             vsock::Error::ZeroDurationTimeout => io::Error::new(ErrorKind::InvalidInput, err),
         }
+    }
+}
+
+fn init() {
+    if !INIT.swap(true, Ordering::SeqCst) {
+        // TODO reserve PCRs
     }
 }
 
