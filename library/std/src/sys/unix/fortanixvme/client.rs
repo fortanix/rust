@@ -1,7 +1,12 @@
 use crate::io::{self, ErrorKind, Read};
 use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sys::net::TcpStream;
+use crate::os::fd::raw::{IntoRawFd, RawFd};
+use crate::fs::OpenOptions;
 use fortanix_vme_abi::{Addr, Response, Request};
+use libc::ioctl;
+use nsm::{self, Nsm};
+use nsm_driver::{self, DEV_FILE, NsmMessage};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
 static INIT: AtomicBool = AtomicBool::new(false);
@@ -37,9 +42,70 @@ impl From<vsock::Error> for io::Error {
     }
 }
 
-fn init() {
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl nsm_driver::Platform for Fortanixvme {
+    fn open_dev() -> i32 {
+        let mut open_options = OpenOptions::new();
+        let open_dev = open_options.read(true).write(true).open(DEV_FILE);
+
+        match open_dev {
+            Ok(open_dev) => {
+                open_dev.into_raw_fd() as i32
+            }
+            Err(e) => {
+                eprintln!("Failed to open NSM driver");
+                -1
+            }
+        }
+    }
+
+    fn nsm_ioctl(fd: i32, message: &mut NsmMessage) -> Option<i32> {
+        // Reimplementation of `nix::request_code_readwrite` to avoid depending on the `nix` crate
+        fn request_code_readwrite(ioctl_magic: u8, nr: libc::c_int, sz: usize) -> libc::c_int {
+            const WRITE: u8 = 1;
+            const READ: u8 = 2;
+            const DIRMASK: libc::c_int = 3;
+            const DIRSHIFT: libc::c_int = 30;
+            const TYPEMASK: libc::c_int = 255;
+            const TYPESHIFT: libc::c_int = 8;
+            const NRMASK: libc::c_int = 255;
+            const NRSHIFT: libc::c_int = 0;
+            const SIZEMASK: libc::c_int = 16383;
+            const SIZESHIFT: libc::c_int = 16;
+            (((READ | WRITE) as libc::c_int & DIRMASK) << DIRSHIFT)
+                | ((ioctl_magic as libc::c_int & TYPEMASK) << TYPESHIFT)
+                | ((nr as libc::c_int & NRMASK) << NRSHIFT)
+                | ((sz as libc::c_int & SIZEMASK) << SIZESHIFT)
+        }
+        let status = unsafe {
+            ioctl(
+                fd,
+                request_code_readwrite(nsm_driver::NSM_IOCTL_MAGIC, 0, crate::mem::size_of::<NsmMessage>()),
+                message,
+            )
+        };
+
+        if status == 0 {
+            // If ioctl() succeeded, the status is the message's response code
+            None
+        } else {
+            // If ioctl() failed, the error is given by errno
+            Some(super::super::os::errno() as i32)
+        }
+    }
+
+    fn close_dev(fd: i32) {
+        unsafe { libc::close(fd as RawFd); }
+    }
+}
+
+fn init() -> Result<(), nsm::Error> {
     if !INIT.swap(true, Ordering::SeqCst) {
-        // TODO reserve PCRs
+        let nsm = Nsm::<Fortanixvme>::new()?;
+        nsm.lock_pcrs(24)?;
+        Ok(())
+    } else {
+        Ok(())
     }
 }
 
@@ -85,14 +151,12 @@ pub struct Client {
 
 impl Client {
     fn connect(port: u32) -> Result<VsockStream<Fortanixvme>, io::Error> {
-        // Try to contact the enclave runner through the hypervisor
-        VsockStream::connect_with_cid_port(vsock::VMADDR_CID_HOST, port)
-            .or_else(|e0| {
-                // When debugging, there may not be a hypervisor. Fall back to local communication
-                // on the same host.
-                VsockStream::connect_with_cid_port(vsock::VMADDR_CID_LOCAL, port)
-                    .map_err(|_e1| io::Error::new(ErrorKind::InvalidData, e0))
-            })
+        let vsock = VsockStream::connect_with_cid_port(vsock::VMADDR_CID_HOST, port)?;
+
+        if let Err(_e) = init() {
+            eprintln!("Failed to init Nitro Security Module");
+        }
+        Ok(vsock)
     }
 
     pub fn new(port: u32) -> Result<Self, io::Error> {
