@@ -533,7 +533,7 @@ fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
                 (*sockaddr).sin6_flowinfo = hton32(flowinfo);
                 (*sockaddr).sin6_addr = libc::in6_addr { s6_addr: ip };
                 (*sockaddr).sin6_scope_id = hton32(scope_id);
-                assert_eq!(mem::size_of::<libc::sockaddr_in6>(), mem::size_of::<libc::sockaddr_storage>());
+                assert!(mem::size_of::<libc::sockaddr_in6>() <= mem::size_of::<libc::sockaddr_storage>());
                 SocketAddr::V6(FromInner::from_inner(*sockaddr))
             }
         }
