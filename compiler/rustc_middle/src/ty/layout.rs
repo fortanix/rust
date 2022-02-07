@@ -2893,7 +2893,7 @@ where
         };
 
         let target = &cx.tcx().sess.target;
-        let target_env_gnu_like = matches!(&target.env[..], "gnu" | "musl");
+        let target_env_gnu_like = matches!(&target.env[..], "gnu" | "musl" | "fortanixvme");
         let win_x64_gnu = target.os == "windows" && target.arch == "x86_64" && target.env == "gnu";
         let linux_s390x_gnu_like =
             target.os == "linux" && target.arch == "s390x" && target_env_gnu_like;

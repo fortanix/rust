@@ -176,6 +176,7 @@ fn copy_third_party_objects(
     }
 
     if target == "x86_64-fortanix-unknown-sgx"
+        || target == "x86_64-unknown-linux-fortanixvme"
         || builder.config.llvm_libunwind == LlvmLibunwind::InTree
             && (target.contains("linux") || target.contains("fuchsia"))
     {
@@ -314,7 +315,7 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
 
         // Help the libc crate compile by assisting it in finding various
         // sysroot native libraries.
-        if target.contains("musl") {
+        if target.contains("musl") || target.contains("fortanixvme") {
             if let Some(p) = builder.musl_libdir(target) {
                 let root = format!("native={}", p.to_str().unwrap());
                 cargo.rustflag("-L").rustflag(&root);

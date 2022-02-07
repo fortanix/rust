@@ -4,6 +4,15 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let target = env::var("TARGET").expect("TARGET was not set");
 
+    if target == "x86_64-unknown-linux-fortanixvme" {
+        let out_dir = env::var("OUT_DIR").expect("OUT_DIR was not set");
+
+        println!("target = {}", target);
+        println!("out_dir = {}", out_dir);
+        let link = out_dir + "/libc.a";
+        std::os::unix::fs::symlink("/usr/local/x86_64-linux-musl/lib/libc.a", link).expect("symlink failed");
+    }
+
     if target.contains("android") {
         let build = cc::Build::new();
 

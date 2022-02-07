@@ -53,6 +53,7 @@ ENV RUST_CONFIGURE_ARGS \
 ENV CFLAGS_x86_64_unknown_linux_fortanixvme="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none \
     -Wl,--compress-debug-sections=none"
 
+# env CC_x86_64_unknown_linux_fortanixvme=musl-gcc
 # To run native tests replace `dist` below with `test`
 
 ENV SCRIPT DESTDIR=/tmp python3 ../x.py install -i --stage 1 --host ../x86_64-unknown-linux-fortanixvme.json --target x86_64-unknown-linux-fortanixvme src library/std --verbose
