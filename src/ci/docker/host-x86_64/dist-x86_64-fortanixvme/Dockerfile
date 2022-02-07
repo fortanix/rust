@@ -1,5 +1,8 @@
 FROM ubuntu:20.04
 
+# make the tzdata prompt non-interactive.
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
   g++ \
   make \
@@ -28,13 +31,14 @@ COPY scripts/musl-toolchain.sh /build/
 # We need to mitigate rust-lang/rust#34978 when compiling musl itself as well
 RUN CFLAGS="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \
     CXXFLAGS="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \
-    REPLACE_CC=1 bash musl-toolchain.sh x86_64 && rm -rf build
+    REPLACE_CC=0 bash musl-toolchain.sh x86_64 && rm -rf build
 
 COPY scripts/sccache.sh /scripts/
 RUN sh /scripts/sccache.sh
 
 ENV RUST_CONFIGURE_ARGS \
       --musl-root-fortanixvme=/usr/local/x86_64-linux-musl \
+      --set target.x86_64-unknown-linux-fortanixvme.crt-static=true \
       --enable-extended \
       --enable-sanitizers \
       --enable-profiler \
@@ -46,8 +50,9 @@ ENV RUST_CONFIGURE_ARGS \
 #
 # See: https://github.com/rust-lang/rust/issues/34978
 # And: https://github.com/rust-lang/rust/issues/59411
-ENV CFLAGS_x86_64_unknown_linux_musl="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none \
+ENV CFLAGS_x86_64_unknown_linux_fortanixvme="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none \
     -Wl,--compress-debug-sections=none"
 
 # To run native tests replace `dist` below with `test`
-ENV SCRIPT python3 ../x.py -i --stage 1 --host ../x86_64-unknown-linux-fortanixvme.json --target x86_64-unknown-linux-fortanixvme compiler/rustc library/std
+
+ENV SCRIPT DESTDIR=/tmp python3 ../x.py install -i --stage 1 --host ../x86_64-unknown-linux-fortanixvme.json --target x86_64-unknown-linux-fortanixvme src library/std --verbose
