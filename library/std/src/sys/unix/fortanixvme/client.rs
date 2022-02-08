@@ -1,5 +1,4 @@
 use crate::io::{self, ErrorKind, Read};
-use crate::sys::net::TcpStream;
 use fortanix_vme_abi::{Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
