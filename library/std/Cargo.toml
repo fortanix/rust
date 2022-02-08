@@ -42,8 +42,8 @@ dlmalloc = { version = "0.2.1", features = ['rustc-dep-of-std'] }
 fortanix-sgx-abi = { version = "0.3.2", features = ['rustc-dep-of-std'] }
 
 [target.x86_64-unknown-linux-fortanixvme.dependencies]
-fortanix-vme-abi = { git = "https://github.com/fortanix/rust-sgx.git", branch = "master", default-features = false, features = ['rustc-dep-of-std'] }
-serde = { git = "https://github.com/fortanix/serde.git", branch = "master", default-features = false, features = ["derive", "rustc-dep-of-std"] }
+fortanix-vme-abi = { git = "https://github.com/fortanix/rust-sgx.git", branch = "raoul/PLAT-355-avoid_automatic_cbor_derive", default-features = false, features = ['rustc-dep-of-std'] }
+serde = { git = "https://github.com/fortanix/serde.git", branch = "master", default-features = false, features = ["rustc-dep-of-std"] }
 serde_cbor = { git = "https://github.com/fortanix/cbor.git", branch = "fortanixvme", default-features = false, features = ["alloc", "rustc-dep-of-std"] }
 vsock = { git = "https://github.com/fortanix/vsock-rs.git", branch = "fortanixvme", default-features = false, features = ['rustc-dep-of-std', 'random_port'] }
 
