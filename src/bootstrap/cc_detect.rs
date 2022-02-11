@@ -42,7 +42,7 @@ fn cc2ar(cc: &Path, target: TargetSelection) -> Option<PathBuf> {
         Some(PathBuf::from(ar))
     } else if target.contains("msvc") {
         None
-    } else if target.contains("musl") {
+    } else if target.contains("musl") || target.contains("fortanixvme") {
         Some(PathBuf::from("ar"))
     } else if target.contains("openbsd") {
         Some(PathBuf::from("ar"))
@@ -88,7 +88,7 @@ pub fn find(build: &mut Build) {
                 if target.contains("msvc") {
                     cfg.static_crt(true);
                 }
-                if target.contains("musl") {
+                if target.contains("musl") || target.contains("fortanixvme") {
                     cfg.static_flag(true);
                 }
             }
@@ -211,7 +211,7 @@ fn set_compiler(
             }
         }
 
-        t if t.contains("musl") => {
+        t if t.contains("musl") || t.contains("fortanixvme") => {
             if let Some(root) = build.musl_root(target) {
                 let guess = root.join("bin/musl-gcc");
                 if guess.exists() {
