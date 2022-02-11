@@ -33,14 +33,17 @@ TARGET=$ARCH-linux-musl
 # Don't depend on the mirrors of sabotage linux that musl-cross-make uses.
 LINUX_HEADERS_SITE=https://ci-mirrors.rust-lang.org/rustc/sabotage-linux-tarballs
 
-OUTPUT=/usr/local
+OUTPUT="${INSTALL_DIR:=/usr/local}"
 shift
 
 # Ancient binutils versions don't understand debug symbols produced by more recent tools.
 # Apparently applying `-fPIC` everywhere allows them to link successfully.
 export CFLAGS="-fPIC $CFLAGS"
 
-git clone https://github.com/richfelker/musl-cross-make # -b v0.9.9
+if [ ! -d "musl-cross-make" ]; then
+    git clone https://github.com/richfelker/musl-cross-make # -b v0.9.9
+fi
+
 cd musl-cross-make
 # A few commits ahead of v0.9.9 to include the cowpatch fix:
 git checkout a54eb56f33f255dfca60be045f12a5cfaf5a72a9
@@ -50,16 +53,24 @@ hide_output make install TARGET=$TARGET MUSL_VER=1.1.24 LINUX_HEADERS_SITE=$LINU
 
 cd -
 
-# Install musl library to make binaries executable
-ln -s $OUTPUT/$TARGET/lib/libc.so /lib/ld-musl-$ARCH.so.1
-echo $OUTPUT/$TARGET/lib >> /etc/ld-musl-$ARCH.path
+if [ "${USER}" == "root" ]; then
+    # Install musl library to make binaries executable
+    if [ ! -f "/lib/ld-musl-$ARCH.so.1" ]; then
+        ln -s $OUTPUT/$TARGET/lib/libc.so /lib/ld-musl-$ARCH.so.1
+    fi
+    echo $OUTPUT/$TARGET/lib >> /etc/ld-musl-$ARCH.path
 
-# Now when musl bootstraps itself create proper toolchain symlinks to make build and tests easier
-if [ "$REPLACE_CC" = "1" ]; then
-    for exec in cc gcc; do
-        ln -s $TARGET-gcc /usr/local/bin/$exec
-    done
-    for exec in cpp c++ g++; do
-        ln -s $TARGET-g++ /usr/local/bin/$exec
-    done
+    # Now when musl bootstraps itself create proper toolchain symlinks to make build and tests easier
+    if [ "$REPLACE_CC" = "1" ]; then
+       for exec in cc gcc; do
+            if [ ! -f "/usr/local/bin/$exec" ]; then
+                ln -s $TARGET-gcc /usr/local/bin/$exec
+            fi
+        done
+        for exec in cpp c++ g++; do
+            if [ ! -f "/usr/local/bin/$exec" ]; then
+                ln -s $TARGET-g++ /usr/local/bin/$exec
+            fi
+        done
+    fi
 fi
