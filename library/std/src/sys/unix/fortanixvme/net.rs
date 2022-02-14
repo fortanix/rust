@@ -1,15 +1,13 @@
 use core::convert::TryFrom;
-use crate::cmp;
 use crate::io::{self, ErrorKind, IoSlice, IoSliceMut};
 use crate::lazy::SyncOnceCell;
-use crate::ops::Deref;
-use crate::sync::{Arc, Mutex, RwLock};
+use crate::sync::Mutex;
 use crate::sys::fd::FileDesc;
 use crate::sys_common::{FromInner, IntoInner};
 use crate::time::Duration;
 use crate::fmt;
 use crate::mem;
-use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr, ToSocketAddrs};
+use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
 use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
@@ -172,29 +170,23 @@ pub struct Socket {
 
 impl Socket {
     fn new(fd: FileDesc, info: ConnectionInfo) -> Self {
-        let cell = SyncOnceCell::new();
-        cell.set(Ok(info));
         Socket {
             inner: fd,
-            info: cell,
+            info: Ok(info).into(),
         }
     }
 
     fn from_stream(stream: VsockStream<Fortanixvme>, local: Addr, peer: Addr) -> Self {
-        let mut info = SyncOnceCell::new();
-        info.set(Ok(ConnectionInfo::new_stream_info(local, peer)));
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(stream.into_raw_fd()) },
-            info, 
+            info: Ok(ConnectionInfo::new_stream_info(local, peer)).into(),
         }
     }
 
     fn from_listener(listener: VsockListener<Fortanixvme>, local: Addr) -> Self {
-        let mut info = SyncOnceCell::new();
-        info.set(Ok(ConnectionInfo::new_listener_info(local)));
         Socket {
             inner: unsafe{ FromRawFd::from_raw_fd(listener.into_raw_fd()) },
-            info,
+            info: Ok(ConnectionInfo::new_listener_info(local)).into(),
         }
     }
 
@@ -515,7 +507,7 @@ fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
     match addr {
         Addr::IPv4 { port, ip } => {
             unsafe {
-                let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+                let mut storage: libc::sockaddr_storage = mem::zeroed();
                 let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in;
                 (*sockaddr).sin_family = libc::AF_INET as libc::sa_family_t;
                 (*sockaddr).sin_port = hton16(port);
@@ -526,7 +518,7 @@ fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
         }
         Addr::IPv6 { ip, port, flowinfo, scope_id } => {
             unsafe {
-                let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+                let mut storage: libc::sockaddr_storage = mem::zeroed();
                 let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in6;
                 (*sockaddr).sin6_family = libc::AF_INET6 as libc::sa_family_t;
                 (*sockaddr).sin6_port = hton16(port);
