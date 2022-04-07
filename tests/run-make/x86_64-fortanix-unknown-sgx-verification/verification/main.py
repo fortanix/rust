@@ -1,0 +1,193 @@
+# https://docs.angr.io/core-concepts/toplevel
+
+import angr
+import hooker
+import sys
+
+from angr.state_plugins.callstack import CallStack
+
+from enclave_state import EnclaveState
+from breakpoints import Breakpoints
+from layout import Layout
+
+class Enclave:
+    MAX_STATES = 10
+
+    def __init__(self, enclave_path):
+        self.enclave = enclave_path
+        project = angr.Project(enclave_path, load_options={'auto_load_libs': False})
+
+        # Hook and simulate specific instructions that are unknown to angr
+        project = hooker.Hooker().setup(project)
+        self.project = project
+        self.locate_symbols()
+
+    def locate_symbols(self):
+        self.sgx_entry = self.project.loader.find_symbol("sgx_entry").rebased_addr
+        self.entry = self.project.loader.find_symbol("entry").rebased_addr
+        self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17hbdab691f05ffa2b8E").rebased_addr
+        self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17hd2e16c07dcdc0fcdE").rebased_addr
+        self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
+
+        print("Located symbols:")
+        print("  sgx_entry:         " + hex(self.sgx_entry))
+        print("  entry:             " + hex(self.entry))
+        print("  copy_to_userspace: " + hex(self.copy_to_userspace))
+
+        #cfg = self.project.analyses.CFGFast()
+        #func = cfg.kb.functions[self.copy_to_userspace]
+        #for block in func.blocks:
+        #    print("block: ")
+        #    block.pp()
+        #print("entry_func: " + func.blocks)
+        #idfer = self.project.analyses.Identifier()
+        #for funcInfo in idfer.func_info:
+        #    print(hex(funcInfo.addr), funcInfo.name)
+
+
+    def verify_abi(self):
+        self.verify_entry()
+
+    def verify_entry(self):
+        print("Specifying initial state")
+        # By default angr concretizes symbolic addresses when they are used as the target of a write.
+        # https://docs.angr.io/advanced-topics/concretization_strategies
+        entry_state = self.project.factory.blank_state(addr=self.sgx_entry, add_options={"SYMBOLIC_WRITE_ADDRESSES"})
+        entry_state.regs.rsp = entry_state.solver.BVS("rsp", 64)
+        entry_state.regs.rdi = entry_state.solver.BVS("rdi", 64)
+
+        print("Verifying...")
+        self.project.factory.block(self.sgx_entry).pp()
+        print("...")
+
+        print("Executing symbolically")
+        assert entry_state.solver.eval(entry_state.regs.rip) == self.sgx_entry
+        sm = self.project.factory.simulation_manager(entry_state)
+        print(sm.explore(find=self.entry))
+
+        # Inspect results
+        # TODO 2 unconstrained path? Need to avoid certain paths (e.g., usercall_ret, ...) but this requires making the symbol global. Alternatively, the initial state can be changed to force testing (non) usercall returns
+        if len(sm.found) > 0:
+            assert not(sm.found[0].solver.satisfiable(extra_constraints=[sm.found[0].registers.load("rip") != self.entry]))
+
+            if sm.found[0].solver.satisfiable(extra_constraints=[sm.found[0].registers.load("rdi") != entry_state.regs.rdi]):
+                print("satisfiable, counter example found!")
+            else:
+                print("not satisfiable: ok, this constraint always holds")
+        else:
+            print("errored: ", sm.errored[0])
+
+    def call_state(self, init_addr, ret_addr):
+        state = self.project.factory.call_state(
+                addr=init_addr,
+                ret_addr=ret_addr,
+                add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"})
+        state.register_plugin('enclave', EnclaveState(self.project))
+        state.enclave.init_trace_and_stack()
+
+        # Fake enclave state
+        state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
+
+        return state
+
+    def simulation_manager(self, state):
+        sm = self.project.factory.simulation_manager(state)
+        self.project, sm = Breakpoints().setup(self.project, sm, Layout())
+        return sm
+
+    def verify_copy_to_userspace(self):
+        def print_states(states, name):
+            print("=[", len(states), name, " states ]=")
+            for idx_state in range(0, len(states)):
+                state = states[idx_state]
+                print("[", name, "state ", idx_state + 1, "/", len(states), "]")
+                state.enclave.print_state()
+                state.enclave.print_call_stack()
+                state.enclave.print_trace()
+                print("")
+
+        def print_errored_states(records):
+            print("=[", len(records), "errored states ]=")
+            for idx_state in range(0, len(records)):
+                state = records[idx_state].state
+                print("[errored state ", idx_state + 1, "/", len(records), "]")
+                print("Error: ", records[idx_state].error)
+                print("Regs:")
+                print(" - %rax = ", state.regs.rax)
+                print(" - %rbx = ", state.regs.rbx)
+                print(" - %rcx = ", state.regs.rcx, " (arg3)")
+                print(" - %rdx = ", state.regs.rdx, " (arg2)")
+                print(" - %rsi = ", state.regs.rsi, " (arg1)")
+                print(" - %rdi = ", state.regs.rdi, " (arg0)")
+                print(" - %r8  = ", state.regs.r8,  " (arg4)")
+                print(" - %r9  = ", state.regs.r9,  " (arg5)")
+                print(" - %r10 = ", state.regs.r10)
+                print(" - %r11 = ", state.regs.r11)
+                print(" - %r12 = ", state.regs.r12)
+                print(" - %r13 = ", state.regs.r13)
+                print(" - %r14 = ", state.regs.r14)
+                print(" - %r15 = ", state.regs.r15)
+                print(" - %rbp = ", state.regs.rbp)
+                print(" - %rsp = ", state.regs.rsp)
+                print(" - %rip = ", state.regs.rip)
+                print(" - %d   = ", state.regs.dflag)
+                print(" - %e   = ", state.regs.eflags)
+                print(" - %r   = ", state.regs.get("rflags"))
+                print("")
+
+        def should_avoid(state):
+            return state.solver.eval(state.regs.rip == self.panic)
+
+        def should_reach(state, end):
+            return state.solver.eval(state.regs.rip == end)
+
+        def track_write(state, msg):
+            length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
+            val = state.inspect.mem_write_expr
+            dest = state.inspect.mem_write_address
+            rip = hex(state.solver.eval(state.regs.rip))
+            print(rip, ': Write', val, 'to', dest, " (", length, " bits)", msg)
+
+        print("Verifying copy_to_userspace implementation...")
+        # Setting up call site
+        end = 0x0
+        copy_to_userspace_state = self.call_state(self.copy_to_userspace, end)
+
+        # Setting up break points
+        copy_to_userspace_state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, "arg"))
+
+        # Running the simulation
+        sm = self.simulation_manager(copy_to_userspace_state)
+        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
+
+        # Print results
+        print(sm)
+        if len(sm.found) == Enclave.MAX_STATES:
+            print("Error: Maximum number of states reached:", Enclave.MAX_STATES)
+            return False
+        elif len(sm.errored) != 0:
+            print("Error: Some states reached an error")
+            print_states(sm.found, "Found")
+            print_errored_states(sm.errored)
+            return False
+        else:
+            print_states(sm.found, "Found")
+            print_errored_states(sm.errored)
+            return True
+
+    def verify_api(self):
+        return self.verify_copy_to_userspace()
+
+    def verify(self):
+        #self.verify_abi()
+        return self.verify_api()
+
+if __name__ == '__main__':
+    if len(sys.argv) != 2:
+        print("Usage: ./" + sys.argv[0] + " <enclave.elf>")
+        exit(-1)
+    else:
+        enclave_path: str = sys.argv[1]
+        enclave = Enclave(enclave_path)
+        if not(enclave.verify()):
+            exit(-1)
