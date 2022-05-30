@@ -29,10 +29,12 @@ class Enclave:
         self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17hbdab691f05ffa2b8E").rebased_addr
         self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17hd2e16c07dcdc0fcdE").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
+        self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
 
         print("Located symbols:")
         print("  sgx_entry:         " + hex(self.sgx_entry))
         print("  entry:             " + hex(self.entry))
+        print("  image_base:        " + hex(self.image_base))
         print("  copy_to_userspace: " + hex(self.copy_to_userspace))
 
         #cfg = self.project.analyses.CFGFast()
@@ -133,9 +135,9 @@ class Enclave:
             print(" - %rbp = ", state.regs.rbp)
             print(" - %rsp = ", state.regs.rsp)
             print(" - %rip = ", state.regs.rip)
-            print(" - %d   = ", state.regs.dflag)
-            print(" - %e   = ", state.regs.eflags)
-            print(" - %r   = ", state.regs.get("rflags"))
+            #print(" - %d   = ", state.regs.dflag)
+            #print(" - %e   = ", state.regs.eflags)
+            #print(" - %r   = ", state.regs.get("rflags"))
             print("")
 
     def process_result(sm):
@@ -157,6 +159,28 @@ class Enclave:
             Enclave.print_errored_states(sm.errored)
             return True
 
+    def verify_image_base(self):
+        def should_avoid(state):
+            return state.solver.eval(state.regs.rip == self.panic)
+
+        def should_reach(state, end):
+            return state.solver.eval(state.regs.rip == end)
+
+        end = 0x0
+        state = self.call_state(self.project.loader.find_symbol("get_image_base").rebased_addr, end, "uint64_t get_image_base(void)")
+
+        sm = self.simulation_manager(state)
+        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
+
+        if not(Enclave.process_result(sm)):
+            return False
+        else:
+            if len(sm.found) != 1:
+                print("Error: Unexpected amount of found states")
+                return False
+            else:
+                assert(sm.found[0].solver.eval(sm.found[0].regs.rax == self.image_base))
+                return True
 
     def verify_copy_to_userspace(self):
         def should_avoid(state):
@@ -189,7 +213,8 @@ class Enclave:
         return Enclave.process_result(sm)
 
     def verify_api(self):
-        return self.verify_copy_to_userspace()
+        return (self.verify_image_base() and
+            self.verify_copy_to_userspace())
 
     def verify(self):
         #self.verify_abi()
