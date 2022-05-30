@@ -1,10 +1,11 @@
 # https://docs.angr.io/core-concepts/toplevel
 
+import archinfo
 import angr
 import hooker
 import sys
 
-from angr.state_plugins.callstack import CallStack
+from angr.calling_conventions import SimCCSystemVAMD64
 
 from enclave_state import EnclaveState
 from breakpoints import Breakpoints
@@ -77,9 +78,12 @@ class Enclave:
         else:
             print("errored: ", sm.errored[0])
 
-    def call_state(self, init_addr, ret_addr):
+    def call_state(self, init_addr, ret_addr, prototype):
+        arch = archinfo.arch_from_id("amd64")
         state = self.project.factory.call_state(
                 addr=init_addr,
+                cc=SimCCSystemVAMD64(arch),
+                prototype=prototype,
                 ret_addr=ret_addr,
                 add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"})
         state.register_plugin('enclave', EnclaveState(self.project))
@@ -95,46 +99,66 @@ class Enclave:
         self.project, sm = Breakpoints().setup(self.project, sm, Layout())
         return sm
 
+    def print_states(states, name):
+        print("=[", len(states), name, " states ]=")
+        for idx_state in range(0, len(states)):
+            state = states[idx_state]
+            print("[", name, "state ", idx_state + 1, "/", len(states), "]")
+            state.enclave.print_state()
+            state.enclave.print_call_stack()
+            state.enclave.print_trace()
+            print("")
+
+    def print_errored_states(records):
+        print("=[", len(records), "errored states ]=")
+        for idx_state in range(0, len(records)):
+            state = records[idx_state].state
+            print("[errored state ", idx_state + 1, "/", len(records), "]")
+            print("Error: ", records[idx_state].error)
+            print("Regs:")
+            print(" - %rax = ", state.regs.rax)
+            print(" - %rbx = ", state.regs.rbx)
+            print(" - %rcx = ", state.regs.rcx, " (arg3)")
+            print(" - %rdx = ", state.regs.rdx, " (arg2)")
+            print(" - %rsi = ", state.regs.rsi, " (arg1)")
+            print(" - %rdi = ", state.regs.rdi, " (arg0)")
+            print(" - %r8  = ", state.regs.r8,  " (arg4)")
+            print(" - %r9  = ", state.regs.r9,  " (arg5)")
+            print(" - %r10 = ", state.regs.r10)
+            print(" - %r11 = ", state.regs.r11)
+            print(" - %r12 = ", state.regs.r12)
+            print(" - %r13 = ", state.regs.r13)
+            print(" - %r14 = ", state.regs.r14)
+            print(" - %r15 = ", state.regs.r15)
+            print(" - %rbp = ", state.regs.rbp)
+            print(" - %rsp = ", state.regs.rsp)
+            print(" - %rip = ", state.regs.rip)
+            print(" - %d   = ", state.regs.dflag)
+            print(" - %e   = ", state.regs.eflags)
+            print(" - %r   = ", state.regs.get("rflags"))
+            print("")
+
+    def process_result(sm):
+        if len(sm.found) == Enclave.MAX_STATES:
+            print("Error: Maximum number of states reached:", Enclave.MAX_STATES)
+            return False
+        elif len(sm.errored) != 0:
+            print("Error: Some states reached an error")
+            Enclave.print_states(sm.found, "Found")
+            Enclave.print_errored_states(sm.errored)
+            return False
+        elif len(sm.unconstrained) != 0:
+            print("Error: Some states reached an unconstrained state")
+            Enclave.print_states(sm.found, "Found")
+            Enclave.print_errored_states(sm.errored)
+            return False
+        else:
+            Enclave.print_states(sm.found, "Found")
+            Enclave.print_errored_states(sm.errored)
+            return True
+
+
     def verify_copy_to_userspace(self):
-        def print_states(states, name):
-            print("=[", len(states), name, " states ]=")
-            for idx_state in range(0, len(states)):
-                state = states[idx_state]
-                print("[", name, "state ", idx_state + 1, "/", len(states), "]")
-                state.enclave.print_state()
-                state.enclave.print_call_stack()
-                state.enclave.print_trace()
-                print("")
-
-        def print_errored_states(records):
-            print("=[", len(records), "errored states ]=")
-            for idx_state in range(0, len(records)):
-                state = records[idx_state].state
-                print("[errored state ", idx_state + 1, "/", len(records), "]")
-                print("Error: ", records[idx_state].error)
-                print("Regs:")
-                print(" - %rax = ", state.regs.rax)
-                print(" - %rbx = ", state.regs.rbx)
-                print(" - %rcx = ", state.regs.rcx, " (arg3)")
-                print(" - %rdx = ", state.regs.rdx, " (arg2)")
-                print(" - %rsi = ", state.regs.rsi, " (arg1)")
-                print(" - %rdi = ", state.regs.rdi, " (arg0)")
-                print(" - %r8  = ", state.regs.r8,  " (arg4)")
-                print(" - %r9  = ", state.regs.r9,  " (arg5)")
-                print(" - %r10 = ", state.regs.r10)
-                print(" - %r11 = ", state.regs.r11)
-                print(" - %r12 = ", state.regs.r12)
-                print(" - %r13 = ", state.regs.r13)
-                print(" - %r14 = ", state.regs.r14)
-                print(" - %r15 = ", state.regs.r15)
-                print(" - %rbp = ", state.regs.rbp)
-                print(" - %rsp = ", state.regs.rsp)
-                print(" - %rip = ", state.regs.rip)
-                print(" - %d   = ", state.regs.dflag)
-                print(" - %e   = ", state.regs.eflags)
-                print(" - %r   = ", state.regs.get("rflags"))
-                print("")
-
         def should_avoid(state):
             return state.solver.eval(state.regs.rip == self.panic)
 
@@ -151,7 +175,7 @@ class Enclave:
         print("Verifying copy_to_userspace implementation...")
         # Setting up call site
         end = 0x0
-        copy_to_userspace_state = self.call_state(self.copy_to_userspace, end)
+        copy_to_userspace_state = self.call_state(self.copy_to_userspace, end, "void copy_to_userspace(uint8_t const *src, uint8_t *dst, size_t len)")
 
         # Setting up break points
         copy_to_userspace_state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, "arg"))
@@ -162,18 +186,7 @@ class Enclave:
 
         # Print results
         print(sm)
-        if len(sm.found) == Enclave.MAX_STATES:
-            print("Error: Maximum number of states reached:", Enclave.MAX_STATES)
-            return False
-        elif len(sm.errored) != 0:
-            print("Error: Some states reached an error")
-            print_states(sm.found, "Found")
-            print_errored_states(sm.errored)
-            return False
-        else:
-            print_states(sm.found, "Found")
-            print_errored_states(sm.errored)
-            return True
+        return Enclave.process_result(sm)
 
     def verify_api(self):
         return self.verify_copy_to_userspace()
