@@ -2,6 +2,7 @@
 
 import archinfo
 import angr
+import claripy
 import hooker
 import sys
 
@@ -37,17 +38,6 @@ class Enclave:
         print("  image_base:        " + hex(self.image_base))
         print("  copy_to_userspace: " + hex(self.copy_to_userspace))
 
-        #cfg = self.project.analyses.CFGFast()
-        #func = cfg.kb.functions[self.copy_to_userspace]
-        #for block in func.blocks:
-        #    print("block: ")
-        #    block.pp()
-        #print("entry_func: " + func.blocks)
-        #idfer = self.project.analyses.Identifier()
-        #for funcInfo in idfer.func_info:
-        #    print(hex(funcInfo.addr), funcInfo.name)
-
-
     def verify_abi(self):
         self.verify_entry()
 
@@ -80,19 +70,21 @@ class Enclave:
         else:
             print("errored: ", sm.errored[0])
 
-    def call_state(self, init_addr, ret_addr, prototype):
+    def call_state(self, addr, *args, **kwargs):
         arch = archinfo.arch_from_id("amd64")
         state = self.project.factory.call_state(
-                addr=init_addr,
+                addr,
+                *args,
                 cc=SimCCSystemVAMD64(arch),
-                prototype=prototype,
-                ret_addr=ret_addr,
+                prototype=kwargs["prototype"],
+                ret_addr=kwargs["ret_addr"],
                 add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"})
         state.register_plugin('enclave', EnclaveState(self.project))
         state.enclave.init_trace_and_stack()
 
         # Fake enclave state
-        state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
+        #state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
 
         return state
 
@@ -166,8 +158,9 @@ class Enclave:
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
+        print("Verifying image_base implementation...")
         end = 0x0
-        state = self.call_state(self.project.loader.find_symbol("get_image_base").rebased_addr, end, "uint64_t get_image_base(void)")
+        state = self.call_state(self.project.loader.find_symbol("get_image_base").rebased_addr, ret_addr=end, prototype="uint64_t get_image_base(void)")
 
         sm = self.simulation_manager(state)
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
@@ -181,6 +174,101 @@ class Enclave:
             else:
                 assert(sm.found[0].solver.eval(sm.found[0].regs.rax == self.image_base))
                 return True
+
+    def verify_is_enclave_range(self):
+        def should_avoid(state):
+            return state.solver.eval(state.regs.rip == self.panic)
+
+        def should_reach(state, end):
+            return state.solver.eval(state.regs.rip == end)
+
+        print("Verifying is_enclave_range implementation...")
+        end = 0x0
+        p = claripy.BVS("p", 64)
+        len_ = claripy.BVS("len", 64)
+
+        state = self.call_state(
+                self.project.loader.find_symbol("verify_is_enclave_range").rebased_addr,
+                p,
+                len_,
+                ret_addr=end,
+                prototype="int is_enclave_range(uint8_t const *p, size_t length)") 
+
+        sm = self.simulation_manager(state)
+        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
+
+        if not(Enclave.process_result(sm)):
+            return False
+        else:
+            for i in range(0, len(sm.found)):
+                print("state: ", i)
+                state = sm.found[i]
+                # Make a symbolic variable for the result
+                result = claripy.BVS("result", 64)
+                state.solver.add(result == state.regs.rax)
+
+                # Make a symbolic variable `ptr` with: `ptr in [p; p + len[`
+                ptr = claripy.BVS("ptr", 64)
+                state.solver.add(p <= ptr)
+                state.solver.add(ptr < p + len_)
+
+                # If `ptr in [image_base; image_base + enclave_size[` the result must always be true
+                # THIS IS WRONG!!
+                #assert(not(state.satisfiable(extra_constraints=(
+                #    self.image_base <= ptr,
+                #    ptr < self.image_base + self.enclave_size,
+                #    result == 0,
+                #    ))))
+
+                # If `ptr not in [image_base; image_base + enclave_size[` the result must always be false
+                if i == 2:
+                    state.solver.add(
+                        claripy.Not(
+                             claripy.And(
+                                 self.image_base <= ptr,
+                                 ptr < self.image_base + self.enclave_size
+                                 )
+                             ))
+                    state.solver.add(result != 0)
+                    assert(state.satisfiable())
+
+                    res_ptr = state.solver.eval(ptr)
+                    state.solver.add(ptr == res_ptr)
+
+                    res_p = state.solver.eval(p)
+                    state.solver.add(p == res_p)
+
+                    res_len_ = state.solver.eval(len_)
+                    state.solver.add(len_ == res_len_)
+
+
+                    print("base = ", hex(self.image_base))
+                    print("enclave_size = ", hex(self.enclave_size))
+                    print("p =", hex(res_p))
+                    print("ptr =", hex(res_ptr))
+                    print("len =", hex(res_len_))
+
+#                    print("ptr = ", hex(state.solver.eval(ptr, extra_constraints=(
+#                        claripy.Not(
+#                             claripy.And(
+#                                 self.image_base <= ptr,
+#                                 ptr < self.image_base + self.enclave_size
+#                                 )
+#                             ),
+#                        result != 0,
+#                        ))))
+                assert(not(state.satisfiable(extra_constraints=(
+                    claripy.Not(
+                         claripy.And(
+                             self.image_base <= ptr,
+                             ptr < self.image_base + self.enclave_size
+                             )
+                         ),
+                    result != 0,
+                    ))))
+
+                #assert(state.solver.eval(state.regs.rax == self.image_base))
+            return True
 
     def verify_copy_to_userspace(self):
         def should_avoid(state):
@@ -199,7 +287,10 @@ class Enclave:
         print("Verifying copy_to_userspace implementation...")
         # Setting up call site
         end = 0x0
-        copy_to_userspace_state = self.call_state(self.copy_to_userspace, end, "void copy_to_userspace(uint8_t const *src, uint8_t *dst, size_t len)")
+        copy_to_userspace_state = self.call_state(
+                self.copy_to_userspace,
+                ret_addr=end,
+                prototype="void copy_to_userspace(uint8_t const *src, uint8_t *dst, size_t len)")
 
         # Setting up break points
         copy_to_userspace_state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, "arg"))
@@ -214,7 +305,8 @@ class Enclave:
 
     def verify_api(self):
         return (self.verify_image_base() and
-            self.verify_copy_to_userspace())
+            self.verify_is_enclave_range())# and
+            #self.verify_copy_to_userspace())
 
     def verify(self):
         #self.verify_abi()
@@ -229,3 +321,5 @@ if __name__ == '__main__':
         enclave = Enclave(enclave_path)
         if not(enclave.verify()):
             exit(-1)
+        else:
+            print("SUCCESS")

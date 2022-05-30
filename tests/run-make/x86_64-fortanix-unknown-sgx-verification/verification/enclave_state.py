@@ -66,7 +66,7 @@ class EnclaveState(angr.SimStatePlugin):
 
     def print_state(self):
         print("Regs:")
-        print(" - %rax = ", self.state.regs.rax)
+        print(" - %rax = ", self.state.regs.rax, " (ret)")
         print(" - %rbx = ", self.state.regs.rbx)
         print(" - %rcx = ", self.state.regs.rcx, " (arg3)")
         print(" - %rdx = ", self.state.regs.rdx, " (arg2)")
