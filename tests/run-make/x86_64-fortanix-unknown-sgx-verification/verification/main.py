@@ -5,6 +5,7 @@ import angr
 import claripy
 import hooker
 import sys
+import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
 
@@ -13,7 +14,7 @@ from breakpoints import Breakpoints
 from layout import Layout
 
 class Enclave:
-    MAX_STATES = 10
+    MAX_STATES = 25
 
     def __init__(self, enclave_path):
         self.enclave = enclave_path
@@ -296,26 +297,143 @@ class Enclave:
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def track_write(state, msg):
+        def is_enclave_range(state, p, length):
+            image_base = self.image_base
+            enclave_size = state.memory.load(self.enclave_size, 8)
+            #print("enclave_size =", enclave_size)
+            #print("image_size =", hex(image_base))
+            
+            ptr = claripy.BVS("ptr", 64)
+
+            # [p; p + length[ may be in enclave range when:
+            # `ptr in [p; p + length[`
+            # and `ptr in [image_base; image_base + enclave_size[`
+            return state.solver.satisfiable(extra_constraints=(
+                p <= ptr,
+                ptr < p + length,
+                self.image_base <= ptr,
+                ptr < (self.image_base + enclave_size),
+                p + enclave_size < pow(2, 64)
+                ))
+
+        def is_stack_range(state, dest, length):
+            print("is_stack_range: dest:", dest, "len:", length)
+            print("is_stack_range: stack base:", hex(self.stack_base))
+            is_on_stack = not(state.solver.satisfiable(extra_constraints=(
+                claripy.Not(
+                    claripy.And(
+                        dest <= self.stack_base,
+                        self.stack_base - 0x1000 < dest
+                    )
+                ),
+                )))
+            print("is on stack:", is_on_stack)
+            return is_on_stack
+
+        def is_aligned64(state, dest):
+            #print("is_stack_range: dest:", dest, "len:", length)
+            #print("is_stack_range: stack base:", hex(self.stack_base))
+            return not(state.solver.satisfiable(extra_constraints=(
+                dest & 0x7 != 0,
+                )))
+
+        def read_instr(state, rip, length):
+            instr = state.memory.load(rip, length)
+            instr = state.solver.eval(instr)
+            instr = instr.to_bytes(length, 'big')
+            #print("instr =", instr, "(type =", type(instr), ")")
+            return instr
+
+        def is_safe_userspace_write(state, rip):
+            # Checks whether we're dealing with this code block:
+            #   22afc:    8c 1f            mov    %ds,(%rdi)
+            #   22afe:    0f 00 2f         verw   (%rdi)
+            #   22b01:    0f ae e8         lfence
+            #   22b04:    88 01            mov    %al,(%rcx)   # <- rip points to this location
+            #   22b06:    0f ae f0         mfence
+            #   22b09:    0f ae e8         lfence
+            opt1 = read_instr(state, rip - 8, 2) == b'\x8c\x1f' and read_instr(state, rip - 6, 3) == b'\x0f\x00\x2f' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x01' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+
+            # Checks whether we're dealing with this code block:
+            #   22b6c:    41 8c 1a         mov    %ds,(%r10)
+            #   22b6f:    41 0f 00 2a      verw   (%r10)
+            #   22b73:    0f ae e8         lfence
+            #   22b76:    88 0e            mov    %cl,(%rsi)
+            #   22b78:    0f ae f0         mfence
+            #   22b7b:    0f ae e8         lfence
+            opt2 = read_instr(state, rip - 10, 3) == b'\x41\x8c\x1a' and read_instr(state, rip - 7, 4) == b'\x41\x0f\x00\x2a' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x0e' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+
+            # Checks whether we're dealing with this code block:
+            #   22bdc:    8c 1e            mov    %ds,(%rsi)
+            #   22bde:    0f 00 2e         verw   (%rsi)
+            #   22be1:    0f ae e8         lfence
+            #   22be4:    88 01            mov    %al,(%rcx)
+            #   22be6:    0f ae f0         mfence
+            #   22be9:    0f ae e8         lfence
+            opt3 = read_instr(state, rip - 8, 2) == b'\x8c\x1e' and read_instr(state, rip - 6, 3) == b'\x0f\x00\x2e' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x01' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+
+            return opt1 or opt2 or opt3
+
+
+        def track_write(state, p):
             length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
             val = state.inspect.mem_write_expr
             dest = state.inspect.mem_write_address
-            rip = hex(state.solver.eval(state.regs.rip))
-            print(rip, ': Write', val, 'to', dest, " (", length, " bits)", msg)
+            rip = state.solver.eval(state.regs.rip)
+
+            # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
+            if not(is_enclave_range(state, dest, length)) and not(is_stack_range(state, dest, length)):
+                if length == 8:
+                    if not is_safe_userspace_write(state, rip):
+                        print("Trying to insecurely write", length/8, " bytes to userspace from", hex(rip))
+                        exit(-1)
+                elif length == 64:
+                    if is_aligned64(state, dest):
+                        print("Writing 8 bytes is ok, if it's aligned")
+                    else:
+                        print("Check (rip = ", rip, ", dest =", dest, ", len =", length / 8, "bytes)")
+                        print("Writing unaligned 8 bytes is insecure")
+                        exit(-3)
+
+                else:
+                    print("Trying to insecurely access userspace")
+                    exit(-2)
+
 
         print("Verifying copy_to_userspace implementation...")
         # Setting up call site
         end = 0x0
-        copy_to_userspace_state = self.call_state(
+        state = self.call_state(
                 self.copy_to_userspace,
                 ret_addr=end,
                 prototype="void copy_to_userspace(uint8_t const *src, uint8_t *dst, size_t len)")
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+
+        image_base = self.image_base
+        enclave_size = state.memory.load(self.enclave_size, 8)
+        #state.regs.rsp = state.solver.BVS("rsp", 64)
+        #stack_base = claripy.BVS("stack_base", 64)
+        #state.solver.add(stack_base == state.regs.rsp)
+        #state.solver.add(0x100000 <= enclave_size)
+        #state.regs.rsp = 0xb00000000
+        self.stack_base = state.solver.eval(state.regs.rsp)
+        print("stack base =", hex(self.stack_base))
 
         # Setting up break points
-        copy_to_userspace_state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, "arg"))
+        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, self.project))
+
+
+        #cfg = self.project.analyses.CFGFast(function_starts=[self.copy_to_userspace])
+        #func = cfg.kb.functions[self.copy_to_userspace]
+        #for block in func.blocks:
+        #    print("block: ")
+        #    block.pp()
+            #print(block.insns())
+        # https://api.angr.io/angr.html?highlight=function#angr.knowledge_plugins.functions.function.Function.blocks
+
 
         # Running the simulation
-        sm = self.simulation_manager(copy_to_userspace_state)
+        sm = self.simulation_manager(state)
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
 
         # Print results
