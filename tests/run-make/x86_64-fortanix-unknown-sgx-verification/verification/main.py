@@ -27,8 +27,8 @@ class Enclave:
     def locate_symbols(self):
         self.sgx_entry = self.project.loader.find_symbol("sgx_entry").rebased_addr
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
-        self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17hbdab691f05ffa2b8E").rebased_addr
-        self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17hd2e16c07dcdc0fcdE").rebased_addr
+        self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE").rebased_addr
+        self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17h5eea59d0f074ef09E").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
 
@@ -84,7 +84,7 @@ class Enclave:
 
         # Fake enclave state
         #state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
-        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        #state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
 
         return state
 
@@ -194,6 +194,11 @@ class Enclave:
                 ret_addr=end,
                 prototype="int is_enclave_range(uint8_t const *p, size_t length)") 
 
+        # Fake enclave state
+        enclave_size = state.solver.BVS("enlave_size", 64);
+        state.memory.store(self.enclave_size, enclave_size)
+
+        # Simulate function call
         sm = self.simulation_manager(state)
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
 
@@ -207,67 +212,81 @@ class Enclave:
                 result = claripy.BVS("result", 64)
                 state.solver.add(result == state.regs.rax)
 
-                # Make a symbolic variable `ptr` with: `ptr in [p; p + len[`
+                # If `p in [image_base; image_base + enclave_size[`
+                # and `p + len_ in [image_base; image_base + enclave_size[`
+                # the result must be true
+                if state.solver.satisfiable(extra_constraints=(
+                    self.image_base <= p,
+                    p < (self.image_base + enclave_size),
+                    self.image_base <= (p + len_),
+                    (p + len_) <= (self.image_base + enclave_size),
+                    result == 0,
+
+                    # Warning: this additional constraint is required because Angr doesn't properly handle
+                    #   the `(p as usize).checked_add(len - 1)` call
+                    p + enclave_size < pow(2, 64)
+                    )):
+
+                    print("Counter examples found:")
+                    result = state.solver._solver.batch_eval([result, p, len_, self.image_base, enclave_size], 3)
+                    for (result, p, len_, base, size) in result:
+                        print("result = ", result)
+                        print("p =", hex(p))
+                        print("len_ =", hex(len_))
+                        print("area range = [", hex(p), ",", hex(p + len_), "[")
+                        print("enclave size =", hex(size))
+                        print("enclave base =", hex(base))
+                        print("enclave range = [", hex(base), ",", hex(base + size), "[")
+                        print("const 0: ", base <= p)
+                        print("const 1: ", p < (base + size))
+                        print("const 2: ", base <= (p + len_))
+                        print("const 3: ", (p + len_) <= (base + size))
+                        print("const 4: ", result == 0)
+                        print("constraints:", state.solver._solver.constraints)
+                        print("")
+
+                    print("Verification failed")
+                    return False
+
+                # If there exists a `ptr` such that `ptr not in [image_base; image_base + enclave_size[`
+                # and `ptr in [p; p + len_[`
+                # the result must be false
                 ptr = claripy.BVS("ptr", 64)
-                state.solver.add(p <= ptr)
-                state.solver.add(ptr < p + len_)
-
-                # If `ptr in [image_base; image_base + enclave_size[` the result must always be true
-                # THIS IS WRONG!!
-                #assert(not(state.satisfiable(extra_constraints=(
-                #    self.image_base <= ptr,
-                #    ptr < self.image_base + self.enclave_size,
-                #    result == 0,
-                #    ))))
-
-                # If `ptr not in [image_base; image_base + enclave_size[` the result must always be false
-                if i == 2:
-                    state.solver.add(
-                        claripy.Not(
-                             claripy.And(
-                                 self.image_base <= ptr,
-                                 ptr < self.image_base + self.enclave_size
-                                 )
-                             ))
-                    state.solver.add(result != 0)
-                    assert(state.satisfiable())
-
-                    res_ptr = state.solver.eval(ptr)
-                    state.solver.add(ptr == res_ptr)
-
-                    res_p = state.solver.eval(p)
-                    state.solver.add(p == res_p)
-
-                    res_len_ = state.solver.eval(len_)
-                    state.solver.add(len_ == res_len_)
-
-
-                    print("base = ", hex(self.image_base))
-                    print("enclave_size = ", hex(self.enclave_size))
-                    print("p =", hex(res_p))
-                    print("ptr =", hex(res_ptr))
-                    print("len =", hex(res_len_))
-
-#                    print("ptr = ", hex(state.solver.eval(ptr, extra_constraints=(
-#                        claripy.Not(
-#                             claripy.And(
-#                                 self.image_base <= ptr,
-#                                 ptr < self.image_base + self.enclave_size
-#                                 )
-#                             ),
-#                        result != 0,
-#                        ))))
-                assert(not(state.satisfiable(extra_constraints=(
+                if state.solver.satisfiable(extra_constraints=(
                     claripy.Not(
-                         claripy.And(
-                             self.image_base <= ptr,
-                             ptr < self.image_base + self.enclave_size
-                             )
-                         ),
+                        claripy.And(
+                            self.image_base <= ptr,
+                            ptr < (self.image_base + enclave_size)
+                        )),
+                    p <= ptr,
+                    ptr < (self.image_base + enclave_size),
                     result != 0,
-                    ))))
 
-                #assert(state.solver.eval(state.regs.rax == self.image_base))
+                    # Warning: this additional constraint is required because Angr doesn't properly handle
+                    #   the `(p as usize).checked_add(len - 1)` call
+                    p + enclave_size < pow(2, 64)
+                    )):
+
+                    print("Counter examples found:")
+                    result = state.solver._solver.batch_eval([result, p, len_, self.image_base, enclave_size], 3)
+                    for (result, p, len_, base, size) in result:
+                        print("result = ", result)
+                        print("p =", hex(p))
+                        print("len_ =", hex(len_))
+                        print("area range = [", hex(p), ",", hex(p + len_), "[")
+                        print("enclave size =", hex(size))
+                        print("enclave base =", hex(base))
+                        print("enclave range = [", hex(base), ",", hex(base + size), "[")
+                        print("const 0: ", base <= p)
+                        print("const 1: ", p < (base + size))
+                        print("const 2: ", base <= (p + len_))
+                        print("const 3: ", (p + len_) <= (base + size))
+                        print("const 4: ", result == 0)
+                        print("constraints:", state.solver._solver.constraints)
+                        print("")
+
+                    print("Verification failed")
+                    return False
             return True
 
     def verify_copy_to_userspace(self):
@@ -305,8 +324,8 @@ class Enclave:
 
     def verify_api(self):
         return (self.verify_image_base() and
-            self.verify_is_enclave_range())# and
-            #self.verify_copy_to_userspace())
+            self.verify_is_enclave_range() and
+            self.verify_copy_to_userspace())
 
     def verify(self):
         #self.verify_abi()
