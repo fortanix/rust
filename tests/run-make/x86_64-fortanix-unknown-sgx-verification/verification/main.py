@@ -13,8 +13,17 @@ from enclave_state import EnclaveState
 from breakpoints import Breakpoints
 from layout import Layout
 
+class CopyToUserspace(angr.SimProcedure):
+    def run(self):
+        print("Simulating copy_to_userspace")
+
+class Usercall(angr.SimProcedure):
+    def run(self):
+        print("Simulating usercall")
+
 class Enclave:
     MAX_STATES = 25
+    GS_SEGMENT_SIZE = 0x1000
 
     def __init__(self, enclave_path):
         self.enclave = enclave_path
@@ -383,13 +392,14 @@ class Enclave:
 
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
             if not(is_enclave_range(state, dest, length)) and not(is_stack_range(state, dest, length)):
+                print("Writing outside of enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
                 if length == 8:
                     if not is_safe_userspace_write(state, rip):
                         print("Trying to insecurely write", length/8, " bytes to userspace from", hex(rip))
                         exit(-1)
                 elif length == 64:
                     if is_aligned64(state, dest):
-                        print("Writing 8 bytes is ok, if it's aligned")
+                        print("Writing aligned 8 bytes is ok")
                     else:
                         print("Check (rip = ", rip, ", dest =", dest, ", len =", length / 8, "bytes)")
                         print("Writing unaligned 8 bytes is insecure")
@@ -440,10 +450,109 @@ class Enclave:
         print(sm)
         return Enclave.process_result(sm)
 
+    def verify_usercalls(self):
+        def should_avoid(state):
+            return state.solver.eval(state.regs.rip == self.panic)
+
+        def should_reach(state, end):
+            return state.solver.eval(state.regs.rip == end)
+
+        def is_enclave_range(state, p, length):
+            image_base = self.image_base
+            enclave_size = state.memory.load(self.enclave_size, 8)
+
+            ptr = claripy.BVS("ptr", 64)
+
+            # [p; p + length[ may be in enclave range when:
+            # `ptr in [p; p + length[`
+            # and `ptr in [image_base; image_base + enclave_size[`
+            return state.solver.satisfiable(extra_constraints=(
+                p <= ptr,
+                ptr < p + length,
+                self.image_base <= ptr,
+                ptr < (self.image_base + enclave_size),
+                p + enclave_size < pow(2, 64)
+                ))
+
+        def is_stack_range(state, dest, length):
+            print("is_stack_range: dest:", dest, "len:", length)
+            print("is_stack_range: stack base:", hex(self.stack_base))
+            is_on_stack = not(state.solver.satisfiable(extra_constraints=(
+                claripy.Not(
+                    claripy.And(
+                        dest <= self.stack_base,
+                        self.stack_base - 0x1000 < dest
+                    )
+                ),
+                )))
+            print("is on stack:", is_on_stack)
+            return is_on_stack
+
+        def is_gs_segment(state, dest, length):
+            print("Check write on gs segment")
+            print("gs segment base:", state.regs.gs)
+            print("write dest:", dest, "len:", length)
+            is_on_gs = not(state.solver.satisfiable(extra_constraints=(
+                state.regs.gs < pow(2, 64) - Enclave.GS_SEGMENT_SIZE,
+                claripy.Not(
+                    claripy.And(
+                        state.regs.gs <= dest,
+                        dest < (state.regs.gs + Enclave.GS_SEGMENT_SIZE)
+                    )
+                ),
+                )))
+            print("is on gs segment:", is_on_gs)
+            return is_on_gs
+
+        def track_write(state, p):
+            length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
+            val = state.inspect.mem_write_expr
+            dest = state.inspect.mem_write_address
+            rip = state.solver.eval(state.regs.rip)
+
+            # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
+            if not(is_enclave_range(state, dest, length) or is_stack_range(state, dest, length) or is_gs_segment(state, dest, length)):
+                print("Writing outside of enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
+                exit(-2)
+            else:
+                print("Writing within enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
+        print("Verifying `insecure_time` implementation...")
+
+        # hooking symbols
+        self.project.hook_symbol('_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE', CopyToUserspace())
+        self.project.hook_symbol('usercall', Usercall())
+
+        # Setting up call site
+        self.insecure_time = self.project.loader.find_symbol("wrap_insecure_time").rebased_addr
+        end = 0x0
+        state = self.call_state(
+                self.insecure_time,
+                ret_addr=end,
+                prototype="uint64_t wrap_insecure_time(void)")
+
+        # Setting up environment
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        self.stack_base = state.solver.eval(state.regs.rsp)
+        state.regs.gs = claripy.BVS("gs", 64)
+
+        # Setting up break points
+        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, self.project))
+
+        # Running the simulation
+        sm = self.simulation_manager(state)
+        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=Enclave.MAX_STATES)
+
+        # Print results
+        print(sm)
+        return Enclave.process_result(sm)
+
     def verify_api(self):
+        # TODO: These calls could interfere with one another. Force the user to select a pass
+#        return self.verify_usercalls()
         return (self.verify_image_base() and
             self.verify_is_enclave_range() and
-            self.verify_copy_to_userspace())
+            self.verify_copy_to_userspace() and
+            self.verify_usercalls())
 
     def verify(self):
         #self.verify_abi()
