@@ -5,6 +5,7 @@ use std::os::fortanix_sgx::mem::{
     image_base,
     is_enclave_range
 };
+use std::os::fortanix_sgx::usercalls::raw::{Fd, Result};
 
 #[no_mangle]
 #[inline(never)]
@@ -20,18 +21,19 @@ pub fn verify_is_enclave_range(p: *const u8, len: usize) -> bool {
 
 #[no_mangle]
 #[inline(never)]
-pub fn wrap_insecure_time() -> Duration {
+pub fn insecure_time() -> Duration {
     std::os::fortanix_sgx::usercalls::insecure_time()
 }
 
-fn main() {
-    println!("Hello, world!");
-    println!("image base: {}", get_image_base());
-    println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
-    println!("time: {}", wrap_insecure_time().as_nanos());
+#[no_mangle]
+#[inline(never)]
+pub fn read(fd: Fd, buf: *mut u8, len: usize) -> (Result, usize) {
+    unsafe { std::os::fortanix_sgx::usercalls::raw::read(fd, buf, len) }
 }
 
-#[test]
-fn test_is_enclave_range() {
-    assert!(!verify_is_enclave_range(0x65408047ffc135fc as u64 as *const u8, 0x8a813ff9002e0000))
+fn main() {
+    println!("image base: {}", get_image_base());
+    println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
+    println!("time: {}", insecure_time().as_nanos());
+    println!("read: {:?}", read(0, std::ptr::null_mut(), 0));
 }

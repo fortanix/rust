@@ -450,7 +450,7 @@ class Enclave:
         print(sm)
         return Enclave.process_result(sm)
 
-    def verify_usercalls(self):
+    def verify_usercall(self, usercall_name, prototype):
         def should_avoid(state):
             return state.solver.eval(state.regs.rip == self.panic)
 
@@ -516,19 +516,19 @@ class Enclave:
                 exit(-2)
             else:
                 print("Writing within enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
-        print("Verifying `insecure_time` implementation...")
+        print("Verifying", usercall_name, "implementation...")
 
         # hooking symbols
         self.project.hook_symbol('_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE', CopyToUserspace())
         self.project.hook_symbol('usercall', Usercall())
 
         # Setting up call site
-        self.insecure_time = self.project.loader.find_symbol("wrap_insecure_time").rebased_addr
+        usercall = self.project.loader.find_symbol(usercall_name).rebased_addr
         end = 0x0
         state = self.call_state(
-                self.insecure_time,
+                usercall,
                 ret_addr=end,
-                prototype="uint64_t wrap_insecure_time(void)")
+                prototype=prototype)
 
         # Setting up environment
         state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
@@ -546,26 +546,29 @@ class Enclave:
         print(sm)
         return Enclave.process_result(sm)
 
-    def verify_api(self):
-        # TODO: These calls could interfere with one another. Force the user to select a pass
-#        return self.verify_usercalls()
-        return (self.verify_image_base() and
-            self.verify_is_enclave_range() and
-            self.verify_copy_to_userspace() and
-            self.verify_usercalls())
-
-    def verify(self):
-        #self.verify_abi()
-        return self.verify_api()
+    def verify(self, verification_pass):
+        if verification_pass == "image_base":
+            return self.verify_image_base()
+        elif verification_pass == "is_enclave_range":
+            return self.verify_is_enclave_range()
+        elif verification_pass == "copy_to_userspace":
+            return self.verify_copy_to_userspace()
+        elif verification_pass == "insecure_time":
+            return self.verify_usercall("insecure_time", "uint64_t insecure_time(void)")
+        else:
+            print("Verification pass not recognized:", verification_pass)
+            return False
 
 if __name__ == '__main__':
-    if len(sys.argv) != 2:
-        print("Usage: ./" + sys.argv[0] + " <enclave.elf>")
+    if len(sys.argv) != 3:
+        print("Usage: ./" + sys.argv[0] + " <enclave.elf> <verification_pass>")
         exit(-1)
     else:
         enclave_path: str = sys.argv[1]
+        verification_pass: str = sys.argv[2]
+
         enclave = Enclave(enclave_path)
-        if not(enclave.verify()):
+        if not(enclave.verify(verification_pass)):
             exit(-1)
         else:
             print("SUCCESS")
