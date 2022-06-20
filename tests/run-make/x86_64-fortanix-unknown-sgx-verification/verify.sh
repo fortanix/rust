@@ -41,5 +41,6 @@ python3 verification/main.py ${enclave} "raw_async_queues"
 python3 verification/main.py ${enclave} "raw_bind_stream"
 python3 verification/main.py ${enclave} "raw_close"
 python3 verification/main.py ${enclave} "raw_connect_stream"
+python3 verification/main.py ${enclave} "raw_exit"
 
 echo "Verification completed successfully!"
