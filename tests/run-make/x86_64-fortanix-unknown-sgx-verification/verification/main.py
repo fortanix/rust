@@ -39,6 +39,7 @@ class Enclave:
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
         self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE").rebased_addr
         self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17h5eea59d0f074ef09E").rebased_addr
+        self.abort_internal = self.project.loader.find_symbol("_ZN3std3sys3sgx14abort_internal17h2ac111d0112dbbb2E").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
 
@@ -47,6 +48,7 @@ class Enclave:
         print("  entry:             " + hex(self.entry))
         print("  image_base:        " + hex(self.image_base))
         print("  copy_to_userspace: " + hex(self.copy_to_userspace))
+        print("  panic:             " + hex(self.panic))
 
     def verify_abi(self):
         self.verify_entry()
@@ -452,7 +454,7 @@ class Enclave:
 
     def verify_usercall(self, usercall_name, prototype):
         def should_avoid(state):
-            return state.solver.eval(state.regs.rip == self.panic)
+            return state.solver.eval(state.regs.rip == self.panic) or state.solver.eval(state.regs.rip == self.abort_internal)
 
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
@@ -557,6 +559,8 @@ class Enclave:
             return self.verify_usercall("insecure_time", "uint64_t insecure_time(void)")
         elif verification_pass == "raw_read":
             return self.verify_usercall("raw_read", "uint64_t read(uint64_t fd, uint8_t *buf, uint64_t len)")
+        elif verification_pass == "raw_read_alloc":
+            return self.verify_usercall("raw_read_alloc", "uint64_t read_alloc(uint64_t fd, uint8_t *buf, uint64_t len)")
         else:
             print("Verification pass not recognized:", verification_pass)
             return False
