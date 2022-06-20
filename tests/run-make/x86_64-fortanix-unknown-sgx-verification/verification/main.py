@@ -565,6 +565,8 @@ class Enclave:
             return self.verify_usercall("raw_accept_stream", "uint64_t raw_accept_stream(uint64_t fd, uint8_t *local, uint8_t *peer)")
         elif verification_pass == "raw_alloc":
             return self.verify_usercall("raw_alloc", "uint64_t *raw_alloc(uint64_t size, uint64_t alignment)")
+        elif verification_pass == "raw_async_queues":
+            return self.verify_usercall("raw_async_queues", "uint64_t *raw_async_queues(uint64_t *usercall_queue, uint64_t *return_queue)")
         else:
             print("Verification pass not recognized:", verification_pass)
             return False
