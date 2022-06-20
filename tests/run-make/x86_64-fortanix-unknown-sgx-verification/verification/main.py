@@ -583,6 +583,8 @@ class Enclave:
             return self.verify_usercall("raw_launch_thread", "void launch_thread()")
         elif verification_pass == "raw_send":
             return self.verify_usercall("raw_send", "void send(uint64_t event_set, uint8_t* tcs)")
+        elif verification_pass == "raw_wait":
+            return self.verify_usercall("raw_wait", "void wait(uint64_t event, uint64_t* timeout)")
         else:
             print("Verification pass not recognized:", verification_pass)
             return False
