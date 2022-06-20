@@ -35,5 +35,6 @@ build
 #python3 verification/main.py ${enclave} "insecure_time"
 python3 verification/main.py ${enclave} "raw_read"
 python3 verification/main.py ${enclave} "raw_read_alloc"
+python3 verification/main.py ${enclave} "raw_accept_stream"
 
 echo "Verification completed successfully!"

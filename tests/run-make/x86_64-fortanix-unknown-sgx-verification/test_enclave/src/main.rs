@@ -37,14 +37,21 @@ pub fn raw_read_alloc(fd: Fd, buf: *mut ByteBuffer) -> Result {
     unsafe { std::os::fortanix_sgx::usercalls::raw::read_alloc(fd, buf) }
 }
 
+#[no_mangle]
+#[inline(never)]
+pub fn raw_accept_stream(fd: Fd, local_addr: *mut ByteBuffer, peer_addr: *mut ByteBuffer) -> (Result, Fd) {
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::accept_stream(fd, local_addr, peer_addr) }
+}
+
 fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
     println!("time: {}", insecure_time().as_nanos());
     println!("raw_read: {:?}", raw_read(0, std::ptr::null_mut(), 0));
     println!("raw_read_alloc: {:?}", raw_read_alloc(0, std::ptr::null_mut()));
+    println!("raw_accept_stream: {:?}", raw_accept_stream(0, std::ptr::null_mut(), std::ptr::null_mut()));
 
 
             //accept_stream, alloc, async_queues, bind_stream, close, connect_stream, exit, flush,
-            //free, insecure_time, launch_thread, read_alloc, send, wait, write,
+            //free, launch_thread, send, wait, write,
 }
