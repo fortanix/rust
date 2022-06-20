@@ -43,5 +43,6 @@ python3 verification/main.py ${enclave} "raw_close"
 python3 verification/main.py ${enclave} "raw_connect_stream"
 python3 verification/main.py ${enclave} "raw_exit"
 python3 verification/main.py ${enclave} "raw_flush"
+python3 verification/main.py ${enclave} "raw_free"
 
 echo "Verification completed successfully!"
