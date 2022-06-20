@@ -27,7 +27,7 @@ pub fn insecure_time() -> Duration {
 
 #[no_mangle]
 #[inline(never)]
-pub fn read(fd: Fd, buf: *mut u8, len: usize) -> (Result, usize) {
+pub fn raw_read(fd: Fd, buf: *mut u8, len: usize) -> (Result, usize) {
     unsafe { std::os::fortanix_sgx::usercalls::raw::read(fd, buf, len) }
 }
 
@@ -35,5 +35,5 @@ fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
     println!("time: {}", insecure_time().as_nanos());
-    println!("read: {:?}", read(0, std::ptr::null_mut(), 0));
+    println!("raw_read: {:?}", raw_read(0, std::ptr::null_mut(), 0));
 }

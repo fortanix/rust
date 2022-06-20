@@ -555,6 +555,8 @@ class Enclave:
             return self.verify_copy_to_userspace()
         elif verification_pass == "insecure_time":
             return self.verify_usercall("insecure_time", "uint64_t insecure_time(void)")
+        elif verification_pass == "raw_read":
+            return self.verify_usercall("raw_read", "uint64_t read(uint64_t fd, uint8_t *buf, uint64_t len)")
         else:
             print("Verification pass not recognized:", verification_pass)
             return False
