@@ -5,7 +5,7 @@ use std::os::fortanix_sgx::mem::{
     image_base,
     is_enclave_range
 };
-use std::os::fortanix_sgx::usercalls::raw::{ByteBuffer, Fd, Result};
+use std::os::fortanix_sgx::usercalls::raw::{ByteBuffer, Fd, FifoDescriptor, Result, Return, Usercall};
 
 #[no_mangle]
 #[inline(never)]
@@ -49,6 +49,12 @@ pub fn raw_alloc(size: usize, alignment: usize) -> (Result, *mut u8) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::alloc(size, alignment) }
 }
 
+#[no_mangle]
+#[inline(never)]
+pub fn raw_async_queues(usercall_queue: *mut FifoDescriptor<Usercall>, return_queue: *mut FifoDescriptor<Return>) -> Result {
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::async_queues(usercall_queue, return_queue) }
+}
+
 fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
@@ -57,6 +63,7 @@ fn main() {
     println!("raw_read_alloc: {:?}", raw_read_alloc(0, std::ptr::null_mut()));
     println!("raw_accept_stream: {:?}", raw_accept_stream(0, std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_alloc: {:?}", raw_alloc(0, 0));
+    println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
 
 
             //accept_stream, alloc, async_queues, bind_stream, close, connect_stream, exit, flush,
