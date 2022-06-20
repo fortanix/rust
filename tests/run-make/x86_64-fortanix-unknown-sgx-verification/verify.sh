@@ -34,5 +34,6 @@ build
 #python3 verification/main.py ${enclave} "copy_to_userspace"
 #python3 verification/main.py ${enclave} "insecure_time"
 python3 verification/main.py ${enclave} "raw_read"
+python3 verification/main.py ${enclave} "raw_read_alloc"
 
 echo "Verification completed successfully!"
