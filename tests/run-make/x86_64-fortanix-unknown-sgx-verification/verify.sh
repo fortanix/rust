@@ -38,5 +38,6 @@ python3 verification/main.py ${enclave} "raw_read_alloc"
 python3 verification/main.py ${enclave} "raw_accept_stream"
 python3 verification/main.py ${enclave} "raw_alloc"
 python3 verification/main.py ${enclave} "raw_async_queues"
+python3 verification/main.py ${enclave} "raw_bind_stream"
 
 echo "Verification completed successfully!"
