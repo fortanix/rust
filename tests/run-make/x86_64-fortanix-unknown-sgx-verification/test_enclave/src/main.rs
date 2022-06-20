@@ -5,7 +5,7 @@ use std::os::fortanix_sgx::mem::{
     image_base,
     is_enclave_range
 };
-use std::os::fortanix_sgx::usercalls::raw::{ByteBuffer, Fd, FifoDescriptor, Result, Return, Usercall};
+use std::os::fortanix_sgx::usercalls::raw::{ByteBuffer, Fd, FifoDescriptor, Result, Return, Tcs, Usercall};
 
 #[no_mangle]
 #[inline(never)]
@@ -97,6 +97,12 @@ pub fn raw_launch_thread() -> Result {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::launch_thread() }
 }
 
+#[no_mangle]
+#[inline(never)]
+pub fn raw_send(event_set: u64, target: Option<Tcs>) -> Result {
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::send(event_set, target) }
+}
+
 fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
@@ -112,6 +118,7 @@ fn main() {
     println!("raw_flush: {:?}", raw_flush(0));
     println!("raw_free: {:?}", raw_free(std::ptr::null_mut(), 0, 0));
     println!("raw_launch_thread: {:?}", raw_launch_thread());
+    println!("raw_send: {:?}", raw_send(0, None));
     println!("raw_exit: {:?}", raw_exit(true));
 
 
