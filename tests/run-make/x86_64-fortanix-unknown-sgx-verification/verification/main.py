@@ -571,6 +571,8 @@ class Enclave:
             return self.verify_usercall("raw_bind_stream", "uint64_t *raw_bind_stream(uint8_t *addr, uint64_t len, uint64_t *local_addr)")
         elif verification_pass == "raw_close":
             return self.verify_usercall("raw_close", "void close(uint64_t fd)")
+        elif verification_pass == "raw_connect_stream":
+            return self.verify_usercall("raw_connect_stream", "void connect_stream(uint8_t *addr, uint64_t len, uint64_t *local_addr, uint64_t *peer_addr)")
         else:
             print("Verification pass not recognized:", verification_pass)
             return False
