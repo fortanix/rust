@@ -91,6 +91,12 @@ pub fn raw_free(ptr: *mut u8, size: usize, alignment: usize) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::free(ptr, size, alignment) }
 }
 
+#[no_mangle]
+#[inline(never)]
+pub fn raw_launch_thread() -> Result {
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::launch_thread() }
+}
+
 fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
@@ -105,6 +111,7 @@ fn main() {
     println!("raw_connect_stream: {:?}", raw_connect_stream(std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_flush: {:?}", raw_flush(0));
     println!("raw_free: {:?}", raw_free(std::ptr::null_mut(), 0, 0));
+    println!("raw_launch_thread: {:?}", raw_launch_thread());
     println!("raw_exit: {:?}", raw_exit(true));
 
 
