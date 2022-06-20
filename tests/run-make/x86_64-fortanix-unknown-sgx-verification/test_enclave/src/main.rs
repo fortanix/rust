@@ -85,6 +85,12 @@ pub fn raw_flush(fd: Fd) -> Result {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::flush(fd) }
 }
 
+#[no_mangle]
+#[inline(never)]
+pub fn raw_free(ptr: *mut u8, size: usize, alignment: usize) {
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::free(ptr, size, alignment) }
+}
+
 fn main() {
     println!("image base: {}", get_image_base());
     println!("is_enclave_range: {}", verify_is_enclave_range(0x0 as _, 10));
@@ -97,8 +103,9 @@ fn main() {
     println!("raw_bind_stream: {:?}", raw_bind_stream(std::ptr::null(), 0, std::ptr::null_mut()));
     println!("raw_close: {:?}", raw_close(0));
     println!("raw_connect_stream: {:?}", raw_connect_stream(std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()));
-    println!("raw_exit: {:?}", raw_exit(true));
     println!("raw_flush: {:?}", raw_flush(0));
+    println!("raw_free: {:?}", raw_free(std::ptr::null_mut(), 0, 0));
+    println!("raw_exit: {:?}", raw_exit(true));
 
 
             //accept_stream, alloc, async_queues, bind_stream, close, connect_stream, exit, flush,
