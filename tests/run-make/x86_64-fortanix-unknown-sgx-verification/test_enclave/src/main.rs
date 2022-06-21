@@ -107,8 +107,8 @@ pub fn connect_stream(addr: &str) -> IoResult<(Fd, String, String)> {
 
 #[no_mangle]
 #[inline(never)]
-pub fn raw_exit(v: bool) {
-    unsafe{ std::os::fortanix_sgx::usercalls::raw::exit(v) }
+pub fn exit(v: bool) {
+    std::os::fortanix_sgx::usercalls::exit(v)
 }
 
 #[no_mangle]
@@ -184,7 +184,7 @@ fn main() {
     println!("raw_send: {:?}", raw_send(0, None));
     println!("raw_wait: {:?}", raw_wait(0, 0));
     println!("raw_write: {:?}", raw_write(0, std::ptr::null_mut(), 0));
-    println!("raw_exit: {:?}", raw_exit(true));
+    println!("exit: {:?}", exit(true));
 
 
             //accept_stream, alloc, async_queues, bind_stream, close, connect_stream, exit, flush,
