@@ -155,6 +155,12 @@ pub fn raw_wait(event: u64, timeout: u64) -> (Result, u64) {
 
 #[no_mangle]
 #[inline(never)]
+pub fn wait(event: u64, timeout: u64) -> IoResult<u64> {
+    std::os::fortanix_sgx::usercalls::wait(event, timeout)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_write(fd: Fd, buf: *mut u8, len: usize) -> (Result, usize) {
     unsafe { std::os::fortanix_sgx::usercalls::raw::write(fd, buf, len) }
 }
@@ -183,6 +189,7 @@ fn main() {
     println!("launch_thread: {:?}", launch_thread());
     println!("raw_send: {:?}", raw_send(0, None));
     println!("raw_wait: {:?}", raw_wait(0, 0));
+    println!("wait: {:?}", wait(0, 0));
     println!("raw_write: {:?}", raw_write(0, std::ptr::null_mut(), 0));
     println!("exit: {:?}", exit(true));
 
