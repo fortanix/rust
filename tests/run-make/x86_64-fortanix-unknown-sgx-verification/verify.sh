@@ -56,6 +56,7 @@ python3 verification/main.py ${enclave} "accept_stream"
 python3 verification/main.py ${enclave} "connect_stream"
 python3 verification/main.py ${enclave} "launch_thread"
 python3 verification/main.py ${enclave} "exit"
+python3 verification/main.py ${enclave} "send"
 python3 verification/main.py ${enclave} "wait"
 
 echo "Verification completed successfully!"
