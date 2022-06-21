@@ -76,6 +76,12 @@ pub fn raw_close(fd: Fd) {
 
 #[no_mangle]
 #[inline(never)]
+pub fn close(fd: Fd) {
+    std::os::fortanix_sgx::usercalls::close(fd)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_connect_stream(addr: *const u8, len: usize, local_addr: *mut ByteBuffer, peer_addr: *mut ByteBuffer) -> (Result, Fd) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::connect_stream(addr, len, local_addr, peer_addr) }
 }
@@ -140,6 +146,7 @@ fn main() {
     println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_bind_stream: {:?}", raw_bind_stream(std::ptr::null(), 0, std::ptr::null_mut()));
     println!("raw_close: {:?}", raw_close(0));
+    println!("close: {:?}", close(0));
     println!("raw_connect_stream: {:?}", raw_connect_stream(std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_flush: {:?}", raw_flush(0));
     println!("flush: {:?}", flush(0));
