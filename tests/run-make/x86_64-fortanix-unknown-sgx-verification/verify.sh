@@ -52,5 +52,6 @@ python3 verification/main.py ${enclave} "raw_write"
 python3 verification/main.py ${enclave} "flush"
 python3 verification/main.py ${enclave} "close"
 python3 verification/main.py ${enclave} "bind_stream"
+python3 verification/main.py ${enclave} "accept_stream"
 
 echo "Verification completed successfully!"

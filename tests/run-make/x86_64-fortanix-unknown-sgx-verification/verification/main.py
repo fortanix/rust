@@ -21,6 +21,10 @@ class Usercall(angr.SimProcedure):
     def run(self):
         print("Simulating usercall")
 
+class StringFromBytebuffer(angr.SimProcedure):
+    def run(self):
+        print("Simulating string_from_bytebuffer")
+
 class Enclave:
     MAX_STATES = 25
     GS_SEGMENT_SIZE = 0x1000
@@ -33,6 +37,15 @@ class Enclave:
         project = hooker.Hooker().setup(project)
         self.project = project
         self.locate_symbols()
+
+    def environment_accept_stream(self, state):
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        self.stack_base = state.solver.eval(state.regs.rsp)
+        state.regs.gs = claripy.BVS("gs", 64)
+
+        # The `accept_stream` assumes a pointer as first argument. This needs to be within the enclave. We mimick
+        # this by placing it on the gs segment
+        state.regs.rdi = state.regs.gs
 
     def locate_symbols(self):
         def find_symbol_matching(name):
@@ -50,13 +63,16 @@ class Enclave:
         self.abort_internal = find_symbol_matching("abort_internal").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
+        self.string_from_bytebuffer = find_symbol_matching("string_from_bytebuffer").rebased_addr
+        self.usercall = self.project.loader.find_symbol("usercall").rebased_addr
 
         print("Located symbols:")
-        print("  sgx_entry:         " + hex(self.sgx_entry))
-        print("  entry:             " + hex(self.entry))
-        print("  image_base:        " + hex(self.image_base))
-        print("  copy_to_userspace: " + hex(self.copy_to_userspace))
-        print("  panic:             " + hex(self.panic))
+        print("  sgx_entry:              " + hex(self.sgx_entry))
+        print("  entry:                  " + hex(self.entry))
+        print("  image_base:             " + hex(self.image_base))
+        print("  copy_to_userspace:      " + hex(self.copy_to_userspace))
+        print("  panic:                  " + hex(self.panic))
+        print("  string_from_bytebuffer: " + hex(self.string_from_bytebuffer))
 
     def verify_abi(self):
         self.verify_entry()
@@ -460,7 +476,7 @@ class Enclave:
         print(sm)
         return Enclave.process_result(sm)
 
-    def verify_usercall(self, usercall_name, prototype):
+    def verify_usercall(self, usercall_name, prototype, environment=None):
         def should_avoid(state):
             return state.solver.eval(state.regs.rip == self.panic) or state.solver.eval(state.regs.rip == self.abort_internal)
 
@@ -529,8 +545,9 @@ class Enclave:
         print("Verifying", usercall_name, "implementation...")
 
         # hooking symbols
-        self.project.hook_symbol('_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE', CopyToUserspace())
-        self.project.hook_symbol('usercall', Usercall())
+        self.project.hook_symbol(self.copy_to_userspace, CopyToUserspace())
+        self.project.hook_symbol(self.usercall, Usercall())
+        self.project.hook_symbol(self.string_from_bytebuffer, StringFromBytebuffer())
 
         # Setting up call site
         usercall = self.project.loader.find_symbol(usercall_name).rebased_addr
@@ -541,9 +558,12 @@ class Enclave:
                 prototype=prototype)
 
         # Setting up environment
-        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
-        self.stack_base = state.solver.eval(state.regs.rsp)
-        state.regs.gs = claripy.BVS("gs", 64)
+        if environment == None:
+            state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+            self.stack_base = state.solver.eval(state.regs.rsp)
+            state.regs.gs = claripy.BVS("gs", 64)
+        else:
+            environment(state)
 
         # Setting up break points
         state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, self.project))
@@ -573,6 +593,8 @@ class Enclave:
             return self.verify_usercall("read_alloc", "uint64_t *read_alloc(uint64_t fd)")
         elif verification_pass == "raw_accept_stream":
             return self.verify_usercall("raw_accept_stream", "uint64_t raw_accept_stream(uint64_t fd, uint8_t *local, uint8_t *peer)")
+        elif verification_pass == "accept_stream":
+            return self.verify_usercall("accept_stream", "uint64_t *accept_stream(uint64_t fd)", self.environment_accept_stream)
         elif verification_pass == "raw_alloc":
             return self.verify_usercall("raw_alloc", "uint64_t *raw_alloc(uint64_t size, uint64_t alignment)")
         elif verification_pass == "raw_async_queues":

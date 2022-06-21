@@ -52,6 +52,13 @@ pub fn raw_accept_stream(fd: Fd, local_addr: *mut ByteBuffer, peer_addr: *mut By
 
 #[no_mangle]
 #[inline(never)]
+pub fn accept_stream() -> IoResult<(Fd, String, String)> {
+    let fd = 0;
+    std::os::fortanix_sgx::usercalls::accept_stream(fd)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_alloc(size: usize, alignment: usize) -> (Result, *mut u8) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::alloc(size, alignment) }
 }
@@ -148,6 +155,7 @@ fn main() {
     println!("raw_read_alloc: {:?}", raw_read_alloc(0, std::ptr::null_mut()));
     println!("read_alloc: {:?}", read_alloc(0));
     println!("raw_accept_stream: {:?}", raw_accept_stream(0, std::ptr::null_mut(), std::ptr::null_mut()));
+    println!("accept_stream: {:?}", accept_stream());
     println!("raw_alloc: {:?}", raw_alloc(0, 0));
     println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_bind_stream: {:?}", raw_bind_stream(std::ptr::null(), 0, std::ptr::null_mut()));
