@@ -597,6 +597,8 @@ class Enclave:
             return self.verify_usercall("accept_stream", "uint64_t *accept_stream(uint64_t fd)", self.environment_accept_stream)
         elif verification_pass == "raw_alloc":
             return self.verify_usercall("raw_alloc", "uint64_t *raw_alloc(uint64_t size, uint64_t alignment)")
+        elif verification_pass == "alloc":
+            return self.verify_usercall("alloc", "uint64_t *alloc(uint64_t size, uint64_t alignment)")
         elif verification_pass == "raw_async_queues":
             return self.verify_usercall("raw_async_queues", "uint64_t *raw_async_queues(uint64_t *usercall_queue, uint64_t *return_queue)")
         elif verification_pass == "raw_bind_stream":

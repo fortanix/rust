@@ -65,6 +65,12 @@ pub fn raw_alloc(size: usize, alignment: usize) -> (Result, *mut u8) {
 
 #[no_mangle]
 #[inline(never)]
+pub fn alloc(size: usize, alignment: usize) -> IoResult<*mut u8> {
+    std::os::fortanix_sgx::usercalls::alloc(size, alignment)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_async_queues(usercall_queue: *mut FifoDescriptor<Usercall>, return_queue: *mut FifoDescriptor<Return>) -> Result {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::async_queues(usercall_queue, return_queue) }
 }
@@ -181,6 +187,7 @@ fn main() {
     println!("raw_accept_stream: {:?}", raw_accept_stream(0, std::ptr::null_mut(), std::ptr::null_mut()));
     println!("accept_stream: {:?}", accept_stream());
     println!("raw_alloc: {:?}", raw_alloc(0, 0));
+    println!("alloc: {:?}", alloc(0, 0));
     println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_bind_stream: {:?}", raw_bind_stream(std::ptr::null(), 0, std::ptr::null_mut()));
     println!("bind_stream: {:?}", bind_stream(""));
