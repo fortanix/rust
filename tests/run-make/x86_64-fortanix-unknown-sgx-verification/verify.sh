@@ -54,5 +54,6 @@ python3 verification/main.py ${enclave} "close"
 python3 verification/main.py ${enclave} "bind_stream"
 python3 verification/main.py ${enclave} "accept_stream"
 python3 verification/main.py ${enclave} "connect_stream"
+python3 verification/main.py ${enclave} "launch_thread"
 
 echo "Verification completed successfully!"
