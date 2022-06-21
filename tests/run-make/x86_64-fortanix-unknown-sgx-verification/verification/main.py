@@ -611,8 +611,8 @@ class Enclave:
             return self.verify_usercall("raw_connect_stream", "void connect_stream(uint8_t *addr, uint64_t len, uint64_t *local_addr, uint64_t *peer_addr)")
         elif verification_pass == "connect_stream":
             return self.verify_usercall("connect_stream", "void connect_stream(uint8_t *addr)")
-        elif verification_pass == "raw_exit":
-            return self.verify_usercall("raw_exit", "void exit(int v)")
+        elif verification_pass == "exit":
+            return self.verify_usercall("exit", "void exit(int v)")
         elif verification_pass == "raw_flush":
             return self.verify_usercall("raw_flush", "void flush(uint64_t fd)")
         elif verification_pass == "flush":
