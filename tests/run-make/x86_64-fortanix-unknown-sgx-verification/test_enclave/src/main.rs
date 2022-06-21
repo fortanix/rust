@@ -137,6 +137,12 @@ pub fn raw_launch_thread() -> Result {
 
 #[no_mangle]
 #[inline(never)]
+pub fn launch_thread() -> IoResult<()> {
+    unsafe{ std::os::fortanix_sgx::usercalls::launch_thread() }
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_send(event_set: u64, target: Option<Tcs>) -> Result {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::send(event_set, target) }
 }
@@ -174,6 +180,7 @@ fn main() {
     println!("flush: {:?}", flush(0));
     println!("raw_free: {:?}", raw_free(std::ptr::null_mut(), 0, 0));
     println!("raw_launch_thread: {:?}", raw_launch_thread());
+    println!("launch_thread: {:?}", launch_thread());
     println!("raw_send: {:?}", raw_send(0, None));
     println!("raw_wait: {:?}", raw_wait(0, 0));
     println!("raw_write: {:?}", raw_write(0, std::ptr::null_mut(), 0));
