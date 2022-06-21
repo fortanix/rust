@@ -70,6 +70,12 @@ pub fn raw_bind_stream(addr: *const u8, len: usize, local_addr: *mut ByteBuffer)
 
 #[no_mangle]
 #[inline(never)]
+pub fn bind_stream(addr: &str) -> IoResult<(Fd, String)> {
+    std::os::fortanix_sgx::usercalls::bind_stream(addr)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_close(fd: Fd) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::close(fd) }
 }
@@ -145,6 +151,7 @@ fn main() {
     println!("raw_alloc: {:?}", raw_alloc(0, 0));
     println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_bind_stream: {:?}", raw_bind_stream(std::ptr::null(), 0, std::ptr::null_mut()));
+    println!("bind_stream: {:?}", bind_stream(""));
     println!("raw_close: {:?}", raw_close(0));
     println!("close: {:?}", close(0));
     println!("raw_connect_stream: {:?}", raw_connect_stream(std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()));
