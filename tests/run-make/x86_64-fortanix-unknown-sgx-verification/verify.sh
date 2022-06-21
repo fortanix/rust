@@ -29,6 +29,7 @@ function build {
 
 build
 
+python3 verification/main.py ${enclave} "read_alloc"
 python3 verification/main.py ${enclave} "image_base"
 python3 verification/main.py ${enclave} "is_enclave_range"
 python3 verification/main.py ${enclave} "copy_to_userspace"

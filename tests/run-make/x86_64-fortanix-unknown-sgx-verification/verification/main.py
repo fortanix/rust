@@ -569,6 +569,8 @@ class Enclave:
             return self.verify_usercall("raw_read", "uint64_t read(uint64_t fd, uint8_t *buf, uint64_t len)")
         elif verification_pass == "raw_read_alloc":
             return self.verify_usercall("raw_read_alloc", "uint64_t read_alloc(uint64_t fd, uint8_t *buf, uint64_t len)")
+        elif verification_pass == "read_alloc":
+            return self.verify_usercall("read_alloc", "uint64_t *read_alloc(uint64_t fd)")
         elif verification_pass == "raw_accept_stream":
             return self.verify_usercall("raw_accept_stream", "uint64_t raw_accept_stream(uint64_t fd, uint8_t *local, uint8_t *peer)")
         elif verification_pass == "raw_alloc":
