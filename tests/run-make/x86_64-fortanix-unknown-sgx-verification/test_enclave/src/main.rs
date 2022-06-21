@@ -39,6 +39,12 @@ pub fn raw_read_alloc(fd: Fd, buf: *mut ByteBuffer) -> Result {
 
 #[no_mangle]
 #[inline(never)]
+pub fn read_alloc(fd: Fd) -> std::io::Result<Vec<u8>> {
+    std::os::fortanix_sgx::usercalls::read_alloc(fd)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_accept_stream(fd: Fd, local_addr: *mut ByteBuffer, peer_addr: *mut ByteBuffer) -> (Result, Fd) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::accept_stream(fd, local_addr, peer_addr) }
 }
@@ -121,6 +127,7 @@ fn main() {
     println!("time: {}", insecure_time().as_nanos());
     println!("raw_read: {:?}", raw_read(0, std::ptr::null_mut(), 0));
     println!("raw_read_alloc: {:?}", raw_read_alloc(0, std::ptr::null_mut()));
+    println!("read_alloc: {:?}", read_alloc(0));
     println!("raw_accept_stream: {:?}", raw_accept_stream(0, std::ptr::null_mut(), std::ptr::null_mut()));
     println!("raw_alloc: {:?}", raw_alloc(0, 0));
     println!("raw_async_queues: {:?}", raw_async_queues(std::ptr::null_mut(), std::ptr::null_mut()));
