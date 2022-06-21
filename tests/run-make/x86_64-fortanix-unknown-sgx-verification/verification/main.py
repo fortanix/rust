@@ -35,11 +35,19 @@ class Enclave:
         self.locate_symbols()
 
     def locate_symbols(self):
+        def find_symbol_matching(name):
+            symbols = list(filter(lambda s : name in s.name, self.project.loader.symbols))
+            if len(symbols) != 1:
+                print("Multiple symbols matching\"", name, "\"found:", symbols)
+                exit(-1)
+            else:
+                return symbols[0]
+
         self.sgx_entry = self.project.loader.find_symbol("sgx_entry").rebased_addr
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
-        self.copy_to_userspace = self.project.loader.find_symbol("_ZN3std3sys3sgx3abi9usercalls5alloc17copy_to_userspace17h1c95d92d7bcf993aE").rebased_addr
-        self.panic = self.project.loader.find_symbol("_ZN4core9panicking5panic17h5eea59d0f074ef09E").rebased_addr
-        self.abort_internal = self.project.loader.find_symbol("_ZN3std3sys3sgx14abort_internal17h2ac111d0112dbbb2E").rebased_addr
+        self.copy_to_userspace = find_symbol_matching("copy_to_userspace").rebased_addr
+        self.panic = find_symbol_matching("panicking5panic").rebased_addr
+        self.abort_internal = find_symbol_matching("abort_internal").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
 
