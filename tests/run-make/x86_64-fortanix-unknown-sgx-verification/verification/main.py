@@ -587,6 +587,8 @@ class Enclave:
             return self.verify_usercall("raw_exit", "void exit(int v)")
         elif verification_pass == "raw_flush":
             return self.verify_usercall("raw_flush", "void flush(uint64_t fd)")
+        elif verification_pass == "flush":
+            return self.verify_usercall("flush", "void flush(uint64_t fd)")
         elif verification_pass == "raw_free":
             return self.verify_usercall("raw_free", "void free(uint64_t *ptr, uint64_t size, uint64_t alignment)")
         elif verification_pass == "raw_launch_thread":
