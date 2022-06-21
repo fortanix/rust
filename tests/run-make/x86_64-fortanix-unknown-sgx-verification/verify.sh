@@ -49,5 +49,6 @@ python3 verification/main.py ${enclave} "raw_launch_thread"
 python3 verification/main.py ${enclave} "raw_send"
 python3 verification/main.py ${enclave} "raw_wait"
 python3 verification/main.py ${enclave} "raw_write"
+python3 verification/main.py ${enclave} "flush"
 
 echo "Verification completed successfully!"
