@@ -101,6 +101,12 @@ pub fn raw_connect_stream(addr: *const u8, len: usize, local_addr: *mut ByteBuff
 
 #[no_mangle]
 #[inline(never)]
+pub fn connect_stream(addr: &str) -> IoResult<(Fd, String, String)> {
+    std::os::fortanix_sgx::usercalls::connect_stream(addr)
+}
+
+#[no_mangle]
+#[inline(never)]
 pub fn raw_exit(v: bool) {
     unsafe{ std::os::fortanix_sgx::usercalls::raw::exit(v) }
 }
@@ -163,6 +169,7 @@ fn main() {
     println!("raw_close: {:?}", raw_close(0));
     println!("close: {:?}", close(0));
     println!("raw_connect_stream: {:?}", raw_connect_stream(std::ptr::null(), 0, std::ptr::null_mut(), std::ptr::null_mut()));
+    println!("connect_stream: {:?}", connect_stream(""));
     println!("raw_flush: {:?}", raw_flush(0));
     println!("flush: {:?}", flush(0));
     println!("raw_free: {:?}", raw_free(std::ptr::null_mut(), 0, 0));
