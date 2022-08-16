@@ -25,6 +25,9 @@ class StringFromBytebuffer(angr.SimProcedure):
     def run(self):
         print("Simulating string_from_bytebuffer")
 
+INSTR_LFENCE = b'\x0f\xae\xe8'
+INSTR_MFENCE = b'\x0f\xae\xf0'
+
 class Enclave:
     MAX_STATES = 25
     GS_SEGMENT_SIZE = 0x1000
@@ -380,34 +383,128 @@ class Enclave:
             return instr
 
         def is_safe_userspace_write(state, rip):
-            # Checks whether we're dealing with this code block:
-            #   22afc:    8c 1f            mov    %ds,(%rdi)
-            #   22afe:    0f 00 2f         verw   (%rdi)
-            #   22b01:    0f ae e8         lfence
-            #   22b04:    88 01            mov    %al,(%rcx)   # <- rip points to this location
-            #   22b06:    0f ae f0         mfence
-            #   22b09:    0f ae e8         lfence
-            opt1 = read_instr(state, rip - 8, 2) == b'\x8c\x1f' and read_instr(state, rip - 6, 3) == b'\x0f\x00\x2f' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x01' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+            def is_mov_prologue(state, rip):
+                def test_mov_prologue(state, rip, instrs):
+                    return read_instr(state, rip - len(instrs), len(instrs)) == instrs
 
-            # Checks whether we're dealing with this code block:
-            #   22b6c:    41 8c 1a         mov    %ds,(%r10)
-            #   22b6f:    41 0f 00 2a      verw   (%r10)
-            #   22b73:    0f ae e8         lfence
-            #   22b76:    88 0e            mov    %cl,(%rsi)
-            #   22b78:    0f ae f0         mfence
-            #   22b7b:    0f ae e8         lfence
-            opt2 = read_instr(state, rip - 10, 3) == b'\x41\x8c\x1a' and read_instr(state, rip - 7, 4) == b'\x41\x0f\x00\x2a' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x0e' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+                # mov    %ds,(%rax)
+                MOV_DS_TO_PTR_RAX = b'\x8c\x18'
 
-            # Checks whether we're dealing with this code block:
-            #   22bdc:    8c 1e            mov    %ds,(%rsi)
-            #   22bde:    0f 00 2e         verw   (%rsi)
-            #   22be1:    0f ae e8         lfence
-            #   22be4:    88 01            mov    %al,(%rcx)
-            #   22be6:    0f ae f0         mfence
-            #   22be9:    0f ae e8         lfence
-            opt3 = read_instr(state, rip - 8, 2) == b'\x8c\x1e' and read_instr(state, rip - 6, 3) == b'\x0f\x00\x2e' and read_instr(state, rip - 3, 3) == b'\x0f\xae\xe8' and read_instr(state, rip, 2) == b'\x88\x01' and read_instr(state, rip + 2, 3) == b'\x0f\xae\xf0' and read_instr(state, rip + 5, 3) == b'\x0f\xae\xe8'
+                # mov    %ds,(%rbx)
+                MOV_DS_TO_PTR_RBX = b'\x8c\x1b'
 
-            return opt1 or opt2 or opt3
+                # mov    %ds,(%rcx)
+                MOV_DS_TO_PTR_RCX = b'\x8c\x19'
+
+                # mov    %ds,(%rdx)
+                MOV_DS_TO_PTR_RDX = b'\x8c\x1a'
+
+                # mov    %ds,(%rsi)
+                MOV_DS_TO_PTR_RSI = b'\x8c\x1e'
+
+                # mov    %ds,(%rdi)
+                MOV_DS_TO_PTR_RDI = b'\x8c\x1f'
+
+                # mov    %ds,(%r8)
+                MOV_DS_TO_PTR_R8 = b'\x41\x8c\x18'
+
+                # mov    %ds,(%r9)
+                MOV_DS_TO_PTR_R9 = b'\x41\x8c\x19'
+
+                # mov    %ds,(%r10)
+                MOV_DS_TO_PTR_R10 = b'\x41\x8c\x1a'
+
+                # mov    %ds,(%r11)
+                MOV_DS_TO_PTR_R11 = b'\x41\x8c\x1b'
+
+                # mov    %ds,(%r12)
+                MOV_DS_TO_PTR_R12 = b'\x41\x8c\x1c\x24'
+
+                # mov    %ds,(%r13)
+                MOV_DS_TO_PTR_R13 = b'\x41\x8c\x5d\x00'
+
+                # mov    %ds,(%r14)
+                MOV_DS_TO_PTR_R14 = b'\x41\x8c\x1e'
+
+                # mov    %ds,(%r15)
+                MOV_DS_TO_PTR_R15 = b'\x41\x8c\x1f'
+
+
+                # 0f 00 28             	verw   (%rax)
+                VERW_RAX = b'\x0f\x00\x28'
+
+                # 0f 00 2b             	verw   (%rbx)
+                VERW_RBX = b'\x0f\x00\x2b'
+
+                # 0f 00 29             	verw   (%rcx)
+                VERW_RCX = b'\x0f\x00\x29'
+
+                # 0f 00 2a             	verw   (%rdx)
+                VERW_RDX = b'\x0f\x00\x2a'
+
+                # 0f 00 2e             	verw   (%rsi)
+                VERW_RSI = b'\x0f\x00\x2e'
+
+                # 0f 00 2f             	verw   (%rdi)
+                VERW_RDI = b'\x0f\x00\x2f'
+
+                # 41 0f 00 28          	verw   (%r8)
+                VERW_R8 = b'\x41\x0f\x00\x28'
+
+                # 41 0f 00 29          	verw   (%r9)
+                VERW_R9 = b'\x41\x0f\x00\x29'
+
+                # 41 0f 00 2a          	verw   (%r10)
+                VERW_R10 = b'\x41\x0f\x00\x2a'
+
+                # 41 0f 00 2b          	verw   (%r11)
+                VERW_R11 = b'\x41\x0f\x00\x2b'
+
+                # 41 0f 00 2c 24       	verw   (%r12)
+                VERW_R12 = b'\x41\x0f\x00\x2c'
+
+                # 41 0f 00 6d 00       	verw   0x0(%r13)
+                VERW_R13 = b'\x41\x0f\x00\x6d\x00'
+
+                # 41 0f 00 2e          	verw   (%r14)
+                VERW_R14 = b'\x41\x0f\x00\x2e'
+
+                # 41 0f 00 2f          	verw   (%r15)
+                VERW_R15 = b'\x41\x0f\x00\x2f'
+
+                PROLOGUES = [
+                    MOV_DS_TO_PTR_RAX + VERW_RAX + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_RBX + VERW_RBX + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_RCX + VERW_RCX + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_RDX + VERW_RDX + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_RSI + VERW_RSI + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_RDI + VERW_RDI + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R8  + VERW_R8  + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R9  + VERW_R9  + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R10 + VERW_R10 + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R11 + VERW_R11 + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R12 + VERW_R12 + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R13 + VERW_R13 + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R14 + VERW_R14 + INSTR_LFENCE,
+                    MOV_DS_TO_PTR_R15 + VERW_R15 + INSTR_LFENCE]
+
+                for prologue in PROLOGUES:
+                    if test_mov_prologue(state, rip, prologue):
+                        return True
+                return False
+
+            def is_mov_epilogue(state, rip):
+                def test_mov_epilogue(state, rip, instrs):
+                    return read_instr(state, rip, len(instrs)) == instrs
+                return test_mov_epilogue(state, rip, INSTR_MFENCE + INSTR_LFENCE)
+
+            if is_mov_prologue(state, rip):
+                print("found prologue!")
+
+            if is_mov_epilogue(state, rip + 2):
+                print("found epilogue")
+
+            return is_mov_prologue(state, rip) and is_mov_epilogue(state, rip + 2)
 
 
         def track_write(state, p):

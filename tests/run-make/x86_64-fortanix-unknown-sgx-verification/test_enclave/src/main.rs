@@ -72,7 +72,7 @@ pub fn alloc(size: usize, alignment: usize) -> IoResult<*mut u8> {
 #[no_mangle]
 #[inline(never)]
 pub fn raw_async_queues(usercall_queue: *mut FifoDescriptor<Usercall>, return_queue: *mut FifoDescriptor<Return>) -> Result {
-    unsafe{ std::os::fortanix_sgx::usercalls::raw::async_queues(usercall_queue, return_queue) }
+    unsafe{ std::os::fortanix_sgx::usercalls::raw::async_queues(usercall_queue, return_queue, std::ptr::null_mut()) }
 }
 
 #[no_mangle]
