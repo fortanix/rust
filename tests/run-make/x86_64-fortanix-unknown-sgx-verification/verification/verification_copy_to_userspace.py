@@ -12,7 +12,7 @@ class VerificationCopyToUserspace(EnclaveVerification):
 
     def verify(self):
         def should_avoid(state):
-            return state.solver.eval(state.regs.rip == self.panic)
+            return state.solver.eval(state.regs.rip == self.panic) or state.solver.eval(state.regs.rip == self.panic_with_hook)
 
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
@@ -51,8 +51,6 @@ class VerificationCopyToUserspace(EnclaveVerification):
             return is_on_stack
 
         def is_aligned64(state, dest):
-            #print("is_stack_range: dest:", dest, "len:", length)
-            #print("is_stack_range: stack base:", hex(self.stack_base))
             return not(state.solver.satisfiable(extra_constraints=(
                 dest & 0x7 != 0,
                 )))
@@ -206,8 +204,30 @@ class VerificationCopyToUserspace(EnclaveVerification):
                     if is_aligned64(state, dest):
                         print("Writing aligned 8 bytes is ok")
                     else:
-                        print("Check (rip = ", rip, ", dest =", dest, ", len =", length / 8, "bytes)")
+                        print("Check (rip = ", hex(rip), ", dest =", dest, ", len =", length / 8, "bytes)")
                         print("Writing unaligned 8 bytes is insecure")
+
+                        state.enclave.print_state()
+                        state.enclave.print_call_stack()
+                        state.enclave.print_trace()
+                        print("Regs:")
+                        print(" - %rax = ", state.regs.rax)
+                        print(" - %rbx = ", state.regs.rbx)
+                        print(" - %rcx = ", state.regs.rcx, " (arg3)")
+                        print(" - %rdx = ", state.regs.rdx, " (arg2)")
+                        print(" - %rsi = ", state.regs.rsi, " (arg1)")
+                        print(" - %rdi = ", state.regs.rdi, " (arg0)")
+                        print(" - %r8  = ", state.regs.r8,  " (arg4)")
+                        print(" - %r9  = ", state.regs.r9,  " (arg5)")
+                        print(" - %r10 = ", state.regs.r10)
+                        print(" - %r11 = ", state.regs.r11)
+                        print(" - %r12 = ", state.regs.r12)
+                        print(" - %r13 = ", state.regs.r13)
+                        print(" - %r14 = ", state.regs.r14)
+                        print(" - %r15 = ", state.regs.r15)
+                        print(" - %rbp = ", state.regs.rbp)
+                        print(" - %rsp = ", state.regs.rsp)
+                        print(" - %rip = ", state.regs.rip)
                         exit(-3)
 
                 else:
