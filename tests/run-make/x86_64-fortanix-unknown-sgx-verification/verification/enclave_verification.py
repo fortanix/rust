@@ -42,6 +42,7 @@ class EnclaveVerification:
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
         self.copy_to_userspace = find_symbol_matching("copy_to_userspace").rebased_addr
         self.panic = find_symbol_matching("panicking5panic").rebased_addr
+        self.panic_with_hook = find_symbol_matching("panicking20rust_panic_with_hook").rebased_addr
         self.abort_internal = find_symbol_matching("abort_internal").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
