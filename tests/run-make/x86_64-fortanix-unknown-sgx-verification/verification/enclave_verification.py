@@ -41,6 +41,7 @@ class EnclaveVerification:
         self.sgx_entry = self.project.loader.find_symbol("sgx_entry").rebased_addr
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
         self.copy_to_userspace = find_symbol_matching("copy_to_userspace").rebased_addr
+        self.copy_from_userspace = find_symbol_matching("copy_from_userspace").rebased_addr
         self.panic = find_symbol_matching("panicking5panic").rebased_addr
         self.panic_with_hook = find_symbol_matching("panicking20rust_panic_with_hook").rebased_addr
         self.abort_internal = find_symbol_matching("abort_internal").rebased_addr
@@ -48,14 +49,17 @@ class EnclaveVerification:
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
         self.string_from_bytebuffer = find_symbol_matching("string_from_bytebuffer").rebased_addr
         self.usercall = self.project.loader.find_symbol("usercall").rebased_addr
+        self.memcpy = self.project.loader.find_symbol("memcpy").rebased_addr
 
         print("Located symbols:")
         print("  sgx_entry:              " + hex(self.sgx_entry))
         print("  entry:                  " + hex(self.entry))
         print("  image_base:             " + hex(self.image_base))
         print("  copy_to_userspace:      " + hex(self.copy_to_userspace))
+        print("  copy_from_userspace:    " + hex(self.copy_from_userspace))
         print("  panic:                  " + hex(self.panic))
         print("  string_from_bytebuffer: " + hex(self.string_from_bytebuffer))
+        print("  memcpy:                 " + hex(self.memcpy))
 
     def call_state(self, addr, *args, **kwargs):
         arch = archinfo.arch_from_id("amd64")

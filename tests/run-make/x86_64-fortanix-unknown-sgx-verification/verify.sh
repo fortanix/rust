@@ -32,6 +32,7 @@ build
 # Functional correctness special functions
 python3 verification/verification_image_base.py ${enclave}
 python3 verification/verification_is_enclave_range.py ${enclave}
+python3 verification/verification_copy_from_userspace.py ${enclave}
 python3 verification/verification_copy_to_userspace.py ${enclave}
 
 # Verification usercalls
