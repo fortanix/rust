@@ -52,8 +52,8 @@ ENV RUST_CONFIGURE_ARGS \
       --set target.x86_64-unknown-linux-musl.crt-static=false \
       --set=llvm.download-ci-llvm=if-available \
       --set build.build-stage=1 \
-      --build $HOSTS
-      #--set build.verbose=3\
+      --build $HOSTS \
+      --set build.verbose=3
 
 # Newer binutils broke things on some vms/distros (i.e., linking against
 # unknown relocs disabled by the following flag), so we need to go out of our

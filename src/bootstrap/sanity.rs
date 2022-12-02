@@ -184,7 +184,8 @@ pub fn check(build: &mut Build) {
             // fall back to the system toolchain in /usr before giving up
             if build.musl_root(*target).is_none() && build.config.build == *target {
                 let target = build.config.target_config.entry(*target).or_default();
-                target.musl_root = Some("/usr".into());
+                //target.musl_root = Some("/usr".into());
+                target.musl_root = Some("/usr/local/x86_64-linux-musl/".into());
             }
             match build.musl_libdir(*target) {
                 Some(libdir) => {
