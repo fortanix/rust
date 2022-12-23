@@ -29,6 +29,8 @@ function build {
 
 build
 
+objdump -D ${enclave} > /tmp/dump
+
 # Functional correctness special functions
 python3 verification/verification_image_base.py ${enclave}
 python3 verification/verification_is_enclave_range.py ${enclave}
@@ -61,7 +63,7 @@ python3 verification/verification_usercall.py ${enclave} "connect_stream"
 python3 verification/verification_usercall.py ${enclave} "launch_thread"
 python3 verification/verification_usercall.py ${enclave} "exit"
 python3 verification/verification_usercall.py ${enclave} "send"
-#python3 verification/verification_usercall.py ${enclave} "wait"
+python3 verification/verification_usercall.py ${enclave} "wait"
 python3 verification/verification_usercall.py ${enclave} "alloc"
 
 echo "Verification completed successfully!"

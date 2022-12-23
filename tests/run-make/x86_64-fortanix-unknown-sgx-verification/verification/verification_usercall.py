@@ -15,6 +15,10 @@ class StringFromBytebuffer(angr.SimProcedure):
     def run(self):
         print("Simulating string_from_bytebuffer")
 
+class Rdrand(angr.SimProcedure):
+    def run(self):
+        print("Simulating rdrand")
+
 class VerificationUsercall(EnclaveVerification):
     def __init__(self, enclave_path):
         EnclaveVerification.__init__(self, enclave_path)
@@ -91,6 +95,7 @@ class VerificationUsercall(EnclaveVerification):
         self.project.hook_symbol(self.copy_to_userspace, CopyToUserspace())
         self.project.hook_symbol(self.usercall, Usercall())
         self.project.hook_symbol(self.string_from_bytebuffer, StringFromBytebuffer())
+        self.project.hook_symbol(self.find_symbol_matching(".*std.sys.sgx.rand.rdrand.*").rebased_addr, Rdrand())
 
         # Setting up call site
         usercall = self.project.loader.find_symbol(usercall_name).rebased_addr
@@ -172,6 +177,9 @@ if __name__ == '__main__':
             if usercall == "accept_stream":
                 prototype = "uint64_t *accept_stream(uint64_t fd)"
                 env = environment_accept_stream 
+            elif usercall == "wait":
+                prototype = "uint64_t *wait(uint64_t event, uint64_t timeout)",
+                env = environment_wait
             else:
                 print("Unknown usercall:", usercall, "select one of: ", usercalls.keys())
                 exit(-1)
