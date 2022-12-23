@@ -55,6 +55,8 @@ class EnclaveVerification:
         self.string_from_bytebuffer = self.find_symbol_matching(".*string_from_bytebuffer.*").rebased_addr
         self.usercall = self.project.loader.find_symbol("usercall").rebased_addr
         self.memcpy = self.project.loader.find_symbol("memcpy").rebased_addr
+        self.alloc = self.project.loader.find_symbol("__rust_alloc").rebased_addr
+        self.dealloc = self.project.loader.find_symbol("__rust_dealloc").rebased_addr
 
         print("Located symbols:")
         print("  sgx_entry:              " + hex(self.sgx_entry))

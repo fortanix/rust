@@ -167,8 +167,11 @@ pub fn raw_wait(event: u64, timeout: u64) -> (Result, u64) {
 
 #[no_mangle]
 #[inline(never)]
-pub fn wait(event: u64, timeout: u64) -> IoResult<u64> {
-    std::os::fortanix_sgx::usercalls::wait(event, timeout)
+pub fn wait(event: u64, timeout: u64) -> u64 {
+    match std::os::fortanix_sgx::usercalls::wait(event, timeout) {
+        Ok(t) => t,
+        Err(_e) => 0,
+    }
 }
 
 #[no_mangle]
