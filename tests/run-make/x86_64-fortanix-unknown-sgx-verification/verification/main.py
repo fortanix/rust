@@ -8,7 +8,6 @@ import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
 
-from enclave_state import EnclaveState
 from breakpoints import Breakpoints
 from layout import Layout
 from enclave_verification import EnclaveVerification

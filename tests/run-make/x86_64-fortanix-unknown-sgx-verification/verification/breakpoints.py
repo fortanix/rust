@@ -17,7 +17,6 @@
 import logging
 import angr
 import claripy
-from enclave_state import TraceElement
 import copy
 
 log = logging.getLogger(__name__)
@@ -40,18 +39,6 @@ class Breakpoints:
         #    when=angr.BP_BEFORE,
         #    action=lambda s: self.detect_jump_violations(simgr, s, layout))
 
-        # Call stack tracking breakpoints
-        simgr.active[0].inspect.b(
-            'call',
-            when=angr.BP_BEFORE,
-            action=lambda st: st.enclave.call_stack.append(
-                TraceElement(st.project,
-                             st.solver.eval(st.inspect.function_address))))
-        simgr.active[0].inspect.b(
-            'return',
-            when=angr.BP_BEFORE,
-            action=self.delete_last_call_if_exists)
-
         # Memory tracking
         simgr.active[0].inspect.b(
             'mem_read',
@@ -72,10 +59,6 @@ class Breakpoints:
         #]):
         #    state.inspect.mem_read_expr = state.solver.Unconstrained(
         #        "symb_read", length * 8)
-
-    def delete_last_call_if_exists(self, state):
-        if state.enclave.call_stack is not None and state.enclave.call_stack:
-            del state.enclave.call_stack[-1]
 
     def detect_read_violations(self, simgr, state, layout):
         read_allowed = (state.enclave.ooe_rights == Rights.ReadWrite) or (

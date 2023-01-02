@@ -73,7 +73,7 @@ class VerificationUsercall(EnclaveVerification):
             print("is on gs segment:", is_on_gs)
             return is_on_gs
 
-        def track_write(state, p):
+        def track_write(state, sm, p):
             length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
             val = state.inspect.mem_write_expr
             dest = state.inspect.mem_write_address
@@ -82,7 +82,7 @@ class VerificationUsercall(EnclaveVerification):
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
             if not(is_enclave_range(state, dest, length) or is_stack_range(state, dest, length) or is_gs_segment(state, dest, length)):
                 print("Writing outside of enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
-                exit(-2)
+                sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
             else:
                 print("Writing within enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
         print("Verifying", usercall_name, "implementation...")
@@ -112,15 +112,15 @@ class VerificationUsercall(EnclaveVerification):
             environment(state)
 
         # Setting up break points
-        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, self.project))
+        sm = self.simulation_manager(state)
+        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, sm, self.project))
 
         # Running the simulation
-        sm = self.simulation_manager(state)
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
 
         # Print results
         print(sm)
-        return EnclaveVerification.process_result(sm)
+        return self.process_result(sm)
 
 def environment_accept_stream(state):
     # The `accept_stream` assumes a pointer as first argument. This needs to be within the enclave. We mimick
@@ -178,6 +178,7 @@ if __name__ == '__main__':
 
         enclave = VerificationUsercall(enclave_path)
         if not(enclave.verify(usercall, prototype, env)):
+            print("FAILURE")
             exit(-1)
         else:
             print("SUCCESS")

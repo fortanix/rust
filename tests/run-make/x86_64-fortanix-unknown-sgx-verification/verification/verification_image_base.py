@@ -19,7 +19,7 @@ class VerificationImageBase(EnclaveVerification):
          sm = self.simulation_manager(state)
          sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
  
-         if not(EnclaveVerification.process_result(sm)):
+         if not(self.process_result(sm)):
              return False
          else:
              if len(sm.found) != 1:
