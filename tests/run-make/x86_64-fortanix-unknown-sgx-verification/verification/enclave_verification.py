@@ -9,7 +9,6 @@ import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
 
-from enclave_state import EnclaveState
 from breakpoints import Breakpoints
 from layout import Layout
 
@@ -19,6 +18,7 @@ INSTR_MFENCE = b'\x0f\xae\xf0'
 class EnclaveVerification:
     MAX_STATES = 25
     GS_SEGMENT_SIZE = 0x1000
+    WRITE_VIOLATION = "WRITE_VIOLATION"
 
     def __init__(self, enclave_path):
         self.enclave = enclave_path
@@ -70,8 +70,6 @@ class EnclaveVerification:
                 prototype=kwargs["prototype"],
                 ret_addr=kwargs["ret_addr"],
                 add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"})
-        state.register_plugin('enclave', EnclaveState(self.project))
-        state.enclave.init_trace_and_stack()
 
         # Fake enclave state
         #state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
@@ -84,22 +82,16 @@ class EnclaveVerification:
         self.project, sm = Breakpoints().setup(self.project, sm, Layout())
         return sm
 
-    def print_states(states, name):
-        print("=[", len(states), name, " states ]=")
-        for idx_state in range(0, len(states)):
-            state = states[idx_state]
-            print("[", name, "state ", idx_state + 1, "/", len(states), "]")
-            state.enclave.print_state()
-            state.enclave.print_call_stack()
-            state.enclave.print_trace()
-            print("")
-
-    def print_errored_states(records):
-        print("=[", len(records), "errored states ]=")
+    def print_states(self, records, state_name):
+        print("=[", len(records), state_name, "states ]=")
         for idx_state in range(0, len(records)):
-            state = records[idx_state].state
-            print("[errored state ", idx_state + 1, "/", len(records), "]")
-            print("Error: ", records[idx_state].error)
+            state = records[idx_state]
+            print("[", state_name, "state ", idx_state + 1, "/", len(records), "]")
+            try:
+                print("Error: ", records[idx_state].error)
+                state = records[idx_state].state
+            except:
+                ()
             print("Regs:")
             print(" - %rax = ", state.regs.rax)
             print(" - %rbx = ", state.regs.rbx)
@@ -123,22 +115,41 @@ class EnclaveVerification:
             #print(" - %r   = ", state.regs.get("rflags"))
             print("")
 
-    def process_result(sm):
+            # https://docs.angr.io/core-concepts/states#the-callstack-plugin
+            print("Callsite (most recent last):")
+            for frame in reversed(state.callstack):
+                callsite = frame.call_site_addr
+                function_addr = frame.func_addr
+                function = self.project.loader.find_symbol(function_addr)
+                if function is not None:
+                    function = function.name
+                print("- ", hex(callsite), ": call", function, "@", hex(function_addr))
+            print("")
+
+            # https://docs.angr.io/core-concepts/states#the-history-plugin
+            print("Basic block history (most recent last):")
+            for address in state.history.bbl_addrs:
+                symbol = self.project.loader.find_symbol(address)
+                if symbol is not None:
+                    symbol = symbol.name
+                print("-> ", hex(address), "@", symbol)
+            print("")
+            print("")
+
+    def process_result(self, sm):
+        ret = False
+
         if len(sm.found) == EnclaveVerification.MAX_STATES:
             print("Error: Maximum number of states reached:", EnclaveVerification.MAX_STATES)
-            return False
+        elif len(sm.stashes[self.WRITE_VIOLATION]) != 0:
+            print("Error: Some states reached a write violation")
         elif len(sm.errored) != 0:
             print("Error: Some states reached an error")
-            EnclaveVerification.print_states(sm.found, "Found")
-            EnclaveVerification.print_errored_states(sm.errored)
-            return False
         elif len(sm.unconstrained) != 0:
             print("Error: Some states reached an unconstrained state")
-            EnclaveVerification.print_states(sm.found, "Found")
-            EnclaveVerification.print_errored_states(sm.errored)
-            return False
         else:
-            EnclaveVerification.print_states(sm.found, "Found")
-            EnclaveVerification.print_errored_states(sm.errored)
-            return True
-
+            ret = True
+        self.print_states(sm.stashes[self.WRITE_VIOLATION], "Write violation")
+        self.print_states(sm.found, "Found")
+        self.print_states(sm.errored, "Error")
+        return ret

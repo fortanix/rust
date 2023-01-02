@@ -146,7 +146,7 @@ class VerificationCopyFromUserspace(EnclaveVerification):
 
         # Print results
         print(sm)
-        return EnclaveVerification.process_result(sm)
+        return self.process_result(sm)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
