@@ -20,8 +20,8 @@ class Rdrand(angr.SimProcedure):
         print("Simulating rdrand")
 
 class VerificationUsercall(EnclaveVerification):
-    def __init__(self, enclave_path):
-        EnclaveVerification.__init__(self, enclave_path)
+    def __init__(self, enclave_path, name):
+        EnclaveVerification.__init__(self, enclave_path, "VerificationUsercall::" + name)
 
     def verify(self, usercall_name, prototype, environment=None):
         def should_avoid(state):
@@ -48,8 +48,6 @@ class VerificationUsercall(EnclaveVerification):
                 ))
 
         def is_stack_range(state, dest, length):
-            print("is_stack_range: dest:", dest, "len:", length)
-            print("is_stack_range: stack base:", hex(self.stack_base))
             is_on_stack = not(state.solver.satisfiable(extra_constraints=(
                 claripy.Not(
                     claripy.And(
@@ -58,13 +56,9 @@ class VerificationUsercall(EnclaveVerification):
                     )
                 ),
                 )))
-            print("is on stack:", is_on_stack)
             return is_on_stack
 
         def is_gs_segment(state, dest, length):
-            print("Check write on gs segment")
-            print("gs segment base:", state.regs.gs)
-            print("write dest:", dest, "len:", length)
             is_on_gs = not(state.solver.satisfiable(extra_constraints=(
                 state.regs.gs < pow(2, 64) - EnclaveVerification.GS_SEGMENT_SIZE,
                 claripy.Not(
@@ -74,7 +68,6 @@ class VerificationUsercall(EnclaveVerification):
                     )
                 ),
                 )))
-            print("is on gs segment:", is_on_gs)
             return is_on_gs
 
         def track_write(state, sm, p):
@@ -82,14 +75,21 @@ class VerificationUsercall(EnclaveVerification):
             val = state.inspect.mem_write_expr
             dest = state.inspect.mem_write_address
             rip = state.solver.eval(state.regs.rip)
+            self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
 
-            # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
-            if not(is_enclave_range(state, dest, length) or is_stack_range(state, dest, length) or is_gs_segment(state, dest, length)):
-                print("Writing outside of enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
-                sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
+            if is_enclave_range(state, dest, length):
+                self.logger.debug("    - in enclave: ok" )
+            elif is_stack_range(state, dest, length):
+                self.logger.debug("    - on stack: ok" )
+            elif is_gs_segment(state, dest, length):
+                self.logger.debug("    - on gs segment: ok" )
             else:
-                print("Writing within enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
-        print("Verifying", usercall_name, "implementation...")
+                self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
+                self.logger.error("    - in enclave: no" )
+                self.logger.error("    - on stack: no" )
+                self.logger.debug("    - on gs segment: no" )
+                self.log_state(state)
+                sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
         # hooking symbols
         self.project.hook_symbol(self.copy_to_userspace, CopyToUserspace())
@@ -124,7 +124,6 @@ class VerificationUsercall(EnclaveVerification):
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
 
         # Print results
-        print(sm)
         return self.process_result(sm)
 
 def environment_accept_stream(state):
@@ -184,10 +183,10 @@ if __name__ == '__main__':
                 print("Unknown usercall:", usercall, "select one of: ", usercalls.keys())
                 exit(-1)
 
-        enclave = VerificationUsercall(enclave_path)
-        if not(enclave.verify(usercall, prototype, env)):
-            print("FAILURE")
+        print("Verifying", usercall, "implementation...")
+        if not(VerificationUsercall(enclave_path, usercall).verify(usercall, prototype, env)):
+            print("Failed")
             exit(-1)
         else:
-            print("SUCCESS")
+            print("Succeeded")
 

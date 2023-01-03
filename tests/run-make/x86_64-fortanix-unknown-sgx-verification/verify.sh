@@ -30,6 +30,7 @@ function build {
 build
 
 objdump -D ${enclave} > /tmp/dump
+rm *.log || true
 
 # Functional correctness special functions
 python3 verification/verification_image_base.py ${enclave}

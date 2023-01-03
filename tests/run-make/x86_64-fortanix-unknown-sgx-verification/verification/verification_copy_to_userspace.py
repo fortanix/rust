@@ -8,7 +8,7 @@ INSTR_MFENCE = b'\x0f\xae\xf0'
 
 class VerificationCopyToUserspace(EnclaveVerification):
     def __init__(self, enclave_path):
-        EnclaveVerification.__init__(self, enclave_path)
+        EnclaveVerification.__init__(self, enclave_path, "VerificationCopyToUserspace")
 
     def verify(self):
         def should_avoid(state):
@@ -37,8 +37,6 @@ class VerificationCopyToUserspace(EnclaveVerification):
                 ))
 
         def is_stack_range(state, dest, length):
-            print("is_stack_range: dest:", dest, "len:", length)
-            print("is_stack_range: stack base:", hex(self.stack_base))
             is_on_stack = not(state.solver.satisfiable(extra_constraints=(
                 claripy.Not(
                     claripy.And(
@@ -47,7 +45,6 @@ class VerificationCopyToUserspace(EnclaveVerification):
                     )
                 ),
                 )))
-            print("is on stack:", is_on_stack)
             return is_on_stack
 
         def is_aligned64(state, dest):
@@ -179,10 +176,14 @@ class VerificationCopyToUserspace(EnclaveVerification):
                 return test_mov_epilogue(state, rip, INSTR_MFENCE + INSTR_LFENCE)
 
             if is_mov_prologue(state, rip):
-                print("found prologue!")
+                self.logger.debug("    - save move prologue: ok" )
+            else:
+                self.logger.debug("    - save move prologue: no" )
 
             if is_mov_epilogue(state, rip + 2):
-                print("found epilogue")
+                self.logger.debug("    - save move epilogue: ok" )
+            else:
+                self.logger.debug("    - save move epilogue: no" )
 
             return is_mov_prologue(state, rip) and is_mov_epilogue(state, rip + 2)
 
@@ -192,50 +193,25 @@ class VerificationCopyToUserspace(EnclaveVerification):
             val = state.inspect.mem_write_expr
             dest = state.inspect.mem_write_address
             rip = state.solver.eval(state.regs.rip)
+            self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
 
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
-            if not(is_enclave_range(state, dest, length)) and not(is_stack_range(state, dest, length)):
-                print("Writing outside of enclave at", hex(rip), "(dest =", dest, ", len =", int(length / 8), "bytes)")
-                if length == 8:
-                    if not is_safe_userspace_write(state, rip):
-                        print("Trying to insecurely write", length/8, " bytes to userspace from", hex(rip))
-                        exit(-1)
-                elif length == 64:
-                    if is_aligned64(state, dest):
-                        print("Writing aligned 8 bytes is ok")
-                    else:
-                        print("Check (rip = ", hex(rip), ", dest =", dest, ", len =", length / 8, "bytes)")
-                        print("Writing unaligned 8 bytes is insecure")
-
-                        state.enclave.print_state()
-                        state.enclave.print_call_stack()
-                        state.enclave.print_trace()
-                        print("Regs:")
-                        print(" - %rax = ", state.regs.rax)
-                        print(" - %rbx = ", state.regs.rbx)
-                        print(" - %rcx = ", state.regs.rcx, " (arg3)")
-                        print(" - %rdx = ", state.regs.rdx, " (arg2)")
-                        print(" - %rsi = ", state.regs.rsi, " (arg1)")
-                        print(" - %rdi = ", state.regs.rdi, " (arg0)")
-                        print(" - %r8  = ", state.regs.r8,  " (arg4)")
-                        print(" - %r9  = ", state.regs.r9,  " (arg5)")
-                        print(" - %r10 = ", state.regs.r10)
-                        print(" - %r11 = ", state.regs.r11)
-                        print(" - %r12 = ", state.regs.r12)
-                        print(" - %r13 = ", state.regs.r13)
-                        print(" - %r14 = ", state.regs.r14)
-                        print(" - %r15 = ", state.regs.r15)
-                        print(" - %rbp = ", state.regs.rbp)
-                        print(" - %rsp = ", state.regs.rsp)
-                        print(" - %rip = ", state.regs.rip)
-                        exit(-3)
-
-                else:
-                    print("Trying to insecurely access userspace")
-                    exit(-2)
+            if is_enclave_range(state, dest, length):
+                self.logger.debug("    - in enclave: ok" )
+            elif is_stack_range(state, dest, length):
+                self.logger.debug("    - on stack: ok" )
+            elif length == 8 and is_safe_userspace_write(state, rip):
+                self.logger.debug("    - safe userspace write: ok" )
+            elif length == 64 and is_aligned64(state, dest):
+                self.logger.debug("    - well-aligned aligned 8-byte write: ok" )
+            else:
+                self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
+                self.logger.error("    - in enclave: no" )
+                self.logger.error("    - on stack: no" )
+                self.log_state(state)
+                sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
 
-        print("Verifying copy_to_userspace implementation...")
         # Setting up call site
         end = 0x0
         state = self.call_state(
@@ -246,33 +222,16 @@ class VerificationCopyToUserspace(EnclaveVerification):
 
         image_base = self.image_base
         enclave_size = state.memory.load(self.enclave_size, 8)
-        #state.regs.rsp = state.solver.BVS("rsp", 64)
-        #stack_base = claripy.BVS("stack_base", 64)
-        #state.solver.add(stack_base == state.regs.rsp)
-        #state.solver.add(0x100000 <= enclave_size)
-        #state.regs.rsp = 0xb00000000
         self.stack_base = state.solver.eval(state.regs.rsp)
-        print("stack base =", hex(self.stack_base))
 
         # Setting up break points
         state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, self.project))
-
-
-        #cfg = self.project.analyses.CFGFast(function_starts=[self.copy_to_userspace])
-        #func = cfg.kb.functions[self.copy_to_userspace]
-        #for block in func.blocks:
-        #    print("block: ")
-        #    block.pp()
-            #print(block.insns())
-        # https://api.angr.io/angr.html?highlight=function#angr.knowledge_plugins.functions.function.Function.blocks
-
 
         # Running the simulation
         sm = self.simulation_manager(state)
         sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
 
         # Print results
-        print(sm)
         return self.process_result(sm)
 
 if __name__ == '__main__':
@@ -282,8 +241,9 @@ if __name__ == '__main__':
     else:
         enclave_path: str = sys.argv[1]
 
-        enclave = VerificationCopyToUserspace(enclave_path)
-        if not(enclave.verify()):
+        print("Verifying copy_to_userspace implementation............", end="")
+        if not(VerificationCopyToUserspace(enclave_path).verify()):
+            print("Failed")
             exit(-1)
         else:
-            print("SUCCESS")
+            print("Succeeded")
