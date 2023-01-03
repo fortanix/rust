@@ -10,9 +10,6 @@ import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
 
-from breakpoints import Breakpoints
-from layout import Layout
-
 INSTR_LFENCE = b'\x0f\xae\xe8'
 INSTR_MFENCE = b'\x0f\xae\xf0'
 
@@ -86,7 +83,6 @@ class EnclaveVerification:
 
     def simulation_manager(self, state):
         sm = self.project.factory.simulation_manager(state)
-        self.project, sm = Breakpoints().setup(self.project, sm, Layout())
         return sm
 
     def print_states(self, records, state_name):
