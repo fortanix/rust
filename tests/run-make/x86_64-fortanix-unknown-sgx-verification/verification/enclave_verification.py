@@ -4,6 +4,7 @@ import archinfo
 import angr
 import claripy
 import hooker
+import re
 import sys
 import pyvex
 
@@ -29,25 +30,29 @@ class EnclaveVerification:
         self.project = project
         self.locate_symbols()
 
-    def locate_symbols(self):
-        def find_symbol_matching(name):
-            symbols = list(filter(lambda s : name in s.name, self.project.loader.symbols))
-            if len(symbols) != 1:
-                print("Multiple symbols matching\"", name, "\"found:", symbols)
-                exit(-1)
-            else:
-                return symbols[0]
+    def find_symbol_matching(self, name):
+        exp = re.compile(name)
+        symbols = list(filter(lambda s : exp.match(s.name), self.project.loader.symbols))
+        if len(symbols) == 0:
+            print("No symbols found matching \"", name, "\"")
+            exit(-1)
+        elif len(symbols) != 1:
+            print("Multiple symbols matching\"", name, "\"found:", symbols)
+            exit(-1)
+        else:
+            return symbols[0]
 
+    def locate_symbols(self):
         self.sgx_entry = self.project.loader.find_symbol("sgx_entry").rebased_addr
         self.entry = self.project.loader.find_symbol("entry").rebased_addr
-        self.copy_to_userspace = find_symbol_matching("copy_to_userspace").rebased_addr
-        self.copy_from_userspace = find_symbol_matching("copy_from_userspace").rebased_addr
-        self.panic = find_symbol_matching("panicking5panic").rebased_addr
-        self.panic_with_hook = find_symbol_matching("panicking20rust_panic_with_hook").rebased_addr
-        self.abort_internal = find_symbol_matching("abort_internal").rebased_addr
+        self.copy_to_userspace = self.find_symbol_matching(".*copy_to_userspace.*").rebased_addr
+        self.copy_from_userspace = self.find_symbol_matching(".*copy_from_userspace.*").rebased_addr
+        self.panic = self.find_symbol_matching(".*panicking.panic[^_].*").rebased_addr
+        self.panic_with_hook = self.find_symbol_matching(".*panicking.*rust_panic_with_hook.*").rebased_addr
+        self.abort_internal = self.find_symbol_matching(".*abort_internal.*").rebased_addr
         self.enclave_size = self.project.loader.find_symbol("ENCLAVE_SIZE").rebased_addr
         self.image_base = self.project.loader.find_symbol("IMAGE_BASE").rebased_addr
-        self.string_from_bytebuffer = find_symbol_matching("string_from_bytebuffer").rebased_addr
+        self.string_from_bytebuffer = self.find_symbol_matching(".*string_from_bytebuffer.*").rebased_addr
         self.usercall = self.project.loader.find_symbol("usercall").rebased_addr
         self.memcpy = self.project.loader.find_symbol("memcpy").rebased_addr
 
