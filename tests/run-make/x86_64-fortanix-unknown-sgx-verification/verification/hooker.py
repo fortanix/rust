@@ -23,7 +23,7 @@ from simulation_procedures import SimEnclu, Nop, Rdrand, UD2, Movsq
 
 class Hooker:
     def setup(self, proj):
-        self.instruction_hooker(proj, self.instruction_replacement())
+        self.instruction_hooker(proj, Hooker.instruction_replacement)
         return proj
 
     def instruction_hooker(self, angr_proj, ins_to_sim_proc):
@@ -41,25 +41,22 @@ class Hooker:
                                        i.size))
                         angr_proj.hook(i.address, hook=sim_proc, length=i.size)
 
-    def instruction_replacement(self):
-        def replace(capstone_instruction) -> angr.SimProcedure:
-            if capstone_instruction.mnemonic == "enclu":
-                return SimEnclu()
-            elif "xsave" in capstone_instruction.mnemonic:
-                return Nop(bytes_to_skip=capstone_instruction.size)  # NOTE: the original "guardian code" contained a mistake here!
-            elif "xrstor" in capstone_instruction.mnemonic:
-                return Nop(bytes_to_skip=capstone_instruction.size)
-            elif capstone_instruction.mnemonic == "fxrstor64":
-                return Nop(bytes_to_skip=capstone_instruction.size)
-            elif capstone_instruction.mnemonic == "rdrand":
-                return Rdrand()
-            elif capstone_instruction.mnemonic == "ud2":
-                return UD2()
-            elif "verw" in capstone_instruction.mnemonic:
-                return Nop(bytes_to_skip=capstone_instruction.size)
-            elif "movsq" in capstone_instruction.mnemonic:
-                return Movsq(bytes_to_skip=capstone_instruction.size)
-            else:
-                None
-
-        return replace
+    def instruction_replacement(capstone_instruction) -> angr.SimProcedure:
+        if capstone_instruction.mnemonic == "enclu":
+            return SimEnclu()
+        elif "xsave" in capstone_instruction.mnemonic:
+            return Nop(bytes_to_skip=capstone_instruction.size)  # NOTE: the original "guardian code" contained a mistake here!
+        elif "xrstor" in capstone_instruction.mnemonic:
+            return Nop(bytes_to_skip=capstone_instruction.size)
+        elif capstone_instruction.mnemonic == "fxrstor64":
+            return Nop(bytes_to_skip=capstone_instruction.size)
+        elif capstone_instruction.mnemonic == "rdrand":
+            return Rdrand()
+        elif capstone_instruction.mnemonic == "ud2":
+            return UD2()
+        elif "verw" in capstone_instruction.mnemonic:
+            return Nop(bytes_to_skip=capstone_instruction.size)
+        elif "movsq" in capstone_instruction.mnemonic:
+            return Movsq(bytes_to_skip=capstone_instruction.size)
+        else:
+            None
