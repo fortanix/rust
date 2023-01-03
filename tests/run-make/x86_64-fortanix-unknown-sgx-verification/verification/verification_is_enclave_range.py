@@ -4,7 +4,7 @@ from enclave_verification import EnclaveVerification
 
 class VerificationIsEnclaveRange(EnclaveVerification):
     def __init__(self, enclave_path):
-        EnclaveVerification.__init__(self, enclave_path)
+        EnclaveVerification.__init__(self, enclave_path, "VerificationIsEnclaveRange")
 
     def verify(self):
         def should_avoid(state):
@@ -13,7 +13,6 @@ class VerificationIsEnclaveRange(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        print("Verifying is_enclave_range implementation...")
         end = 0x0
         p = claripy.BVS("p", 64)
         len_ = claripy.BVS("len", 64)
@@ -37,7 +36,7 @@ class VerificationIsEnclaveRange(EnclaveVerification):
             return False
         else:
             for i in range(0, len(sm.found)):
-                print("state: ", i)
+                self.logger.error("Checking found state: " + str(i))
                 state = sm.found[i]
                 # Make a symbolic variable for the result
                 result = claripy.BVS("result", 64)
@@ -58,25 +57,24 @@ class VerificationIsEnclaveRange(EnclaveVerification):
                     p + enclave_size < pow(2, 64)
                     )):
 
-                    print("Counter examples found:")
+                    self.logger.error("Counter examples found:")
                     result = state.solver._solver.batch_eval([result, p, len_, self.image_base, enclave_size], 3)
                     for (result, p, len_, base, size) in result:
-                        print("result = ", result)
-                        print("p =", hex(p))
-                        print("len_ =", hex(len_))
-                        print("area range = [", hex(p), ",", hex(p + len_), "[")
-                        print("enclave size =", hex(size))
-                        print("enclave base =", hex(base))
-                        print("enclave range = [", hex(base), ",", hex(base + size), "[")
-                        print("const 0: ", base <= p)
-                        print("const 1: ", p < (base + size))
-                        print("const 2: ", base <= (p + len_))
-                        print("const 3: ", (p + len_) <= (base + size))
-                        print("const 4: ", result == 0)
-                        print("constraints:", state.solver._solver.constraints)
-                        print("")
+                        self.logger.error("result = " + result)
+                        self.logger.error("p =" + hex(p))
+                        self.logger.error("len_ =" + hex(len_))
+                        self.logger.error("area range = [" + hex(p) + "," + hex(p + len_) + "[")
+                        self.logger.error("enclave size =" + hex(size))
+                        self.logger.error("enclave base =" + hex(base))
+                        self.logger.error("enclave range = [" + hex(base) + "," + hex(base + size) + "[")
+                        self.logger.error("const 0: " + base <= p)
+                        self.logger.error("const 1: " + p < (base + size))
+                        self.logger.error("const 2: " + base <= (p + len_))
+                        self.logger.error("const 3: " + (p + len_) <= (base + size))
+                        self.logger.error("const 4: " + result == 0)
+                        self.logger.error("constraints:" + state.solver._solver.constraints)
+                        self.logger.error("")
 
-                    print("Verification failed")
                     return False
 
                 # If there exists a `ptr` such that `ptr not in [image_base; image_base + enclave_size[`
@@ -98,25 +96,25 @@ class VerificationIsEnclaveRange(EnclaveVerification):
                     p + enclave_size < pow(2, 64)
                     )):
 
-                    print("Counter examples found:")
+                    self.logger.error("Counter examples found:")
                     result = state.solver._solver.batch_eval([result, p, len_, self.image_base, enclave_size], 3)
                     for (result, p, len_, base, size) in result:
-                        print("result = ", result)
-                        print("p =", hex(p))
-                        print("len_ =", hex(len_))
-                        print("area range = [", hex(p), ",", hex(p + len_), "[")
-                        print("enclave size =", hex(size))
-                        print("enclave base =", hex(base))
-                        print("enclave range = [", hex(base), ",", hex(base + size), "[")
-                        print("const 0: ", base <= p)
-                        print("const 1: ", p < (base + size))
-                        print("const 2: ", base <= (p + len_))
-                        print("const 3: ", (p + len_) <= (base + size))
-                        print("const 4: ", result == 0)
-                        print("constraints:", state.solver._solver.constraints)
-                        print("")
+                        self.logger.error("result = " + result)
+                        self.logger.error("p =" + hex(p))
+                        self.logger.error("len_ =" + hex(len_))
+                        self.logger.error("area range = [" + hex(p) + "," + hex(p + len_) + "[")
+                        self.logger.error("enclave size =" + hex(size))
+                        self.logger.error("enclave base =" + hex(base))
+                        self.logger.error("enclave range = [" + hex(base) + "," + hex(base + size) + "[")
+                        self.logger.error("const 0: " + base <= p)
+                        self.logger.error("const 1: " + p < (base + size))
+                        self.logger.error("const 2: " + base <= (p + len_))
+                        self.logger.error("const 3: " + (p + len_) <= (base + size))
+                        self.logger.error("const 4: " + result == 0)
+                        self.logger.error("constraints:" + state.solver._solver.constraints)
+                        self.logger.error("")
 
-                    print("Verification failed")
+                    self.logger.error("Verification failed")
                     return False
             return True
 
@@ -127,8 +125,9 @@ if __name__ == '__main__':
     else:
         enclave_path: str = sys.argv[1]
 
-        enclave = VerificationIsEnclaveRange(enclave_path)
-        if not(enclave.verify()):
+        print("Verifying is_enclave_range implementation.............", end="")
+        if not(VerificationIsEnclaveRange(enclave_path).verify()):
+            print("Failed")
             exit(-1)
         else:
-            print("SUCCESS")
+            print("Succeeded")
