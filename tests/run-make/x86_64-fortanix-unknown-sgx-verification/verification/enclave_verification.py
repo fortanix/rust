@@ -94,7 +94,7 @@ class EnclaveVerification:
 
         return state
 
-    def is_enclave_range(self, state, p, length):
+    def is_enclave_space(self, state, p, length):
         image_base = self.image_base
         enclave_size = state.memory.load(self.enclave_size, 8, disable_actions=True, inspect=False)
 
@@ -115,7 +115,7 @@ class EnclaveVerification:
             ))
         return is_in_enclave
 
-    def is_stack_range(self, state, ptr, length):
+    def is_on_stack(self, state, ptr, length):
         is_on_stack = not(state.solver.satisfiable(extra_constraints=(
             claripy.Not(
                 claripy.And(
@@ -126,7 +126,7 @@ class EnclaveVerification:
             )))
         return is_on_stack
 
-    def is_gs_segment(self, state, ptr, length):
+    def is_on_gs_segment(self, state, ptr, length):
         is_on_gs = not(state.solver.satisfiable(extra_constraints=(
             state.regs.gs < pow(2, 64) - EnclaveVerification.GS_SEGMENT_SIZE,
             claripy.Not(
@@ -137,6 +137,18 @@ class EnclaveVerification:
             ),
             )))
         return is_on_gs
+
+    def read_instr(self, state, rip, length):
+        instr = state.memory.load(rip, length)
+        instr = state.solver.eval(instr)
+        instr = instr.to_bytes(length, 'big')
+        #self.logger.debug("instr =" + instr + "(type =" + type(instr) + ")")
+        return instr
+
+    def is_aligned64(self, state, ptr):
+        return not(state.solver.satisfiable(extra_constraints=(
+            ptr & 0x7 != 0,
+            )))
 
     def simulation_manager(self, state):
         sm = self.project.factory.simulation_manager(state)
