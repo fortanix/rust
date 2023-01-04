@@ -17,22 +17,10 @@ class VerificationCopyToUserspace(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def is_aligned64(state, dest):
-            return not(state.solver.satisfiable(extra_constraints=(
-                dest & 0x7 != 0,
-                )))
-
-        def read_instr(state, rip, length):
-            instr = state.memory.load(rip, length)
-            instr = state.solver.eval(instr)
-            instr = instr.to_bytes(length, 'big')
-            #print("instr =", instr, "(type =", type(instr), ")")
-            return instr
-
         def is_safe_userspace_write(state, rip):
             def is_mov_prologue(state, rip):
                 def test_mov_prologue(state, rip, instrs):
-                    return read_instr(state, rip - len(instrs), len(instrs)) == instrs
+                    return self.read_instr(state, rip - len(instrs), len(instrs)) == instrs
 
                 # mov    %ds,(%rax)
                 MOV_DS_TO_PTR_RAX = b'\x8c\x18'
@@ -142,7 +130,7 @@ class VerificationCopyToUserspace(EnclaveVerification):
 
             def is_mov_epilogue(state, rip):
                 def test_mov_epilogue(state, rip, instrs):
-                    return read_instr(state, rip, len(instrs)) == instrs
+                    return self.read_instr(state, rip, len(instrs)) == instrs
                 return test_mov_epilogue(state, rip, INSTR_MFENCE + INSTR_LFENCE)
 
             if is_mov_prologue(state, rip):
@@ -166,13 +154,13 @@ class VerificationCopyToUserspace(EnclaveVerification):
             self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
 
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
-            if self.is_enclave_range(state, dest, length):
+            if self.is_enclave_space(state, dest, length):
                 self.logger.debug("    - in enclave: ok" )
-            elif self.is_stack_range(state, dest, length):
+            elif self.is_on_stack(state, dest, length):
                 self.logger.debug("    - on stack: ok" )
             elif length == 8 and is_safe_userspace_write(state, rip):
                 self.logger.debug("    - safe userspace write: ok" )
-            elif length == 64 and is_aligned64(state, dest):
+            elif length == 64 and self.is_aligned64(state, dest):
                 self.logger.debug("    - well-aligned aligned 8-byte write: ok" )
             else:
                 self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))

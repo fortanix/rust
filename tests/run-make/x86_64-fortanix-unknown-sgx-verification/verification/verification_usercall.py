@@ -37,11 +37,11 @@ class VerificationUsercall(EnclaveVerification):
             rip = state.solver.eval(state.regs.rip)
             self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
 
-            if self.is_enclave_range(state, dest, length):
+            if self.is_enclave_space(state, dest, length):
                 self.logger.debug("    - in enclave: ok" )
-            elif self.is_stack_range(state, dest, length):
+            elif self.is_on_stack(state, dest, length):
                 self.logger.debug("    - on stack: ok" )
-            elif self.is_gs_segment(state, dest, length):
+            elif self.is_on_gs_segment(state, dest, length):
                 self.logger.debug("    - on gs segment: ok" )
             else:
                 self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
