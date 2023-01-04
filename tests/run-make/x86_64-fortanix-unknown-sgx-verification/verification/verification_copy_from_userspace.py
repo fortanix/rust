@@ -14,30 +14,6 @@ class VerificationCopyFromUserspace(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def track_read(state, p):
-            length = state.solver.eval(state.inspect.mem_read_length) if state.inspect.mem_read_length is not None else len(state.inspect.mem_read_expr)
-            val = state.inspect.mem_read_expr
-            dest = state.inspect.mem_read_address
-            rip = state.solver.eval(state.regs.rip)
-            self.logger.debug(hex(rip) + ": read " + str(int(length / 8)) + " bytes from " + str(dest))
-
-            # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
-            if self.is_enclave_space(state, dest, length):
-                self.logger.debug("    - in enclave: ok" )
-            elif self.is_on_stack(state, dest, length):
-                self.logger.debug("    - on stack: ok" )
-            elif length == 64 and self.is_aligned64(state, dest):
-                self.logger.debug("    - length: 8 bytes" )
-                self.logger.debug("    - well aligned: ok")
-            else:
-                self.logger.error(hex(rip) + ": read " + str(int(length / 8)) + "bytes from" + hex(dest))
-                self.logger.error("    - in enclave: no" )
-                self.logger.error("    - on stack: no" )
-                self.logger.error("    - well aligned: no")
-                self.logger.error("    -> Dangerous read instruction found")
-                self.log_state(state)
-                sm.stashes[EnclaveVerification.READ_VIOLATION].append(state.copy())
-
         # Setting up call site
         end = 0x0
         state = self.call_state(
@@ -52,7 +28,7 @@ class VerificationCopyFromUserspace(EnclaveVerification):
 
         # Setting up break points
         # See https://docs.angr.io/core-concepts/simulation#caution-about-mem_read-breakpoint
-        state.inspect.b('mem_read', when=angr.BP_BEFORE, action=lambda s : track_read(s, self.project))
+        state.inspect.b('mem_read', when=angr.BP_BEFORE, action=lambda s : self.verify_safe_userspace_reads(s))
 
         # Running the simulation
         sm = self.simulation_manager(state)
