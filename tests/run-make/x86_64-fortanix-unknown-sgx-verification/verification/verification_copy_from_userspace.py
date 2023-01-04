@@ -14,27 +14,6 @@ class VerificationCopyFromUserspace(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def is_enclave_range(state, p, length):
-            image_base = self.image_base
-            enclave_size = state.memory.load(self.enclave_size, 8, disable_actions=True, inspect=False)
-
-            if state.solver.eval(p == self.enclave_size):
-                return True
-
-            ptr = claripy.BVS("ptr", 64)
-
-            # [p; p + length[ may be in enclave range when:
-            # `ptr in [p; p + length[`
-            # and `ptr in [image_base; image_base + enclave_size[`
-            is_in_enclave = state.solver.satisfiable(extra_constraints=(
-                p <= ptr,
-                ptr < p + length,
-                self.image_base <= ptr,
-                ptr < (self.image_base + enclave_size),
-                p + enclave_size < pow(2, 64)
-                ))
-            return is_in_enclave
-
         def is_stack_range(state, dest, length):
             is_on_stack = not(state.solver.satisfiable(extra_constraints=(
                 claripy.Not(
@@ -66,7 +45,7 @@ class VerificationCopyFromUserspace(EnclaveVerification):
             self.logger.debug(hex(rip) + ": read " + str(int(length / 8)) + " bytes from " + str(dest))
 
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
-            if is_enclave_range(state, dest, length):
+            if self.is_enclave_range(state, dest, length):
                 self.logger.debug("    - in enclave: ok" )
             elif is_stack_range(state, dest, length):
                 self.logger.debug("    - on stack: ok" )
