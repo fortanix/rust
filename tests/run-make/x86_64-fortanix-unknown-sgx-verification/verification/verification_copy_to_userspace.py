@@ -17,17 +17,6 @@ class VerificationCopyToUserspace(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def is_stack_range(state, dest, length):
-            is_on_stack = not(state.solver.satisfiable(extra_constraints=(
-                claripy.Not(
-                    claripy.And(
-                        dest <= self.stack_base,
-                        self.stack_base - 0x1000 < dest
-                    )
-                ),
-                )))
-            return is_on_stack
-
         def is_aligned64(state, dest):
             return not(state.solver.satisfiable(extra_constraints=(
                 dest & 0x7 != 0,
@@ -179,7 +168,7 @@ class VerificationCopyToUserspace(EnclaveVerification):
             # We're not enforcing that the stack is part of the enclave for now. We just assume it's relative to the rsp
             if self.is_enclave_range(state, dest, length):
                 self.logger.debug("    - in enclave: ok" )
-            elif is_stack_range(state, dest, length):
+            elif self.is_stack_range(state, dest, length):
                 self.logger.debug("    - on stack: ok" )
             elif length == 8 and is_safe_userspace_write(state, rip):
                 self.logger.debug("    - safe userspace write: ok" )

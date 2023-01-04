@@ -30,29 +30,6 @@ class VerificationUsercall(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def is_stack_range(state, dest, length):
-            is_on_stack = not(state.solver.satisfiable(extra_constraints=(
-                claripy.Not(
-                    claripy.And(
-                        dest <= self.stack_base,
-                        self.stack_base - 0x1000 < dest
-                    )
-                ),
-                )))
-            return is_on_stack
-
-        def is_gs_segment(state, dest, length):
-            is_on_gs = not(state.solver.satisfiable(extra_constraints=(
-                state.regs.gs < pow(2, 64) - EnclaveVerification.GS_SEGMENT_SIZE,
-                claripy.Not(
-                    claripy.And(
-                        state.regs.gs <= dest,
-                        dest < (state.regs.gs + EnclaveVerification.GS_SEGMENT_SIZE)
-                    )
-                ),
-                )))
-            return is_on_gs
-
         def track_write(state, sm, p):
             length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
             val = state.inspect.mem_write_expr
@@ -62,9 +39,9 @@ class VerificationUsercall(EnclaveVerification):
 
             if self.is_enclave_range(state, dest, length):
                 self.logger.debug("    - in enclave: ok" )
-            elif is_stack_range(state, dest, length):
+            elif self.is_stack_range(state, dest, length):
                 self.logger.debug("    - on stack: ok" )
-            elif is_gs_segment(state, dest, length):
+            elif self.is_gs_segment(state, dest, length):
                 self.logger.debug("    - on gs segment: ok" )
             else:
                 self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))

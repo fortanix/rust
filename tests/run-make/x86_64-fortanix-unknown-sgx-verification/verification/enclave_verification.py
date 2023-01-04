@@ -115,6 +115,29 @@ class EnclaveVerification:
             ))
         return is_in_enclave
 
+    def is_stack_range(self, state, ptr, length):
+        is_on_stack = not(state.solver.satisfiable(extra_constraints=(
+            claripy.Not(
+                claripy.And(
+                    ptr <= self.stack_base,
+                    self.stack_base - 0x1000 < ptr
+                )
+            ),
+            )))
+        return is_on_stack
+
+    def is_gs_segment(self, state, ptr, length):
+        is_on_gs = not(state.solver.satisfiable(extra_constraints=(
+            state.regs.gs < pow(2, 64) - EnclaveVerification.GS_SEGMENT_SIZE,
+            claripy.Not(
+                claripy.And(
+                    state.regs.gs <= ptr,
+                    ptr < (state.regs.gs + EnclaveVerification.GS_SEGMENT_SIZE)
+                )
+            ),
+            )))
+        return is_on_gs
+
     def simulation_manager(self, state):
         sm = self.project.factory.simulation_manager(state)
         return sm
