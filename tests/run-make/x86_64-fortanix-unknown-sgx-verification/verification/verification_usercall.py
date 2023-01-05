@@ -30,26 +30,6 @@ class VerificationUsercall(EnclaveVerification):
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
 
-        def track_write(state, sm, p):
-            length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
-            val = state.inspect.mem_write_expr
-            dest = state.inspect.mem_write_address
-            rip = state.solver.eval(state.regs.rip)
-            self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
-
-            if self.is_enclave_space(state, dest, length):
-                self.logger.debug("    - in enclave: ok" )
-            elif self.is_on_stack(state, dest, length):
-                self.logger.debug("    - on stack: ok" )
-            elif self.is_on_gs_segment(state, dest, length):
-                self.logger.debug("    - on gs segment: ok" )
-            else:
-                self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
-                self.logger.error("    - in enclave: no" )
-                self.logger.error("    - on stack: no" )
-                self.logger.debug("    - on gs segment: no" )
-                self.log_state(state)
-                sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
         # hooking symbols
         self.project.hook_symbol(self.copy_to_userspace, CopyToUserspace())
@@ -66,25 +46,15 @@ class VerificationUsercall(EnclaveVerification):
                 prototype=prototype)
 
         # Setting up environment
-        if environment == None:
-            state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
-            self.stack_base = state.solver.eval(state.regs.rsp)
-            state.regs.gs = claripy.BVS("gs", 64)
-        else:
-            state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
-            self.stack_base = state.solver.eval(state.regs.rsp)
-            state.regs.gs = claripy.BVS("gs", 64)
+        if environment != None:
             environment(state)
 
         # Setting up break points
-        sm = self.simulation_manager(state)
-        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : track_write(s, sm, self.project))
+        self.simulation_manager(state)
+        state.inspect.b('mem_write', when=angr.BP_BEFORE, action=lambda s : self.verify_no_userspace_writes(s))
 
         # Running the simulation
-        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
-
-        # Print results
-        return self.process_result(sm)
+        return self.run_verification(find=lambda s : should_reach(s, end), avoid=should_avoid)
 
 def environment_accept_stream(state):
     # The `accept_stream` assumes a pointer as first argument. This needs to be within the enclave. We mimick

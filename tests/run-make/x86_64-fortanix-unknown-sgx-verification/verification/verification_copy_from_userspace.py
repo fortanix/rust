@@ -20,22 +20,14 @@ class VerificationCopyFromUserspace(EnclaveVerification):
                 self.copy_from_userspace,
                 ret_addr=end,
                 prototype="void copy_from_userspace(uint8_t const *src, uint8_t *dst, size_t len)")
-        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
-
-        image_base = self.image_base
-        enclave_size = state.memory.load(self.enclave_size, 8)
-        self.stack_base = state.solver.eval(state.regs.rsp)
 
         # Setting up break points
         # See https://docs.angr.io/core-concepts/simulation#caution-about-mem_read-breakpoint
         state.inspect.b('mem_read', when=angr.BP_BEFORE, action=lambda s : self.verify_safe_userspace_reads(s))
 
         # Running the simulation
-        sm = self.simulation_manager(state)
-        sm = sm.explore(find=lambda s : should_reach(s, end), avoid=should_avoid, num_find=EnclaveVerification.MAX_STATES)
-
-        # Print results
-        return self.process_result(sm)
+        self.simulation_manager(state)
+        return self.run_verification(find=lambda s : should_reach(s, end), avoid=should_avoid)
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
