@@ -76,6 +76,7 @@ class EnclaveVerification:
         self.logger.debug("  string_from_bytebuffer: " + hex(self.string_from_bytebuffer))
         self.logger.debug("  memcpy:                 " + hex(self.memcpy))
 
+
     def call_state(self, addr, *args, **kwargs):
         arch = archinfo.arch_from_id("amd64")
         state = self.project.factory.call_state(
@@ -86,9 +87,12 @@ class EnclaveVerification:
                 ret_addr=kwargs["ret_addr"],
                 add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"})
 
+        # Record locations
+        self.stack_base = state.solver.eval(state.regs.rsp)
+
         # Fake enclave state
-        #state.memory.store(self.enclave_size, state.solver.BVV(0x100000, 64))
-        #state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        state.regs.gs = claripy.BVS("gs", 64)
 
         return state
 
@@ -150,8 +154,19 @@ class EnclaveVerification:
 
     def simulation_manager(self, state):
         sm = self.project.factory.simulation_manager(state)
+        self.simulation_manager = sm
         return sm
 
+    def run_verification(self, find, avoid, num_find=MAX_STATES):
+        self.simulation_manager.explore(find=find, avoid=avoid, num_find=num_find)
+        return self.process_result(self.simulation_manager, num_find)
+
+    # Verifies whether the state reads:
+    #   - enclave memory
+    #   - stack space
+    #   - userspace with well-aligned 8 byte granularity
+    # All other read accesses pose a security threat on platforms that are vulnerable to stale data reads from xAPIC
+    # (see https://github.com/rust-lang/rust/pull/100383)
     def verify_safe_userspace_reads(self, state):
         length = state.solver.eval(state.inspect.mem_read_length) if state.inspect.mem_read_length is not None else len(state.inspect.mem_read_expr)
         val = state.inspect.mem_read_expr
@@ -174,7 +189,7 @@ class EnclaveVerification:
             self.logger.error("    - well aligned: no")
             self.logger.error("    -> Dangerous read instruction found")
             self.log_state(state)
-            sm.stashes[EnclaveVerification.READ_VIOLATION].append(state.copy())
+            self.simulation_manager.stashes[EnclaveVerification.READ_VIOLATION].append(state.copy())
         
     def is_safe_userspace_write(self, state, rip):
         def is_mov_prologue(state, rip):
@@ -219,6 +234,13 @@ class EnclaveVerification:
 
         return is_mov_prologue(state, rip) and is_mov_epilogue(state, rip + 2)
 
+    # Verifies whether the state writes:
+    #   - enclave memory
+    #   - stack space
+    #   - userspace with well-aligned 8 byte granularity
+    #   - userspace with well-protected 1 byte granularity
+    # All other write accesses pose a security threat on platforms that are vulnerable to MMIO stale data accesses
+    # (see https://github.com/rust-lang/rust/pull/98126)
     def verify_safe_userspace_writes(self, state):
         length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
         val = state.inspect.mem_write_expr
@@ -240,7 +262,33 @@ class EnclaveVerification:
             self.logger.error("    - in enclave: no" )
             self.logger.error("    - on stack: no" )
             self.log_state(state)
-            sm.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
+            self.simulation_manager.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
+
+    # Verifies that the state writes:
+    #   - enclave memory
+    #   - stack space
+    #   - gs-segment
+    # Accesses to userspace are marked as write violations as they should be handled by specific functions
+    def verify_no_userspace_writes(self, state):
+        length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
+        val = state.inspect.mem_write_expr
+        dest = state.inspect.mem_write_address
+        rip = state.solver.eval(state.regs.rip)
+        self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
+
+        if self.is_enclave_space(state, dest, length):
+            self.logger.debug("    - in enclave: ok" )
+        elif self.is_on_stack(state, dest, length):
+            self.logger.debug("    - on stack: ok" )
+        elif self.is_on_gs_segment(state, dest, length):
+            self.logger.debug("    - on gs segment: ok" )
+        else:
+            self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
+            self.logger.error("    - in enclave: no" )
+            self.logger.error("    - on stack: no" )
+            self.logger.debug("    - on gs segment: no" )
+            self.log_state(state)
+            self.simulation_manager.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
     def log_state(self, state):
         self.logger.debug("Regs:")
@@ -299,11 +347,11 @@ class EnclaveVerification:
                 ()
             self.log_state(state)
 
-    def process_result(self, sm):
+    def process_result(self, sm, max_states):
         ret = True
 
-        if len(sm.found) == EnclaveVerification.MAX_STATES:
-            self.logger().error("Maximum number of states reached:", EnclaveVerification.MAX_STATES)
+        if len(sm.found) > max_states:
+            self.logger.error("Maximum number of states reached:", EnclaveVerification.MAX_STATES)
             ret = False
         if len(sm.stashes[self.READ_VIOLATION]) != 0:
             self.logger.error("Some states reached a read violation")
