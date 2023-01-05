@@ -4,15 +4,13 @@ import archinfo
 import angr
 import claripy
 import hooker
+import instructions
 import logging
 import re
 import sys
 import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
-
-INSTR_LFENCE = b'\x0f\xae\xe8'
-INSTR_MFENCE = b'\x0f\xae\xf0'
 
 class EnclaveVerification:
     MAX_STATES = 25
@@ -183,105 +181,21 @@ class EnclaveVerification:
             def test_mov_prologue(state, rip, instrs):
                 return self.read_instr(state, rip - len(instrs), len(instrs)) == instrs
 
-            # mov    %ds,(%rax)
-            MOV_DS_TO_PTR_RAX = b'\x8c\x18'
-
-            # mov    %ds,(%rbx)
-            MOV_DS_TO_PTR_RBX = b'\x8c\x1b'
-
-            # mov    %ds,(%rcx)
-            MOV_DS_TO_PTR_RCX = b'\x8c\x19'
-
-            # mov    %ds,(%rdx)
-            MOV_DS_TO_PTR_RDX = b'\x8c\x1a'
-
-            # mov    %ds,(%rsi)
-            MOV_DS_TO_PTR_RSI = b'\x8c\x1e'
-
-            # mov    %ds,(%rdi)
-            MOV_DS_TO_PTR_RDI = b'\x8c\x1f'
-
-            # mov    %ds,(%r8)
-            MOV_DS_TO_PTR_R8 = b'\x41\x8c\x18'
-
-            # mov    %ds,(%r9)
-            MOV_DS_TO_PTR_R9 = b'\x41\x8c\x19'
-
-            # mov    %ds,(%r10)
-            MOV_DS_TO_PTR_R10 = b'\x41\x8c\x1a'
-
-            # mov    %ds,(%r11)
-            MOV_DS_TO_PTR_R11 = b'\x41\x8c\x1b'
-
-            # mov    %ds,(%r12)
-            MOV_DS_TO_PTR_R12 = b'\x41\x8c\x1c\x24'
-
-            # mov    %ds,(%r13)
-            MOV_DS_TO_PTR_R13 = b'\x41\x8c\x5d\x00'
-
-            # mov    %ds,(%r14)
-            MOV_DS_TO_PTR_R14 = b'\x41\x8c\x1e'
-
-            # mov    %ds,(%r15)
-            MOV_DS_TO_PTR_R15 = b'\x41\x8c\x1f'
-
-            # 0f 00 28             	verw   (%rax)
-            VERW_RAX = b'\x0f\x00\x28'
-
-            # 0f 00 2b             	verw   (%rbx)
-            VERW_RBX = b'\x0f\x00\x2b'
-
-            # 0f 00 29             	verw   (%rcx)
-            VERW_RCX = b'\x0f\x00\x29'
-
-            # 0f 00 2a             	verw   (%rdx)
-            VERW_RDX = b'\x0f\x00\x2a'
-
-            # 0f 00 2e             	verw   (%rsi)
-            VERW_RSI = b'\x0f\x00\x2e'
-
-            # 0f 00 2f             	verw   (%rdi)
-            VERW_RDI = b'\x0f\x00\x2f'
-
-            # 41 0f 00 28          	verw   (%r8)
-            VERW_R8 = b'\x41\x0f\x00\x28'
-
-            # 41 0f 00 29          	verw   (%r9)
-            VERW_R9 = b'\x41\x0f\x00\x29'
-
-            # 41 0f 00 2a          	verw   (%r10)
-            VERW_R10 = b'\x41\x0f\x00\x2a'
-
-            # 41 0f 00 2b          	verw   (%r11)
-            VERW_R11 = b'\x41\x0f\x00\x2b'
-
-            # 41 0f 00 2c 24       	verw   (%r12)
-            VERW_R12 = b'\x41\x0f\x00\x2c'
-
-            # 41 0f 00 6d 00       	verw   0x0(%r13)
-            VERW_R13 = b'\x41\x0f\x00\x6d\x00'
-
-            # 41 0f 00 2e          	verw   (%r14)
-            VERW_R14 = b'\x41\x0f\x00\x2e'
-
-            # 41 0f 00 2f          	verw   (%r15)
-            VERW_R15 = b'\x41\x0f\x00\x2f'
-
             PROLOGUES = [
-                MOV_DS_TO_PTR_RAX + VERW_RAX + INSTR_LFENCE,
-                MOV_DS_TO_PTR_RBX + VERW_RBX + INSTR_LFENCE,
-                MOV_DS_TO_PTR_RCX + VERW_RCX + INSTR_LFENCE,
-                MOV_DS_TO_PTR_RDX + VERW_RDX + INSTR_LFENCE,
-                MOV_DS_TO_PTR_RSI + VERW_RSI + INSTR_LFENCE,
-                MOV_DS_TO_PTR_RDI + VERW_RDI + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R8  + VERW_R8  + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R9  + VERW_R9  + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R10 + VERW_R10 + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R11 + VERW_R11 + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R12 + VERW_R12 + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R13 + VERW_R13 + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R14 + VERW_R14 + INSTR_LFENCE,
-                MOV_DS_TO_PTR_R15 + VERW_R15 + INSTR_LFENCE]
+                instructions.MOV_DS_TO_DEREF_RAX + instructions.VERW_RAX + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_RBX + instructions.VERW_RBX + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_RCX + instructions.VERW_RCX + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_RDX + instructions.VERW_RDX + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_RSI + instructions.VERW_RSI + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_RDI + instructions.VERW_RDI + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R8  + instructions.VERW_R8  + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R9  + instructions.VERW_R9  + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R10 + instructions.VERW_R10 + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R11 + instructions.VERW_R11 + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R12 + instructions.VERW_R12 + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R13 + instructions.VERW_R13 + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R14 + instructions.VERW_R14 + instructions.LFENCE,
+                instructions.MOV_DS_TO_DEREF_R15 + instructions.VERW_R15 + instructions.LFENCE]
 
             for prologue in PROLOGUES:
                 if test_mov_prologue(state, rip, prologue):
@@ -291,7 +205,7 @@ class EnclaveVerification:
         def is_mov_epilogue(state, rip):
             def test_mov_epilogue(state, rip, instrs):
                 return self.read_instr(state, rip, len(instrs)) == instrs
-            return test_mov_epilogue(state, rip, INSTR_MFENCE + INSTR_LFENCE)
+            return test_mov_epilogue(state, rip, instructions.MFENCE + instructions.LFENCE)
 
         if is_mov_prologue(state, rip):
             self.logger.debug("    - save move prologue: ok" )
