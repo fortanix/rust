@@ -117,16 +117,20 @@ class EnclaveVerification:
             ))
         return is_in_enclave
 
-    def is_on_stack(self, state, ptr, length):
-        is_on_stack = not(state.solver.satisfiable(extra_constraints=(
+    # TODO Fix constraint: length isn't taken into account
+    def is_in_region(self, state, ptr, length, region_start, region_length):
+        is_in_region = not(state.solver.satisfiable(extra_constraints=(
             claripy.Not(
                 claripy.And(
-                    ptr <= self.stack_base,
-                    self.stack_base - 0x1000 < ptr
+                    ptr <= region_start,
+                    region_start - region_length < ptr
                 )
             ),
             )))
-        return is_on_stack
+        return is_in_region
+
+    def is_on_stack(self, state, ptr, length):
+        return self.is_in_region(state, ptr, length, self.stack_base, 0x1000)
 
     def is_on_gs_segment(self, state, ptr, length):
         is_on_gs = not(state.solver.satisfiable(extra_constraints=(
@@ -267,27 +271,43 @@ class EnclaveVerification:
     # Verifies that the state writes:
     #   - enclave memory
     #   - stack space
-    #   - gs-segment
     # Accesses to userspace are marked as write violations as they should be handled by specific functions
     def verify_no_userspace_writes(self, state):
         length = state.solver.eval(state.inspect.mem_write_length) if state.inspect.mem_write_length is not None else len(state.inspect.mem_write_expr)
         val = state.inspect.mem_write_expr
         dest = state.inspect.mem_write_address
         rip = state.solver.eval(state.regs.rip)
-        self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
+        self.logger.debug(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest) + "(no userspace writes)")
 
         if self.is_enclave_space(state, dest, length):
             self.logger.debug("    - in enclave: ok" )
-        elif self.is_on_stack(state, dest, length):
-            self.logger.debug("    - on stack: ok" )
-        elif self.is_on_gs_segment(state, dest, length):
-            self.logger.debug("    - on gs segment: ok" )
+            return True
         else:
-            self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
-            self.logger.error("    - in enclave: no" )
-            self.logger.error("    - on stack: no" )
-            self.logger.debug("    - on gs segment: no" )
-            self.log_state(state)
+            self.logger.debug("    - in enclave: no" )
+
+        if self.is_on_stack(state, dest, length):
+            self.logger.debug("    - on stack: ok" )
+            return True
+        else:
+            self.logger.debug("    - on stack: no" )
+            self.logger.debug("    -> suspicious write detected" )
+            return False
+
+    def is_above(self, state, ptr, length, region_start, region_length):
+        is_above_start = not(state.solver.satisfiable(extra_constraints=(claripy.Not(region_start <= ptr),),))
+        self.logger.debug("    - is above start: " + str(is_above_start))
+
+        return is_above_start
+
+    def is_below(self, state, ptr, length, region_start, region_length):
+        is_below_end = not(state.solver.satisfiable(extra_constraints=(claripy.Not(ptr + length <= region_start + region_length),),))
+        self.logger.debug("    - is below region end: " + str(is_below_end))
+
+        return is_below_end
+
+
+    def verify_write_violation(self, state, predicate):
+        if not predicate(state):
             self.simulation_manager.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
     def log_state(self, state):
@@ -312,7 +332,11 @@ class EnclaveVerification:
         #self.logger.debug(" - %d   = " + str(state.regs.dflag))
         #self.logger.debug(" - %e   = " + str(state.regs.eflags))
         #self.logger.debug(" - %r   = " + str(state.regs.get("rflags")))
-        self.logger.debug("")
+
+        if 'destination' in state.globals.keys():
+            self.logger.debug("Globals:")
+            self.logger.debug(" - destination = " + str(state.globals['destination']))
+
 
         # https://docs.angr.io/core-concepts/states#the-callstack-plugin
         self.logger.debug("Callsite (most recent last):")
