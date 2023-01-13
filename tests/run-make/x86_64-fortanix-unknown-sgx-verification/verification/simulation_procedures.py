@@ -84,14 +84,24 @@ class Rdrand(angr.SimProcedure):
 class Movsq(angr.SimProcedure):
     IS_FUNCTION = False
     def run(self, **kwargs):
+        log.debug("movsq detected! Simulating single move")
         rdi = self.state.registers.load("rdi")
         rsi = self.state.registers.load("rsi")
         # TODO check that req instruction prefix executes correctly
-        #self.state.memory.store(0xbeefbeef, self.state.solver.BVV(42, 64))
         self.state.memory.store(rdi, rsi)
-        #print("HERE")
         self.successors.add_successor(
             self.state, self.state.addr + kwargs["bytes_to_skip"],
             self.state.solver.true, 'Ijk_Boring')
 
-
+class Movsb(angr.SimProcedure):
+    IS_FUNCTION = False
+    def run(self, **kwargs):
+        print("movsb detected! Simulating single move")
+        pass
+        #rdi = self.state.registers.load("rdi")
+        #rsi = self.state.registers.load("rsi")
+        # TODO check that req instruction prefix executes correctly
+        #self.state.memory.store(rdi, rsi)
+        #self.successors.add_successor(
+        #    self.state, self.state.addr + kwargs["bytes_to_skip"],
+        #    self.state.solver.true, 'Ijk_Boring')
