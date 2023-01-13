@@ -58,5 +58,7 @@ class Hooker:
             return Nop(bytes_to_skip=capstone_instruction.size)
         elif "movsq" in capstone_instruction.mnemonic:
             return Movsq(bytes_to_skip=capstone_instruction.size)
+        elif "movsb" in capstone_instruction.mnemonic:
+            return Movsq(bytes_to_skip=capstone_instruction.size)
         else:
             None
