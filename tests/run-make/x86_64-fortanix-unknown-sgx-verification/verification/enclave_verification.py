@@ -76,7 +76,13 @@ class EnclaveVerification:
         self.logger.debug("  string_from_bytebuffer: " + hex(self.string_from_bytebuffer))
         self.logger.debug("  memcpy:                 " + hex(self.memcpy))
 
-
+    def enclave_entry_state(self, addr):
+        state = self.project.factory.blank_state(
+                addr=addr,
+                add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"}
+                )
+        return state
+        
     def call_state(self, addr, *args, **kwargs):
         arch = archinfo.arch_from_id("amd64")
         state = self.project.factory.call_state(
@@ -329,9 +335,10 @@ class EnclaveVerification:
         self.logger.debug(" - %rbp = " + str(state.regs.rbp))
         self.logger.debug(" - %rsp = " + str(state.regs.rsp))
         self.logger.debug(" - %rip = " + str(state.regs.rip))
-        #self.logger.debug(" - %d   = " + str(state.regs.dflag))
-        #self.logger.debug(" - %e   = " + str(state.regs.eflags))
-        #self.logger.debug(" - %r   = " + str(state.regs.get("rflags")))
+        self.logger.debug(" - %d   = " + str(state.regs.dflag))
+        self.logger.debug(" - %e   = " + str(state.regs.eflags))
+        self.logger.debug(" - flags= " + str(state.regs.flags))
+
 
         if 'destination' in state.globals.keys():
             self.logger.debug("Globals:")
@@ -393,5 +400,6 @@ class EnclaveVerification:
         self.log_states(sm.stashes[self.READ_VIOLATION], "Read violation")
         self.log_states(sm.stashes[self.WRITE_VIOLATION], "Write violation")
         self.log_states(sm.found, "Found")
+        self.log_states(sm.unconstrained, "Unconstrained")
         self.log_states(sm.errored, "Error")
         return ret

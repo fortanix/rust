@@ -19,7 +19,7 @@ import angr
 import sys
 import pyvex
 from capstone import Cs, CS_ARCH_X86, CS_MODE_64
-from simulation_procedures import SimEnclu, Nop, Rdrand, UD2, Movsq
+from simulation_procedures import SimEnclu, Nop, Rdrand, UD2, Movsq, Xrstor
 
 class Hooker:
     def setup(self, proj):
@@ -28,6 +28,7 @@ class Hooker:
 
     def instruction_hooker(self, angr_proj, ins_to_sim_proc):
         md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
         md.skipdata = False #True  # If invalid instruction is found, search for next valid one instead of aborting
         for section in angr_proj.loader.main_object.sections:
             if section.is_executable:
@@ -47,7 +48,7 @@ class Hooker:
         elif "xsave" in capstone_instruction.mnemonic:
             return Nop(bytes_to_skip=capstone_instruction.size)  # NOTE: the original "guardian code" contained a mistake here!
         elif "xrstor" in capstone_instruction.mnemonic:
-            return Nop(bytes_to_skip=capstone_instruction.size)
+            return Xrstor(insn=capstone_instruction, bytes_to_skip=capstone_instruction.size)
         elif capstone_instruction.mnemonic == "fxrstor64":
             return Nop(bytes_to_skip=capstone_instruction.size)
         elif capstone_instruction.mnemonic == "rdrand":
