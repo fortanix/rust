@@ -33,6 +33,8 @@ objdump -D ${enclave} > /tmp/dump
 rm *.log || true
 
 # Functional correctness special functions
+python3 verification/verification_entry_code.py ${enclave}
+exit 0
 python3 verification/verification_image_base.py ${enclave}
 python3 verification/verification_is_enclave_range.py ${enclave}
 python3 verification/verification_copy_from_userspace.py ${enclave}

@@ -19,6 +19,8 @@ import angr, claripy
 import itertools
 import collections
 
+from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
+
 log = logging.getLogger(__name__)
 
 
@@ -41,7 +43,8 @@ class SimEnclu(angr.SimProcedure):
             log.critical("Unexpected EENTER")
             self.exit(1)
         elif self.state.solver.eval(self.state.regs.eax == 0x4):
-            log.critical("Unexpected EEXIT")
+            rip = self.state.solver.eval(self.state.regs.rip)
+            log.critical("Unexpected EEXIT (rip = " + hex(rip) + ")")
             self.exit(1)
         else:
             log.critical("Unexpected ENCLU")
@@ -56,6 +59,96 @@ class Nop(angr.SimProcedure):
             self.state, self.state.addr + kwargs["bytes_to_skip"],
             self.state.solver.true, 'Ijk_Boring')
 
+class Xrstor(angr.SimProcedure):
+    IS_FUNCTION = False
+
+    def read(self, ptr, length, cast_to):
+        return self.state.solver.eval(
+                    self.state.memory.load(ptr, length, disable_actions=True, inspect=False),
+                    cast_to=cast_to
+                )
+
+    def run(self, **kwargs):
+        insn = kwargs["insn"]
+        # Decode instruction
+        # ref https://github.com/capstone-engine/capstone/blob/ab8892658790eb44f03b9047c6765bc3812d1ae1/bindings/python/test_x86.py#L119
+        if len(insn.operands) != 1:
+            print("Unexpected xrstor instruction encoding: " + str(insn))
+            exit(1)
+
+        if insn.operands[0].type == X86_OP_MEM:
+            base_reg = insn.operands[0].mem.base
+            index = insn.operands[0].mem.index
+            disp = insn.operands[0].mem.disp
+            scale = insn.operands[0].mem.scale
+
+            if insn.operands[0].mem.segment != 0:
+                print("Unexpected xrstor instruction encoding (unrecognized segment): " + str(insn))
+                exit(1)
+
+            if insn.reg_name(base_reg) != "rip":
+                print("Unexpected xrstor instruction encoding (unrecognized base reg): " + str(insn))
+                exit(1)
+
+            rip = self.state.solver.eval(self.state.regs.rip)
+            xsave_area = rip + index * scale + disp + insn.size
+        else:
+            print("Unexpected xrstor instruction encoding")
+            exit(1)
+
+        # The enclave sets XCR0, we don't know it at the elf level
+        xcr0 = 0xFFFFFFFFFFFFFFFF
+        edx = self.state.solver.eval(self.state.regs.rdx) & 0xFFFFFFFF
+        eax = self.state.solver.eval(self.state.regs.rax) & 0xFFFFFFFF
+        rfbm = edx << 32 | eax & xcr0
+
+        # Vol 1, chpt 13.4 XSAVE Area
+        # https://cdrdv2.intel.com/v1/dl/getContent/671200
+        xsave_header = self.read(xsave_area + 512, 64, cast_to=bytes)
+        xstate_bv = self.read(xsave_area + 512, 8, cast_to=int)
+        xcomp_bv = self.read(xsave_area + 512 + 8, 8, cast_to=int)
+        compmask = xcomp_bv
+        rstormask = xstate_bv
+
+        if compmask & (0x1 << 63) == (0x1 << 63):
+            print("Unexpected xrstor instruction evaluation (compact format not supported)")
+            exit(1)
+        else:
+            to_be_restored = rfbm & rstormask
+            to_be_initialized = rfbm & ~rstormask
+            # If RFBM[i] = 0, XRSTOR does not update state component i. There is an exception
+            # if RFBM[1] = 0 and RFBM[2] = 1. In this case, the standard form of XRSTOR will
+            # load MXCSR from memory, even though MXCSR is part of state component 1 — SSE.
+            # The compacted form of XRSTOR does not make this exception.
+            # We may be in this case as xcr0 is set by the enclave at a later stage
+            EXPECTED_COMPONENT0 = [0x00] * 32
+            EXPECTED_COMPONENT0[24] = 0x80
+            EXPECTED_COMPONENT0[25] = 0x1f
+
+            component0 = self.read(xsave_area, 32, cast_to=bytes)
+            if list(component0) != EXPECTED_COMPONENT0:
+                print("Unexpected mxcsr initialization")
+                exit(1)
+
+            for i in range(0, 64):
+                mask = 0x1 << i
+                if to_be_restored & mask == mask:
+                    print("Unexpected xrstor instruction evaluation (component " + str(i) + "restored)")
+                    exit(1)
+                elif to_be_initialized & mask == mask:
+                    # If RFBM[i] = 1 and bit i is clear in the XSTATE_BV field in the XSAVE header,
+                    # XRSTOR initializes state component i
+                    # (XRSTOR x86 instruction manual)
+                    #print("Initialize xsave component " + str(i))
+                    ()
+                else:
+                    print("Unexpected xrstor instruction evaluation (component " + str(i) + "not initialized)")
+                    exit(1)
+
+        self.state.globals["xsave_initialization"] = True
+        self.successors.add_successor(
+            self.state, self.state.addr + kwargs["bytes_to_skip"],
+            self.state.solver.true, 'Ijk_Boring')
 
 class Empty(angr.SimProcedure):
     def run(self):
