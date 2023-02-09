@@ -11,12 +11,27 @@ import sys
 import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
+from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
 class EnclaveVerification:
     MAX_STATES = 25
     GS_SEGMENT_SIZE = 0x1000
     WRITE_VIOLATION = "WRITE_VIOLATION"
     READ_VIOLATION = "READ_VIOLATION"
+
+    # constants values
+    OFFSET_TCSLS_TOS = 0x00
+    OFFSET_TCSLS_FLAGS = 0x08
+    OFFSET_TCSLS_LAST_RSP = 0x10
+    OFFSET_TCSLS_USER_RSP = 0X28
+    OFFSET_TCSLS_USER_RETIP = 0x30
+    OFFSET_TCSLS_USER_RBP = 0X38
+    OFFSET_TCSLS_USER_R12 = 0x40
+    OFFSET_TCSLS_USER_R13 = 0x48
+    OFFSET_TCSLS_USER_R14 = 0x50
+    OFFSET_TCSLS_USER_R15 = 0x58
+    OFFSET_TCSLS_TCS_ADDR = 0x68
 
     def __init__(self, enclave_path, name):
         self.enclave = enclave_path
@@ -75,6 +90,99 @@ class EnclaveVerification:
         self.logger.debug("  panic:                  " + hex(self.panic))
         self.logger.debug("  string_from_bytebuffer: " + hex(self.string_from_bytebuffer))
         self.logger.debug("  memcpy:                 " + hex(self.memcpy))
+
+    def find_location_aborted(self):
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        md.skipdata = True
+
+        # We assume the usercall function still looks like:
+        #
+        #   usercall:
+        #      test %rcx,%rcx            /* check `abort` function argument */
+        #      jnz .Lusercall_abort      /* abort is set, jump to abort code (unlikely forward conditional) */
+        #      jmp .Lusercall_save_state /* non-aborting usercall */
+        #   .Lusercall_abort:
+        #   /* set aborted bit */
+        #   movb $1,.Laborted(%rip)
+        #
+        # and extract the location of the .Laborted symbol
+        addr = self.usercall + 7
+        length = 7
+        instr = self.project.loader.memory.load(addr, length)
+
+        insn = list(md.disasm(instr, addr))[0]
+        if insn.operands[0].type == X86_OP_MEM:
+            base_reg = insn.operands[0].mem.base
+            index = insn.operands[0].mem.index
+            disp = insn.operands[0].mem.disp
+            scale = insn.operands[0].mem.scale
+
+            if insn.operands[0].mem.segment != 0:
+                print("Unexpected mov instruction encoding (unrecognized segment): " + str(insn))
+                exit(1)
+
+            if insn.operands[0].mem.scale != 1:
+                print("Unexpected mov instruction encoding (unexpected scale value): " + str(insn))
+                exit(1)
+
+            if insn.operands[0].mem.index != 0:
+                print("Unexpected mov instruction encoding (unexpected index value): " + str(insn))
+                exit(1)
+
+            if insn.reg_name(base_reg) != "rip":
+                print("Unexpected mov instruction encoding (unrecognized base reg): " + str(insn))
+                exit(1)
+            return disp + addr + length
+        else:
+            print("Unexpected mov instruction encoding")
+            exit(1)
+
+    def find_location_eexit(self):
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        md.skipdata = True
+
+        # We assume the usercall function still looks like:
+        #
+        # 0000000000019828 <sgx_entry>:
+        #           19828:  65 48 89 0c 25 30 00  mov    %rcx,%gs:0x30
+        #             ...
+        #           19a22:  b8 04 00 00 00        mov    $0x4,%eax
+        #           19a27:  0f 01 d7              enclu
+        #
+        # and extract the location of the .Laborted symbol
+        addr = self.sgx_entry + 0x1fa
+        length = 8
+        instrs = self.project.loader.memory.load(addr, length)
+        instrs = list(md.disasm(instrs, addr))
+
+        # Assert we found a `mov $0x4, %eax` instruction
+        mov = instrs[0]
+        op0 = mov.operands[0]
+        op1 = mov.operands[1]
+        if mov.mnemonic != "mov":
+            print("Expected mov instruction, found " + str(mov.mnemonic))
+            exit(1)
+        if op0.type == X86_OP_REG:
+            if mov.reg_name(op0.reg) != "eax":
+                print("Unexpected mov instruction (reg = " + hex(op0.reg) + ")")
+                exit(1)
+
+        if op1.type == X86_OP_IMM:
+            if op1.imm != 0x4:
+                print("Unexpected mov instruction (immediate = " + hex(op1.imm) + ")")
+                exit(1)
+        else:
+            print("Unexpected mov instruction encoding")
+            exit(1)
+
+        # Assert we found an enclu instruction
+        enclu = instrs[1]
+        if enclu.mnemonic != "enclu":
+            print("Expected enclu instruction, found " + str(enclu.mnemonic))
+            exit(1)
+        return enclu.address
 
     def enclave_entry_state(self, addr):
         state = self.project.factory.blank_state(

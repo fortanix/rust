@@ -18,110 +18,12 @@ class VerificationEntryCode(EnclaveVerification):
         self.debug = debug
         self.ret_usercall = ret_usercall
 
-    def find_location_aborted(self):
-        md = Cs(CS_ARCH_X86, CS_MODE_64)
-        md.detail = True
-        md.skipdata = True
-
-        # We assume the usercall function still looks like:
-        #
-        #   usercall:
-        #      test %rcx,%rcx            /* check `abort` function argument */
-        #      jnz .Lusercall_abort      /* abort is set, jump to abort code (unlikely forward conditional) */
-        #      jmp .Lusercall_save_state /* non-aborting usercall */
-        #   .Lusercall_abort:
-        #   /* set aborted bit */
-        #   movb $1,.Laborted(%rip)
-        #
-        # and extract the location of the .Laborted symbol
-        addr = self.usercall + 7
-        length = 7
-        instr = self.project.loader.memory.load(addr, length)
-
-        insn = list(md.disasm(instr, addr))[0]
-        if insn.operands[0].type == X86_OP_MEM:
-            base_reg = insn.operands[0].mem.base
-            index = insn.operands[0].mem.index
-            disp = insn.operands[0].mem.disp
-            scale = insn.operands[0].mem.scale
-
-            if insn.operands[0].mem.segment != 0:
-                print("Unexpected mov instruction encoding (unrecognized segment): " + str(insn))
-                exit(1)
-
-            if insn.operands[0].mem.scale != 1:
-                print("Unexpected mov instruction encoding (unexpected scale value): " + str(insn))
-                exit(1)
-
-            if insn.operands[0].mem.index != 0:
-                print("Unexpected mov instruction encoding (unexpected index value): " + str(insn))
-                exit(1)
-
-            if insn.reg_name(base_reg) != "rip":
-                print("Unexpected mov instruction encoding (unrecognized base reg): " + str(insn))
-                exit(1)
-            return disp + addr + length
-        else:
-            print("Unexpected mov instruction encoding")
-            exit(1)
-
-    def find_location_eexit(self):
-        md = Cs(CS_ARCH_X86, CS_MODE_64)
-        md.detail = True
-        md.skipdata = True
-
-        # We assume the usercall function still looks like:
-        #
-        # 0000000000019828 <sgx_entry>:
-        #           19828:  65 48 89 0c 25 30 00  mov    %rcx,%gs:0x30
-        #             ...
-        #           19a22:  b8 04 00 00 00        mov    $0x4,%eax
-        #           19a27:  0f 01 d7              enclu
-        #
-        # and extract the location of the .Laborted symbol
-        addr = self.sgx_entry + 0x1fa
-        length = 8
-        instrs = self.project.loader.memory.load(addr, length)
-        instrs = list(md.disasm(instrs, addr))
-
-        # Assert we found a `mov $0x4, %eax` instruction
-        mov = instrs[0]
-        op0 = mov.operands[0]
-        op1 = mov.operands[1]
-        if mov.mnemonic != "mov":
-            print("Expected mov instruction, found " + str(mov.mnemonic))
-            exit(1)
-        if op0.type == X86_OP_REG:
-            if mov.reg_name(op0.reg) != "eax":
-                print("Unexpected mov instruction (reg = " + hex(op0.reg) + ")")
-                exit(1)
-
-        if op1.type == X86_OP_IMM:
-            if op1.imm != 0x4:
-                print("Unexpected mov instruction (immediate = " + hex(op1.imm) + ")")
-                exit(1)
-        else:
-            print("Unexpected mov instruction encoding")
-            exit(1)
-
-        # Assert we found an enclu instruction
-        enclu = instrs[1]
-        if enclu.mnemonic != "enclu":
-            print("Expected enclu instruction, found " + str(enclu.mnemonic))
-            exit(1)
-        return enclu.address
-
     def verify(self):
         def should_avoid(state):
             return False
 
         def should_reach(state, end):
             return state.solver.eval(state.regs.rip == end)
-
-        # constants values
-        OFFSET_TCSLS_TOS = 0x00
-        OFFSET_TCSLS_FLAGS = 0x08
-        OFFSET_TCSLS_LAST_RSP = 0x10
 
         # dummy values
         TOS_VALUE = random.randint(0x1000, 0x10000)
@@ -208,23 +110,25 @@ class VerificationEntryCode(EnclaveVerification):
             last_r15 = state.solver.BVS("last_r15", 64)
             last_rsp = state.solver.BVS("last_rsp", 64)
 
-            state.memory.store(GS_LOCATION + OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 0, last_mxcsr, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 4, last_cw, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 8, last_rbx, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 16, last_rbp, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 24, last_r12, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 32, last_r13, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 40, last_r14, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 48, last_r15, endness=state.arch.memory_endness)
-            state.memory.store(last_rsp + 56, state.solver.BVV(LAST_RIP, 64), endness=state.arch.memory_endness)
+            # Last rsp and regs are only set during usercall when its _not_ an abort.
+            if not(self.aborted):
+                state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 0, last_mxcsr, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 4, last_cw, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 8, last_rbx, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 16, last_rbp, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 24, last_r12, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 32, last_r13, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 40, last_r14, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 48, last_r15, endness=state.arch.memory_endness)
+                state.memory.store(last_rsp + 56, state.solver.BVV(LAST_RIP, 64), endness=state.arch.memory_endness)
         else:
             last_rsp = state.solver.BVV(0x0, 64)
 
         # Reset gs:tcsls_last_rsp (we're only interested in normal enclave entries, not returns from usercalls)
-        state.memory.store(GS_LOCATION + OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
-        state.memory.store(GS_LOCATION + OFFSET_TCSLS_FLAGS, state.solver.BVV(tcsls_flags, 64), endness=state.arch.memory_endness)
-        state.memory.store(GS_LOCATION + OFFSET_TCSLS_TOS, state.solver.BVV(TOS_VALUE, 64), endness=state.arch.memory_endness)
+        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
+        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_FLAGS, state.solver.BVV(tcsls_flags, 64), endness=state.arch.memory_endness)
+        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_TOS, state.solver.BVV(TOS_VALUE, 64), endness=state.arch.memory_endness)
         state.memory.store(aborted, state.solver.BVV(aborted_val, 8), endness=state.arch.memory_endness)
         state.memory.store(debug, state.solver.BVV(debug_val, 8), endness=state.arch.memory_endness)
 
@@ -375,7 +279,7 @@ class VerificationEntryCode(EnclaveVerification):
                         print("Error! rsp set to an unexpected value (expected last_rsp + 0x40)")
                         return False
 
-                    mem_last_rsp = state.memory.load(GS_LOCATION + OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
+                    mem_last_rsp = state.memory.load(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != 0x0, )):
                         print("gs:tcsls_last_rsp is not reset")
                         exit(1)
