@@ -184,6 +184,45 @@ class EnclaveVerification:
             exit(1)
         return enclu.address
 
+    def find_location_call_entry(self):
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        md.skipdata = True
+
+        # We assume the sgx_entry function still looks like:
+        #
+        # 0000000000019828 <sgx_entry>:
+        #    ...
+        #    19980:	e8 2b 09 00 00       	callq  1a2b0 <entry>
+        #    19985:	48 89 c6             	mov    %rax,%rsi
+        #    ...
+        #    19a1f:	0f ae e8             	lfence
+        #    19a22:	b8 04 00 00 00       	mov    $0x4,%eax
+        #    19a27:	0f 01 d7             	enclu
+        #
+        # and extract the location of the .Laborted symbol
+        addr = self.sgx_entry + 0x158
+        length = 5
+        instrs = self.project.loader.memory.load(addr, length)
+        instrs = list(md.disasm(instrs, addr))
+
+        # Assert we found a `callq` instruction
+        call = instrs[0]
+        op = call.operands[0]
+        if call.mnemonic != "call":
+            print("Expected call instruction, found " + str(mov.mnemonic))
+            exit(1)
+
+        if op.type != X86_OP_IMM:
+            print("Unexpected call instruction encoding")
+            exit(1)
+
+        return call.address
+
+    def find_location_call_entry_ret(self):
+        instr_length = 5
+        return self.find_location_call_entry() + instr_length
+
     def enclave_entry_state(self, addr):
         state = self.project.factory.blank_state(
                 addr=addr,
@@ -504,10 +543,14 @@ class EnclaveVerification:
         if len(sm.unconstrained) != 0:
             self.logger.error("Some states reached an unconstrained state")
             ret = False
+        if len(sm.deadended) != 0:
+            self.logger.error("Some states reached a deadended state")
+            ret = False
 
         self.log_states(sm.stashes[self.READ_VIOLATION], "Read violation")
         self.log_states(sm.stashes[self.WRITE_VIOLATION], "Write violation")
         self.log_states(sm.found, "Found")
         self.log_states(sm.unconstrained, "Unconstrained")
         self.log_states(sm.errored, "Error")
+        self.log_states(sm.deadended, "Deadended")
         return ret
