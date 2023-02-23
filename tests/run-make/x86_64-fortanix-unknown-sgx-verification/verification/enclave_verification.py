@@ -485,6 +485,7 @@ class EnclaveVerification:
         self.logger.debug(" - %d   = " + str(state.regs.dflag))
         self.logger.debug(" - %e   = " + str(state.regs.eflags))
         self.logger.debug(" - flags= " + str(state.regs.flags))
+        self.logger.debug(" - %gs  = " + str(state.regs.gs))
 
 
         if 'destination' in state.globals.keys():
