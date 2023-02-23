@@ -15,7 +15,7 @@ from capstone import Cs, CS_ARCH_X86, CS_MODE_64
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
 class EnclaveVerification:
-    MAX_STATES = 25
+    MAX_STATES = 50
     GS_SEGMENT_SIZE = 0x1000
     WRITE_VIOLATION = "WRITE_VIOLATION"
     READ_VIOLATION = "READ_VIOLATION"
