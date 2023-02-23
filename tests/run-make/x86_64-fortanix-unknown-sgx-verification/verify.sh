@@ -8,7 +8,7 @@ RUSTC=${RUSTC:="rustc"}
 TEST_DIR=${TEST_DIR:="${script_dir}"}
 TARGET=${TARGET:="x86_64-fortanix-unknown-sgx"}
 
-# pip3 install angr
+pip3 install angr
 
 function build {
     mkdir -p $WORK_DIR
@@ -20,17 +20,14 @@ function build {
             # HACK(eddyb) sets `RUSTC_BOOTSTRAP=1` so Cargo can accept nightly features.
             # These come from the top-level Rust workspace, that this crate is not a
             # member of, but Cargo tries to load the workspace `Cargo.toml` anyway.
-            env RUSTC_BOOTSTRAP=1
-                cargo +stage1 build --target ${TARGET} --release
+            env RUSTC_BOOTSTRAP=1 \
+                ${BOOTSTRAP_CARGO} build --target ${TARGET} --release
 	    enclave=$(pwd)/target/x86_64-fortanix-unknown-sgx/release/test_enclave
         popd
     popd
 }
 
 build
-
-objdump -D ${enclave} > /tmp/dump
-rm *.log || true
 
 # Functional correctness special functions
 python3 verification/verification_entry_code.py ${enclave}
@@ -70,4 +67,5 @@ python3 verification/verification_usercall.py ${enclave} "send"
 python3 verification/verification_usercall.py ${enclave} "wait"
 python3 verification/verification_usercall.py ${enclave} "alloc"
 
+rm -rf ${WORK_DIR}
 echo "Verification completed successfully!"
