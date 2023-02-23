@@ -519,7 +519,8 @@ class EnclaveVerification:
             state = records[idx_state]
             self.logger.debug("[" + state_name + " state " + str (idx_state + 1) + "/" + str(len(records)) + "]")
             try:
-                #self.logger.debug("Error: " + len(records[idx_state].error))
+                self.logger.error("Error: ")
+                self.logger.error(state.error)
                 state = records[idx_state].state
             except:
                 ()
