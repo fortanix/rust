@@ -38,6 +38,7 @@ class EnclaveVerification:
         self.logger = self.create_logger(name)
         self.logger.info("Load project")
         project = angr.Project(enclave_path, load_options={'auto_load_libs': False})
+        #logging.getLogger('angr').setLevel('DEBUG')
 
         # Hook and simulate specific instructions that are unknown to angr
         project = hooker.Hooker().setup(project)

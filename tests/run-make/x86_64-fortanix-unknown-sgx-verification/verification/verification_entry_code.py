@@ -27,7 +27,7 @@ class VerificationEntryCode(EnclaveVerification):
 
         # dummy values
         TOS_VALUE = random.randint(0x1000, 0x10000)
-        GS_LOCATION = random.randint(0, 0x10000)
+        EnclaveVerification.GS_LOCATION = random.randint(0, 0x10000)
         LAST_RIP = random.randint(0x800000, 0x1000000000)
 
         print("Verifying with settings:")
@@ -36,7 +36,7 @@ class VerificationEntryCode(EnclaveVerification):
         print(" - debug:           " + str(self.debug))
         print(" - ret usercall:    " + str(self.ret_usercall))
         print(" - Top of stack:    " + hex(TOS_VALUE))
-        print(" - GS segment:      " + hex(GS_LOCATION))
+        print(" - GS segment:      " + hex(EnclaveVerification.GS_LOCATION))
         print(" - last %rip:       " + hex(LAST_RIP))
 
         entry = self.project.loader.find_symbol("entry").rebased_addr
@@ -72,7 +72,7 @@ class VerificationEntryCode(EnclaveVerification):
         state.regs.rcx = arg3
         state.regs.r8 = arg4
         state.regs.r9 = arg5
-        state.regs.gs = state.solver.BVV(GS_LOCATION, 64)
+        state.regs.gs = state.solver.BVV(EnclaveVerification.GS_LOCATION, 64)
         state.regs.r12 = original_r12
         state.regs.r13 = original_r13
         state.regs.r14 = original_r14
@@ -112,7 +112,7 @@ class VerificationEntryCode(EnclaveVerification):
 
             # Last rsp and regs are only set during usercall when its _not_ an abort.
             if not(self.aborted):
-                state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
+                state.memory.store(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
                 state.memory.store(last_rsp + 0, last_mxcsr, endness=state.arch.memory_endness)
                 state.memory.store(last_rsp + 4, last_cw, endness=state.arch.memory_endness)
                 state.memory.store(last_rsp + 8, last_rbx, endness=state.arch.memory_endness)
@@ -126,9 +126,9 @@ class VerificationEntryCode(EnclaveVerification):
             last_rsp = state.solver.BVV(0x0, 64)
 
         # Reset gs:tcsls_last_rsp (we're only interested in normal enclave entries, not returns from usercalls)
-        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
-        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_FLAGS, state.solver.BVV(tcsls_flags, 64), endness=state.arch.memory_endness)
-        state.memory.store(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_TOS, state.solver.BVV(TOS_VALUE, 64), endness=state.arch.memory_endness)
+        state.memory.store(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, last_rsp, endness=state.arch.memory_endness)
+        state.memory.store(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_FLAGS, state.solver.BVV(tcsls_flags, 64), endness=state.arch.memory_endness)
+        state.memory.store(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_TOS, state.solver.BVV(TOS_VALUE, 64), endness=state.arch.memory_endness)
         state.memory.store(aborted, state.solver.BVV(aborted_val, 8), endness=state.arch.memory_endness)
         state.memory.store(debug, state.solver.BVV(debug_val, 8), endness=state.arch.memory_endness)
 
@@ -279,7 +279,7 @@ class VerificationEntryCode(EnclaveVerification):
                         print("Error! rsp set to an unexpected value (expected last_rsp + 0x40)")
                         return False
 
-                    mem_last_rsp = state.memory.load(GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
+                    mem_last_rsp = state.memory.load(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != 0x0, )):
                         print("gs:tcsls_last_rsp is not reset")
                         exit(1)
