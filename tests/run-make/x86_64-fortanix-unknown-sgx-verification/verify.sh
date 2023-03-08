@@ -8,7 +8,7 @@ RUSTC=${RUSTC:="rustc"}
 TEST_DIR=${TEST_DIR:="${script_dir}"}
 TARGET=${TARGET:="x86_64-fortanix-unknown-sgx"}
 
-pip3 install angr
+pip3 install 'angr==9.2.5' --force-reinstall
 
 function build {
     mkdir -p $WORK_DIR
