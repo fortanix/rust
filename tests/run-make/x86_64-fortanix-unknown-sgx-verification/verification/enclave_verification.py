@@ -225,10 +225,16 @@ class EnclaveVerification:
         return self.find_location_call_entry() + instr_length
 
     def enclave_entry_state(self, addr):
+        arch = archinfo.arch_from_id("amd64")
         state = self.project.factory.blank_state(
+                cc=SimCCSystemVAMD64(arch),
                 addr=addr,
                 add_options={"SYMBOLIC_WRITE_ADDRESSES", "SYMBOL_FILL_UNCONSTRAINED_MEMORY", "SYMBOL_FILL_UNCONSTRAINED_REGISTERS"}
                 )
+        # Fake enclave state
+        state.memory.store(self.enclave_size, state.solver.BVS("enlave_size", 64))
+        state.regs.gs = claripy.BVS("gs", 64)
+        state.regs.fs = claripy.BVS("fs", 64)
         return state
         
     def call_state(self, addr, *args, **kwargs):
