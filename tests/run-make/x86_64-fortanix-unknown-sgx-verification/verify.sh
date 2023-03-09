@@ -29,6 +29,8 @@ function build {
 
 build
 
+export PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=python
+
 # Functional correctness special functions
 python3 verification/verification_entry_code.py ${enclave}
 python3 verification/verification_exit_code.py ${enclave}
