@@ -30,14 +30,14 @@ class VerificationEntryCode(EnclaveVerification):
         EnclaveVerification.GS_LOCATION = random.randint(0, 0x10000)
         LAST_RIP = random.randint(0x800000, 0x1000000000)
 
-        print("Verifying with settings:")
-        print(" - secondary TCS:   " + str(self.secondary_tcs))
-        print(" - aborted enclave: " + str(self.aborted))
-        print(" - debug:           " + str(self.debug))
-        print(" - ret usercall:    " + str(self.ret_usercall))
-        print(" - Top of stack:    " + hex(TOS_VALUE))
-        print(" - GS segment:      " + hex(EnclaveVerification.GS_LOCATION))
-        print(" - last %rip:       " + hex(LAST_RIP))
+        self.logger.debug("Verifying with settings:")
+        self.logger.debug(" - secondary TCS:   " + str(self.secondary_tcs))
+        self.logger.debug(" - aborted enclave: " + str(self.aborted))
+        self.logger.debug(" - debug:           " + str(self.debug))
+        self.logger.debug(" - ret usercall:    " + str(self.ret_usercall))
+        self.logger.debug(" - Top of stack:    " + hex(TOS_VALUE))
+        self.logger.debug(" - GS segment:      " + hex(EnclaveVerification.GS_LOCATION))
+        self.logger.debug(" - last %rip:       " + hex(LAST_RIP))
 
         entry = self.project.loader.find_symbol("entry").rebased_addr
         tcs_init = self.project.loader.find_symbol("tcs_init").rebased_addr
@@ -142,199 +142,199 @@ class VerificationEntryCode(EnclaveVerification):
                 if self.aborted:
                     # Aborted enclaves need to immediately exit the enclave again
                     if state.solver.satisfiable(extra_constraints=(state.regs.rip != eexit, )):
-                        print("Error! Register rip has unexpected value")
+                        self.logger.error("Error! Register rip has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rax != 0x4, )):
-                        print("Error! Register rax has unexpected value")
+                        self.logger.error("Error! Register rax has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rbx != arg3, )):
-                        print("Error! Register rbx has unexpected value")
+                        self.logger.error("Error! Register rbx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rcx != 0x0, )):
-                        print("Error! Register rcx has unexpected value")
+                        self.logger.error("Error! Register rcx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdx != 0x0, )):
-                        print("Error! Register rdx has unexpected value")
+                        self.logger.error("Error! Register rdx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsi != 0x0, )):
-                        print("Error! Register rsi has unexpected value")
+                        self.logger.error("Error! Register rsi has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdi != 0xa, )):
-                        print("Error! Register rdi has unexpected value")
+                        self.logger.error("Error! Register rdi has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r8 != 0x0, )):
-                        print("Error! Register r8 has unexpected value")
+                        self.logger.error("Error! Register r8 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r9 != 0x0, )):
-                        print("Error! Register r9 has unexpected value")
+                        self.logger.error("Error! Register r9 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r10 != 0x0, )):
-                        print("Error! Register r10 has unexpected value")
+                        self.logger.error("Error! Register r10 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r11 != 0x0, )):
-                        print("Error! Register r11 has unexpected value")
+                        self.logger.error("Error! Register r11 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r12 != original_r12, )):
-                        print("Error! Register r12 has unexpected value")
+                        self.logger.error("Error! Register r12 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r13 != original_r13, )):
-                        print("Error! Register r13 has unexpected value")
+                        self.logger.error("Error! Register r13 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r14 != original_r14, )):
-                        print("Error! Register r14 has unexpected value")
+                        self.logger.error("Error! Register r14 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r15 != original_r15, )):
-                        print("Error! Register r15 has unexpected value")
+                        self.logger.error("Error! Register r15 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rbp != original_rbp, )):
-                        print("Error! Register rbp has unexpected value")
+                        self.logger.error("Error! Register rbp has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsp != 0x7ffffffffff0000, )):
-                        print("Error! rsp set to an unexpected value (expected 0x7ffffffffff0000)")
+                        self.logger.error("Error! rsp set to an unexpected value (expected 0x7ffffffffff0000)")
                         return False
 
                 elif self.ret_usercall:
                     # Enclaves that return from a usercall need to resume from the last rip again
                     if state.solver.satisfiable(extra_constraints=(state.regs.rip != LAST_RIP, )):
-                        print("Error! Register rip has unexpected value (expected " + hex(LAST_RIP) + ")")
+                        self.logger.error("Error! Register rip has unexpected value (expected " + hex(LAST_RIP) + ")")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rax != arg1, )):
-                        print("Error! Register rax has unexpected value")
+                        self.logger.error("Error! Register rax has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rbx != last_rbx, )):
-                        print("Error! Register rbx has unexpected value")
+                        self.logger.error("Error! Register rbx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rcx != arg3, )):
-                        print("Error! Register rcx has unexpected value")
+                        self.logger.error("Error! Register rcx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdx != arg2, )):
-                        print("Error! Register rdx has unexpected value")
+                        self.logger.error("Error! Register rdx has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsi != arg1, )):
-                        print("Error! Register rsi has unexpected value")
+                        self.logger.error("Error! Register rsi has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdi != arg0, )):
-                        print("Error! Register rdi has unexpected value")
+                        self.logger.error("Error! Register rdi has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r8 != arg4, )):
-                        print("Error! Register r8 has unexpected value")
+                        self.logger.error("Error! Register r8 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r9 != arg5, )):
-                        print("Error! Register r9 has unexpected value")
+                        self.logger.error("Error! Register r9 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r10 != arg2, )):
-                        print("Error! Register r10 has unexpected value")
+                        self.logger.error("Error! Register r10 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r11 != state.regs.rip, )):
-                        print("Error! Register r11 has unexpected value")
+                        self.logger.error("Error! Register r11 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r12 != last_r12, )):
-                        print("Error! Register r12 has unexpected value")
+                        self.logger.error("Error! Register r12 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r13 != last_r13, )):
-                        print("Error! Register r13 has unexpected value")
+                        self.logger.error("Error! Register r13 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r14 != last_r14, )):
-                        print("Error! Register r14 has unexpected value")
+                        self.logger.error("Error! Register r14 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r15 != last_r15, )):
-                        print("Error! Register r15 has unexpected value")
+                        self.logger.error("Error! Register r15 has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rbp != last_rbp, )):
-                        print("Error! Register rbp has unexpected value")
+                        self.logger.error("Error! Register rbp has unexpected value")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsp != last_rsp + 0x40, )):
-                        print("Error! rsp set to an unexpected value (expected last_rsp + 0x40)")
+                        self.logger.error("Error! rsp set to an unexpected value (expected last_rsp + 0x40)")
                         return False
 
                     mem_last_rsp = state.memory.load(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != 0x0, )):
-                        print("gs:tcsls_last_rsp is not reset")
+                        self.logger.error("gs:tcsls_last_rsp is not reset")
                         exit(1)
                 else:
                     # Initial enclave calls need to call `entry()`
                     if state.solver.satisfiable(extra_constraints=(state.regs.rip != entry, )):
-                        print("Error! Register rip has unexpected value (expected " + hex(LAST_RIP) + ")")
+                        self.logger.error("Error! Register rip has unexpected value (expected " + hex(LAST_RIP) + ")")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdi != arg0, )):
-                        print("Error! Argument 0 not passed unchanged to Rust code")
+                        self.logger.error("Error! Argument 0 not passed unchanged to Rust code")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsi != arg1, )):
-                        print("Error! Argument 1 not passed unchanged to Rust code")
+                        self.logger.error("Error! Argument 1 not passed unchanged to Rust code")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rdx != arg2, )):
-                        print("Error! Argument 2 not passed unchanged to Rust code")
+                        self.logger.error("Error! Argument 2 not passed unchanged to Rust code")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rcx != tcsls_flags, )):
-                        print("Error! Argument 3 does not express whether we're on a secondary TCS to Rust code")
+                        self.logger.error("Error! Argument 3 does not express whether we're on a secondary TCS to Rust code")
                         return False
 
                     # User input arg3 is missing! It doesn't cause problems, but is unexpected given the parameter naming in the entry function
                     # see: library/std/src/sys/sgx/abi/mod.rs
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r8 != arg4, )):
-                        print("Error! Argument 4 does not express whether we're on a secondary TCS to Rust code")
+                        self.logger.error("Error! Argument 4 does not express whether we're on a secondary TCS to Rust code")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.r9 != arg5, )):
-                        print("Error! Argument 5 does not express whether we're on a secondary TCS to Rust code")
+                        self.logger.error("Error! Argument 5 does not express whether we're on a secondary TCS to Rust code")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.rsp != TOS_VALUE + self.image_base - 8, )):
-                        print("Error! rsp set to an unexpected value (expected " + hex(self.image_base + TOS_VALUE - 8) + ")")
+                        self.logger.error("Error! rsp set to an unexpected value (expected " + hex(self.image_base + TOS_VALUE - 8) + ")")
                         return False
 
                     if state.solver.satisfiable(extra_constraints=(state.regs.flags != expected_rflags, )):
-                        print("Error! rflags have an unexpected value (expected " + hex(expected_rflags) + ")")
+                        self.logger.error("Error! rflags have an unexpected value (expected " + hex(expected_rflags) + ")")
                         return False
 
                 # Verify common state
                 if not(state.globals["xsave_initialization"]):
-                    print("Processor state not initialized through xrstor!")
+                    self.logger.error("Processor state not initialized through xrstor!")
                     return False
 
-            print("Verified successfully!!!")
+            self.logger.debug("Verified successfully!!!")
             return True
 
 if __name__ == '__main__':
     if len(sys.argv) != 2:
-        print("Usage: ./" + sys.argv[0] + " <enclave.elf>")
+        self.logger.debug("Usage: ./" + sys.argv[0] + " <enclave.elf>")
         exit(-1)
     else:
         enclave_path: str = sys.argv[1]
