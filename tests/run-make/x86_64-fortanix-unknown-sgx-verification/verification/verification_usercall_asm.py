@@ -212,7 +212,7 @@ class VerificationUsercallAsm(EnclaveVerification):
                     return False
 
                 mem_last_rsp = state.memory.load(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
-                mem_aborted = state.memory.load(aborted, 8, endness=state.arch.memory_endness)
+                mem_aborted = state.memory.load(aborted, 1, endness=state.arch.memory_endness)
                 if self.aborted:
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != 0x0, )):
                         self.logger.error("gs:tcsls_last_rsp not set correctly")
