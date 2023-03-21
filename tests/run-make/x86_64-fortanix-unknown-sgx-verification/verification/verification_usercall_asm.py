@@ -8,7 +8,7 @@ from enclave_verification import EnclaveVerification
 
 class VerificationUsercallAsm(EnclaveVerification):
     def __init__(self, enclave_path, aborted):
-        EnclaveVerification.__init__(self, enclave_path, "VerificationUsercall")
+        EnclaveVerification.__init__(self, enclave_path, "VerificationUsercallAsm")
         self.aborted = aborted
 
     def verify(self):
@@ -26,10 +26,10 @@ class VerificationUsercallAsm(EnclaveVerification):
         else:
             aborted_val = 0x0
 
-        print("Verifying with settings:")
-        print(" - Aborted:         " + str(self.aborted))
-        print(" - GS segment:      " + hex(EnclaveVerification.GS_LOCATION))
-        print(" - Last rip:        " + hex(EnclaveVerification.LAST_RIP))
+        self.logger.debug("Verifying with settings:")
+        self.logger.debug(" - Aborted:         " + str(self.aborted))
+        self.logger.debug(" - GS segment:      " + hex(EnclaveVerification.GS_LOCATION))
+        self.logger.debug(" - Last rip:        " + hex(EnclaveVerification.LAST_RIP))
 
         # Find symbols
         eexit = self.find_location_eexit()
@@ -104,136 +104,136 @@ class VerificationUsercallAsm(EnclaveVerification):
 
                 # Verify registers
                 if state.solver.satisfiable(extra_constraints=(state.regs.rax != 0x4, )):
-                    print("Error! Register rax has unexpected value")
+                    self.logger.error("Error! Register rax has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rbx != user_retip, )):
-                    print("Error! Register rbx has unexpected value")
+                    self.logger.error("Error! Register rbx has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rcx != arg_p2, )):
-                    print("Error! Register rcx has unexpected value")
+                    self.logger.error("Error! Register rcx has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rdx != arg_p2, )):
-                    print("Error! Register rdx has unexpected value")
+                    self.logger.error("Error! Register rdx has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rsi != arg_p1, )):
-                    print("Error! Register rsi has unexpected value")
+                    self.logger.error("Error! Register rsi has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rdi != arg_nr, )):
-                    print("Error! Register rdi has unexpected value")
+                    self.logger.error("Error! Register rdi has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r8 != arg_p3, )):
-                    print("Error! Register r8 has unexpected value")
+                    self.logger.error("Error! Register r8 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r9 != arg_p4, )):
-                    print("Error! Register r9 has unexpected value")
+                    self.logger.error("Error! Register r9 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r10 != 0x0, )):
-                    print("Error! Register r10 has unexpected value")
+                    self.logger.error("Error! Register r10 has unexpected value")
                     return False
                 if state.solver.satisfiable(extra_constraints=(state.regs.r11 != 0x0, )):
-                    print("Error! Register r11 has unexpected value")
+                    self.logger.error("Error! Register r11 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r12 != user_r12, )):
-                    print("Error! Register r12 has unexpected value")
+                    self.logger.error("Error! Register r12 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r13 != user_r13, )):
-                    print("Error! Register r13 has unexpected value")
+                    self.logger.error("Error! Register r13 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r14 != user_r14, )):
-                    print("Error! Register r14 has unexpected value")
+                    self.logger.error("Error! Register r14 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.r15 != user_r15, )):
-                    print("Error! Register r15 has unexpected value")
+                    self.logger.error("Error! Register r15 has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rbp != user_rbp, )):
-                    print("Error! Register rbp has unexpected value")
+                    self.logger.error("Error! Register rbp has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rsp != user_rsp, )):
-                    print("Error! Register rsp has unexpected value")
+                    self.logger.error("Error! Register rsp has unexpected value")
                     return False
 
                 if state.solver.satisfiable(extra_constraints=(state.regs.rflags != 0x0, )):
-                    print("Error! Register rflags has unexpected value (rflags = " + str(state.solver.eval(state.regs.rflags)) + ")")
+                    self.logger.error("Error! Register rflags has unexpected value (rflags = " + str(state.solver.eval(state.regs.rflags)) + ")")
                     return False
 
                 if not(state.globals["xsave_initialization"]):
-                    print("Processor state not initialized through xrstor!")
+                    self.logger.error("Processor state not initialized through xrstor!")
                     return False
 
                 mem_last_rsp = state.memory.load(EnclaveVerification.GS_LOCATION + EnclaveVerification.OFFSET_TCSLS_LAST_RSP, 8, disable_actions=True, inspect=False)
                 mem_aborted = state.memory.load(aborted, 8, endness=state.arch.memory_endness)
                 if self.aborted:
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != 0x0, )):
-                        print("gs:tcsls_last_rsp not set correctly")
+                        self.logger.error("gs:tcsls_last_rsp not set correctly")
                         exit(1)
 
                     if state.solver.satisfiable(extra_constraints=(mem_aborted == 0x0, )):
-                        print("aborted value not set correctly")
+                        self.logger.error("aborted value not set correctly")
                         exit(1)
                 else:
                     if state.solver.satisfiable(extra_constraints=(mem_last_rsp != claripy.Reverse(0xffffffffffffffc8 + enclave_rsp), )):
-                        print("gs:tcsls_last_rsp not set correctly")
+                        self.logger.error("gs:tcsls_last_rsp not set correctly")
                         exit(1)
 
                     if state.solver.satisfiable(extra_constraints=(mem_aborted != 0x0, )):
-                        print("aborted value not set correctly")
+                        self.logger.error("aborted value not set correctly")
                         exit(1)
 
                     mem_r15 = state.memory.load(enclave_rsp - 1 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_r15 != enclave_r15, )):
-                        print("enclave r15 value not stored correctly")
-                        print(mem_r15)
+                        self.logger.error("enclave r15 value not stored correctly")
+                        self.logger.error(mem_r15)
                         exit(1)
 
                     mem_r14 = state.memory.load(enclave_rsp - 2 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_r14 != enclave_r14, )):
-                        print("enclave r14 value not stored correctly")
-                        print(mem_r14)
+                        self.logger.error("enclave r14 value not stored correctly")
+                        self.logger.error(mem_r14)
                         exit(1)
 
                     mem_r13 = state.memory.load(enclave_rsp - 3 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_r13 != enclave_r13, )):
-                        print("enclave r13 value not stored correctly")
-                        print(mem_r13)
+                        self.logger.error("enclave r13 value not stored correctly")
+                        self.logger.error(mem_r13)
                         exit(1)
 
                     mem_r12 = state.memory.load(enclave_rsp - 4 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_r12 != enclave_r12, )):
-                        print("enclave r12 value not stored correctly")
-                        print(mem_r12)
+                        self.logger.error("enclave r12 value not stored correctly")
+                        self.logger.error(mem_r12)
                         exit(1)
 
                     mem_rbp = state.memory.load(enclave_rsp - 5 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_rbp != enclave_rbp, )):
-                        print("enclave rbp value not stored correctly")
-                        print(mem_rbp)
+                        self.logger.error("enclave rbp value not stored correctly")
+                        self.logger.error(mem_rbp)
                         exit(1)
 
                     mem_rbx = state.memory.load(enclave_rsp - 6 * 8, 8, endness=state.arch.memory_endness)
                     if state.solver.satisfiable(extra_constraints=(mem_rbx != enclave_rbx, )):
-                        print("enclave rbx value not stored correctly")
-                        print(mem_rbx)
+                        self.logger.error("enclave rbx value not stored correctly")
+                        self.logger.error(mem_rbx)
                         exit(1)
 
                     if state.solver.satisfiable(extra_constraints=(mem_aborted != 0x0, )):
-                        print("aborted value not set correctly")
+                        self.logger.error("aborted value not set correctly")
                         exit(1)
 
-            print("Verified successfully!!!")
+            self.logger.debug("Verified successfully!!!")
             return True
 
 if __name__ == '__main__':
