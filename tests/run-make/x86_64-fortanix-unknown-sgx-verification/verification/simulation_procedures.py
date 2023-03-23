@@ -73,7 +73,7 @@ class Xrstor(angr.SimProcedure):
         # Decode instruction
         # ref https://github.com/capstone-engine/capstone/blob/ab8892658790eb44f03b9047c6765bc3812d1ae1/bindings/python/test_x86.py#L119
         if len(insn.operands) != 1:
-            print("Unexpected xrstor instruction encoding: " + str(insn))
+            self.logger.error("Unexpected xrstor instruction encoding: " + str(insn))
             exit(1)
 
         if insn.operands[0].type == X86_OP_MEM:
@@ -83,17 +83,17 @@ class Xrstor(angr.SimProcedure):
             scale = insn.operands[0].mem.scale
 
             if insn.operands[0].mem.segment != 0:
-                print("Unexpected xrstor instruction encoding (unrecognized segment): " + str(insn))
+                self.logger.error("Unexpected xrstor instruction encoding (unrecognized segment): " + str(insn))
                 exit(1)
 
             if insn.reg_name(base_reg) != "rip":
-                print("Unexpected xrstor instruction encoding (unrecognized base reg): " + str(insn))
+                self.logger.error("Unexpected xrstor instruction encoding (unrecognized base reg): " + str(insn))
                 exit(1)
 
             rip = self.state.solver.eval(self.state.regs.rip)
             xsave_area = rip + index * scale + disp + insn.size
         else:
-            print("Unexpected xrstor instruction encoding")
+            self.logger.error("Unexpected xrstor instruction encoding")
             exit(1)
 
         # The enclave sets XCR0, we don't know it at the elf level
@@ -111,7 +111,7 @@ class Xrstor(angr.SimProcedure):
         rstormask = xstate_bv
 
         if compmask & (0x1 << 63) == (0x1 << 63):
-            print("Unexpected xrstor instruction evaluation (compact format not supported)")
+            self.logger.error("Unexpected xrstor instruction evaluation (compact format not supported)")
             exit(1)
         else:
             to_be_restored = rfbm & rstormask
@@ -133,7 +133,11 @@ class Xrstor(angr.SimProcedure):
             for i in range(0, 64):
                 mask = 0x1 << i
                 if to_be_restored & mask == mask:
-                    print("Unexpected xrstor instruction evaluation (component " + str(i) + "restored)")
+                    self.logger.error("Unexpected xrstor instruction evaluation (component " + str(i) + "restored)")
+                    self.logger.error("  %rip = " + hex(rip))
+                    self.logger.error("  %eax = " + hex(eax))
+                    self.logger.error("  %edx = " + hex(edx))
+                    self.logger.error("  to_be_restored = " + hex(to_be_restored))
                     exit(1)
                 elif to_be_initialized & mask == mask:
                     # If RFBM[i] = 1 and bit i is clear in the XSTATE_BV field in the XSAVE header,
@@ -142,7 +146,7 @@ class Xrstor(angr.SimProcedure):
                     #print("Initialize xsave component " + str(i))
                     ()
                 else:
-                    print("Unexpected xrstor instruction evaluation (component " + str(i) + "not initialized)")
+                    self.logger.error("Unexpected xrstor instruction evaluation (component " + str(i) + "not initialized)")
                     exit(1)
 
         self.state.globals["xsave_initialization"] = True
