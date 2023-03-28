@@ -11,7 +11,7 @@ import sys
 import pyvex
 
 from angr.calling_conventions import SimCCSystemVAMD64
-from capstone import Cs, CS_ARCH_X86, CS_MODE_64
+from capstone import Cs, CS_ARCH_X86, CS_MODE_64, CS_OPT_SYNTAX_ATT
 from capstone.x86 import X86_OP_REG, X86_OP_IMM, X86_OP_MEM
 
 class EnclaveVerification:
@@ -311,6 +311,22 @@ class EnclaveVerification:
         #self.logger.debug("instr =" + instr + "(type =" + type(instr) + ")")
         return instr
 
+    def read_instrs(self, state, rip):
+        md = Cs(CS_ARCH_X86, CS_MODE_64)
+        md.detail = True
+        md.syntax = CS_OPT_SYNTAX_ATT
+        MAXIMUM_INSTRUCTION_LENGTH = 15 # x86 instructions can't exceed 15 bytes
+        max_bytes = 2 * MAXIMUM_INSTRUCTION_LENGTH
+
+        instrs = state.memory.load(rip, max_bytes)
+        instrs = state.solver.eval(instrs)
+        instrs = instrs.to_bytes(max_bytes, 'big')
+        instrs = list(md.disasm(instrs, 0x0))
+        #print("read_instrs:")
+        #for instr in instrs:
+        #    print("(" + hex(instr.address) + ", " + str(instr.size) + ", " + instr.mnemonic + ", " + instr.op_str + ")")
+        return instrs
+
     def is_aligned64(self, state, ptr):
         return not(state.solver.satisfiable(extra_constraints=(
             ptr & 0x7 != 0,
@@ -381,22 +397,19 @@ class EnclaveVerification:
                     return True
             return False
 
-        def is_mov_epilogue(state, rip):
-            def test_mov_epilogue(state, rip, instrs):
-                return self.read_instr(state, rip, len(instrs)) == instrs
-            return test_mov_epilogue(state, rip, instructions.MFENCE + instructions.LFENCE)
-
         if is_mov_prologue(state, rip):
             self.logger.debug("    - save move prologue: ok" )
         else:
             self.logger.debug("    - save move prologue: no" )
+            return False
 
-        if is_mov_epilogue(state, rip + 2):
+        instrs = self.read_instrs(state, rip)
+        if instrs[1].mnemonic == "mfence" and instrs[2].mnemonic == "lfence":
             self.logger.debug("    - save move epilogue: ok" )
+            return True
         else:
             self.logger.debug("    - save move epilogue: no" )
-
-        return is_mov_prologue(state, rip) and is_mov_epilogue(state, rip + 2)
+            return False
 
     # Verifies whether the state writes:
     #   - enclave memory
@@ -425,6 +438,7 @@ class EnclaveVerification:
             self.logger.error(hex(rip) + ": write " + str(int(length / 8)) + " bytes to " + str(dest))
             self.logger.error("    - in enclave: no" )
             self.logger.error("    - on stack: no" )
+            self.logger.error("    -> Dangerous write instruction found")
             self.log_state(state)
             self.simulation_manager.stashes[EnclaveVerification.WRITE_VIOLATION].append(state.copy())
 
