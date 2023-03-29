@@ -120,23 +120,23 @@ class EnclaveVerification:
             scale = insn.operands[0].mem.scale
 
             if insn.operands[0].mem.segment != 0:
-                print("Unexpected mov instruction encoding (unrecognized segment): " + str(insn))
+                self.logger.error("Unexpected mov instruction encoding (unrecognized segment): " + str(insn))
                 exit(1)
 
             if insn.operands[0].mem.scale != 1:
-                print("Unexpected mov instruction encoding (unexpected scale value): " + str(insn))
+                self.logger.error("Unexpected mov instruction encoding (unexpected scale value): " + str(insn))
                 exit(1)
 
             if insn.operands[0].mem.index != 0:
-                print("Unexpected mov instruction encoding (unexpected index value): " + str(insn))
+                self.logger.error("Unexpected mov instruction encoding (unexpected index value): " + str(insn))
                 exit(1)
 
             if insn.reg_name(base_reg) != "rip":
-                print("Unexpected mov instruction encoding (unrecognized base reg): " + str(insn))
+                self.logger.error("Unexpected mov instruction encoding (unrecognized base reg): " + str(insn))
                 exit(1)
             return disp + addr + length
         else:
-            print("Unexpected mov instruction encoding")
+            self.logger.error("Unexpected mov instruction encoding")
             exit(1)
 
     def find_location_eexit(self):
@@ -163,25 +163,25 @@ class EnclaveVerification:
         op0 = mov.operands[0]
         op1 = mov.operands[1]
         if mov.mnemonic != "mov":
-            print("Expected mov instruction, found " + str(mov.mnemonic))
+            self.logger.error("Expected mov instruction, found " + str(mov.mnemonic))
             exit(1)
         if op0.type == X86_OP_REG:
             if mov.reg_name(op0.reg) != "eax":
-                print("Unexpected mov instruction (reg = " + hex(op0.reg) + ")")
+                self.logger.error("Unexpected mov instruction (reg = " + hex(op0.reg) + ")")
                 exit(1)
 
         if op1.type == X86_OP_IMM:
             if op1.imm != 0x4:
-                print("Unexpected mov instruction (immediate = " + hex(op1.imm) + ")")
+                self.logger.error("Unexpected mov instruction (immediate = " + hex(op1.imm) + ")")
                 exit(1)
         else:
-            print("Unexpected mov instruction encoding")
+            self.logger.error("Unexpected mov instruction encoding")
             exit(1)
 
         # Assert we found an enclu instruction
         enclu = instrs[1]
         if enclu.mnemonic != "enclu":
-            print("Expected enclu instruction, found " + str(enclu.mnemonic))
+            self.logger.error("Expected enclu instruction, found " + str(enclu.mnemonic))
             exit(1)
         return enclu.address
 
@@ -211,11 +211,11 @@ class EnclaveVerification:
         call = instrs[0]
         op = call.operands[0]
         if call.mnemonic != "call":
-            print("Expected call instruction, found " + str(mov.mnemonic))
+            self.logger.error("Expected call instruction, found " + str(mov.mnemonic))
             exit(1)
 
         if op.type != X86_OP_IMM:
-            print("Unexpected call instruction encoding")
+            self.logger.error("Unexpected call instruction encoding")
             exit(1)
 
         return call.address
