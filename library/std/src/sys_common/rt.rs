@@ -29,13 +29,13 @@ pub unsafe fn init(argc: isize, argv: *const *const u8) {
 // Runs after `main` or at program exit.
 // NOTE: this is not guaranteed to run, for example when the program aborts.
 #[cfg_attr(test, allow(dead_code))]
-pub fn cleanup() {
+pub fn cleanup(exit_code: isize) {
     static CLEANUP: Once = Once::new();
     CLEANUP.call_once(|| unsafe {
         // Flush stdout and disable buffering.
         crate::io::cleanup();
         // SAFETY: Only called once during runtime cleanup.
-        sys::cleanup();
+        sys::cleanup(exit_code);
     });
 }
 

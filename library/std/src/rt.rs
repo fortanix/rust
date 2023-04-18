@@ -48,7 +48,7 @@ fn lang_start_internal(
             rtprintpanic!("drop of the panic payload panicked");
             sys::abort_internal()
         });
-    panic::catch_unwind(sys_common::rt::cleanup).map_err(rt_abort)?;
+    panic::catch_unwind(|| sys_common::rt::cleanup(ret_code.unwrap_or(101))).map_err(rt_abort)?;
     ret_code
 }
 

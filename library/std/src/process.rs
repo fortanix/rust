@@ -104,6 +104,7 @@
 #[cfg(all(test, not(any(target_os = "emscripten", target_env = "sgx"))))]
 mod tests;
 
+use core::convert::TryInto;
 use crate::io::prelude::*;
 
 use crate::ffi::OsStr;
@@ -1907,7 +1908,7 @@ impl Child {
 /// [platform-specific behavior]: #platform-specific-behavior
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn exit(code: i32) -> ! {
-    crate::sys_common::rt::cleanup();
+    crate::sys_common::rt::cleanup(code.try_into().unwrap());
     crate::sys::os::exit(code)
 }
 

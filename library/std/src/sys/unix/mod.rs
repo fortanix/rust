@@ -1,5 +1,7 @@
 #![allow(missing_docs, nonstandard_style)]
 
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use crate::convert::TryInto;
 use crate::io::ErrorKind;
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
 use fortanixvme::client::{Client as FortanixvmeClient};
@@ -133,8 +135,10 @@ pub unsafe fn init(argc: isize, argv: *const *const u8) {
 
 // SAFETY: must be called only once during runtime cleanup.
 // NOTE: this is not guaranteed to run, for example when the program aborts.
-pub unsafe fn cleanup() {
+pub unsafe fn cleanup(_exit_code: isize) {
     stack_overflow::cleanup();
+    #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+    FortanixvmeClient::exit(_exit_code.try_into().unwrap());
 }
 
 #[cfg(target_os = "android")]
