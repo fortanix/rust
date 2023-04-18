@@ -1253,7 +1253,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/PLAT-355-avoid_automatic_cbor_derive#f5e7ffb844906de7dda7a57a99f6c006960a5731"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/EDP-108-exit_api#f460f49c71078494dcb531d0b3fb83f0ca749768"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",

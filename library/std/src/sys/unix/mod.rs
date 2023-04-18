@@ -1,6 +1,8 @@
 #![allow(missing_docs, nonstandard_style)]
 
 use crate::io::ErrorKind;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use fortanixvme::client::{Client as FortanixvmeClient};
 
 pub use self::rand::hashmap_random_keys;
 pub use libc::strlen;
@@ -261,7 +263,13 @@ pub fn cvt_nz(error: libc::c_int) -> crate::io::Result<()> {
 // stdlib doesn't use libc stdio buffering.  In a typical Rust program, which
 // does not use C stdio, even a buggy libc::abort() is, in fact, safe.
 pub fn abort_internal() -> ! {
-    unsafe { libc::abort() }
+    cfg_if::cfg_if! {
+        if #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))] {
+            FortanixvmeClient::exit(1)
+        } else {
+            unsafe { libc::abort() }
+        }
+    }
 }
 
 cfg_if::cfg_if! {
