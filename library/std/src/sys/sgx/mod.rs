@@ -57,7 +57,7 @@ pub unsafe fn init(argc: isize, argv: *const *const u8, _sigpipe: u8) {
 
 // SAFETY: must be called only once during runtime cleanup.
 // NOTE: this is not guaranteed to run, for example when the program aborts.
-pub unsafe fn cleanup() {}
+pub unsafe fn cleanup(_exit_code: isize) {}
 
 /// This function is used to implement functionality that simply doesn't exist.
 /// Programs relying on this functionality will need to deal with the error.

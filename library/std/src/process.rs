@@ -104,6 +104,7 @@
 #[cfg(all(test, not(any(target_os = "emscripten", target_env = "sgx"))))]
 mod tests;
 
+use core::convert::TryInto;
 use crate::io::prelude::*;
 
 use crate::convert::Infallible;

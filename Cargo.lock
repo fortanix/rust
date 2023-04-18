@@ -819,7 +819,7 @@ dependencies = [
  "regex",
  "rustfix",
  "serde 1.0.171",
- "serde_derive 1.0.171",
+ "serde_derive",
  "serde_json",
  "tempfile",
  "tester",
@@ -1111,7 +1111,7 @@ checksum = "41e83863a500656dfa214fee6682de9c5b9f03de6860fec531235ed2ae9f6571"
 dependencies = [
  "regex",
  "serde 1.0.171",
- "serde_derive 1.0.171",
+ "serde_derive",
  "serde_json",
 ]
 
@@ -1349,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#3bf4f7357d1d8b7a8f41eecf7c78731da3072563"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/EDP-108-exit_api#98645bd36f1c437615390b75b34d3d584ab67515"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
@@ -2148,7 +2148,7 @@ dependencies = [
  "phf",
  "phf_codegen",
  "serde 1.0.171",
- "serde_derive 1.0.171",
+ "serde_derive",
  "serde_json",
  "string_cache",
  "string_cache_codegen",
@@ -4655,7 +4655,6 @@ dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
- "serde_derive 1.0.130",
 ]
 
 [[package]]
@@ -4664,7 +4663,7 @@ version = "1.0.171"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30e27d1e4fd7659406c492fd6cfaf2066ba8773de45ca75e855590f856dc34a9"
 dependencies = [
- "serde_derive 1.0.171",
+ "serde_derive",
 ]
 
 [[package]]
@@ -4677,16 +4676,6 @@ dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
  "serde 1.0.130",
-]
-
-[[package]]
-name = "serde_derive"
-version = "1.0.130"
-source = "git+https://github.com/fortanix/serde.git?branch=master#80449547025fc4a016a333e96c0cdaf7e4a96f67"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 1.0.109",
 ]
 
 [[package]]
