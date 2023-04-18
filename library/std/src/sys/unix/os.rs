@@ -27,6 +27,12 @@ use crate::vec;
 #[cfg(all(target_env = "gnu", not(target_os = "vxworks")))]
 use crate::sys::weak::weak;
 
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use {
+    super::fortanixvme::client::{Client as FortanixvmeClient},
+    fortanix_vme_abi,
+};
+
 use libc::{c_char, c_int, c_void};
 
 const TMPBUF_SZ: usize = 128;
@@ -655,7 +661,13 @@ pub fn home_dir() -> Option<PathBuf> {
 }
 
 pub fn exit(code: i32) -> ! {
-    unsafe { libc::exit(code as c_int) }
+    cfg_if::cfg_if! {
+        if #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))] {
+            FortanixvmeClient::exit(code)
+        } else {
+            unsafe { libc::exit(code as c_int) }
+        }
+    }
 }
 
 pub fn getpid() -> u32 {

@@ -196,6 +196,18 @@ impl Client {
         }
     }
 
+    pub(crate) fn exit(code: i32) -> ! {
+        let _ = Self::new(fortanix_vme_abi::SERVER_PORT)
+            .and_then(|mut client| {
+                client.send(&Request::Exit {
+                    code
+                })
+            });
+
+        // Failed to connect to the runner, stop the enclave anyway
+        unsafe { libc::exit(code as libc::c_int) }
+    }
+
     fn send(&mut self, req: &Request) -> Result<(), io::Error> {
         let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|_e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
         self.stream.write(req.as_slice())?;
