@@ -187,6 +187,7 @@ fn bench_file_to_socket_copy(b: &mut test::Bencher) {
     });
 }
 
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 #[bench]
 fn bench_file_to_uds_copy(b: &mut test::Bencher) {
     const BYTES: usize = 128 * 1024;
