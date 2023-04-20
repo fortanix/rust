@@ -1253,7 +1253,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/EDP-108-exit_api#f460f49c71078494dcb531d0b3fb83f0ca749768"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/EDP-109-init_api#35dabebceed3123af82794fea8dbea2527b77fbb"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
