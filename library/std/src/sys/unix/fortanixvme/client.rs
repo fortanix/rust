@@ -196,6 +196,16 @@ impl Client {
         }
     }
 
+    pub(crate) fn args() -> Result<Vec<String>, io::Error> {
+        let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
+        client.send(&Request::Init)?;
+        if let Response::Init { args } = client.receive()? {
+            Ok(args)
+        } else {
+            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
+        }
+    }
+
     pub(crate) fn exit(code: i32) -> ! {
         let _ = Self::new(fortanix_vme_abi::SERVER_PORT)
             .and_then(|mut client| {

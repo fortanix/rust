@@ -55,7 +55,7 @@ impl DoubleEndedIterator for Args {
 }
 
 #[cfg(any(
-    target_os = "linux",
+    all(target_os = "linux", not(all(target_arch = "x86_64", target_env = "fortanixvme"))),
     target_os = "android",
     target_os = "freebsd",
     target_os = "dragonfly",
@@ -165,6 +165,38 @@ mod imp {
 
             args
         }
+    }
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+mod imp {
+    use crate::ffi::OsString;
+    use crate::lazy::SyncOnceCell;
+    use crate::sys::unix::fortanixvme::client::{Client as FortanixvmeClient};
+    use super::Args;
+
+    static ARGS: SyncOnceCell<Vec<OsString>> = SyncOnceCell::new();
+
+    fn enclave_args() -> &'static Vec<OsString> {
+        ARGS.get_or_init(|| {
+            FortanixvmeClient::args()
+                .expect("Failed to retrieve enclave arguments from runner")
+                .iter()
+                .map(|arg| OsString::from(arg))
+                .collect()
+        })
+    }
+
+    #[inline(always)]
+    pub unsafe fn init(_argc: isize, _argv: *const *const u8) {
+        enclave_args();
+    }
+
+    pub fn args() -> Args {
+        let args = enclave_args()
+            .to_owned()
+            .into_iter();
+        Args { iter: args }
     }
 }
 
