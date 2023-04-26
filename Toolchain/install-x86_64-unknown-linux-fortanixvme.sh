@@ -1,5 +1,6 @@
 #!/bin/bash -ex
 arg=$1
+testname=$2
 workdir=$(readlink -f $(dirname "${BASH_SOURCE[0]}"))
 cd ${workdir}
 
@@ -48,6 +49,7 @@ if [ ! -f "config.toml" ]; then
         --set install.prefix=${workdir}/rust/toolchain \
         --set llvm.targets=X86 \
         --set llvm.download-ci-llvm=false \
+	--set rust.verbose-tests=true \
         --enable-extended \
         --tools=cargo
 fi
@@ -65,7 +67,7 @@ export CXX_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl
 export LD_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-ld
 
 if [ "${arg}" == "test" ]; then
-    ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker --verbose
+    RUST_TEST_THREADS=1 ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker --test-args ${testname}
 else
     python3 ./x.py build
 fi
@@ -77,6 +79,6 @@ rustup toolchain link mybuild build/x86_64-unknown-linux-gnu/stage1
 cd /tmp
 cargo +mybuild new app
 cd app
-cargo +mybuild build --target x86_64-unknown-linux-fortanixvme
+cargo +mybuild run --target x86_64-unknown-linux-fortanixvme
 
 popd
