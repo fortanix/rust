@@ -1,6 +1,6 @@
 use crate::fmt::{self, Display, Formatter};
 use crate::io::{self, ErrorKind, Read};
-use fortanix_vme_abi::{Addr, Response, Request};
+use fortanix_vme_abi::{self, Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
 const MIN_READ_BUFF: usize = 0x2000;
@@ -245,5 +245,10 @@ impl Client {
             }
         }
         read(&mut self.stream, Vec::new())
+            .map(|resp| if let fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::SystemError(errno)) = resp {
+                Err(io::Error::from_raw_os_error(errno as _))
+            } else {
+                Ok(resp)
+            })?
     }
 }
