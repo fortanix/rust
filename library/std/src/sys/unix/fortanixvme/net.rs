@@ -636,7 +636,7 @@ impl TcpListener {
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
-        not_available!()
+        self.inner.duplicate().map(|s| TcpListener { inner: s })
     }
 
     pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
