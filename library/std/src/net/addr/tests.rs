@@ -18,9 +18,9 @@ fn to_socket_addr_str_u16() {
     assert_eq!(Ok(vec![a]), tsa(("2a02:6b8:0:1::1", 53)));
 
     let a = sa4(Ipv4Addr::new(127, 0, 0, 1), 23924);
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     assert!(tsa(("localhost", 23924)).unwrap().contains(&a));
-    #[cfg(target_env = "sgx")]
+    #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
     let _ = a;
 }
 
@@ -33,9 +33,9 @@ fn to_socket_addr_str() {
     assert_eq!(Ok(vec![a]), tsa("[2a02:6b8:0:1::1]:53"));
 
     let a = sa4(Ipv4Addr::new(127, 0, 0, 1), 23924);
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "sgx", target_env = "fortanixvme")))]
     assert!(tsa("localhost:23924").unwrap().contains(&a));
-    #[cfg(target_env = "sgx")]
+    #[cfg(any(target_env = "sgx", target_env = "fortanixvme"))]
     let _ = a;
 }
 
