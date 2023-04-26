@@ -1,6 +1,12 @@
 #!/bin/bash -ex
 arg=$1
-testname=$2
+testname=""
+
+if [ "" != "$2" ]
+then
+    testname="--test-args $2"
+fi
+
 workdir=$(readlink -f $(dirname "${BASH_SOURCE[0]}"))
 cd ${workdir}
 
@@ -67,18 +73,18 @@ export CXX_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl
 export LD_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-ld
 
 if [ "${arg}" == "test" ]; then
-    RUST_TEST_THREADS=1 ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker --test-args ${testname}
+    RUST_TEST_THREADS=1 ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker ${testname}
 else
     python3 ./x.py build
-fi
 
-source $HOME/.cargo/env
-# force use of older cargo that doesn't add unknown flags when it calls rustc
-cp build/x86_64-unknown-linux-gnu/stage1-tools-bin/cargo build/x86_64-unknown-linux-gnu/stage1/bin/ 
-rustup toolchain link mybuild build/x86_64-unknown-linux-gnu/stage1
-cd /tmp
-cargo +mybuild new app
-cd app
-cargo +mybuild run --target x86_64-unknown-linux-fortanixvme
+    source $HOME/.cargo/env
+    # force use of older cargo that doesn't add unknown flags when it calls rustc
+    cp build/x86_64-unknown-linux-gnu/stage1-tools-bin/cargo build/x86_64-unknown-linux-gnu/stage1/bin/
+    rustup toolchain link mybuild build/x86_64-unknown-linux-gnu/stage1
+    cd /tmp
+    cargo +mybuild new app
+    cd app
+    cargo +mybuild run --target x86_64-unknown-linux-fortanixvme
+fi
 
 popd
