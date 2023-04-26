@@ -87,6 +87,8 @@ threads = 125
 # Maximum heap size
 heap_size = 0x8000000
 
+[package.metadata.fortanix-vme]
+
 [[bench]]
 name = "stdbenches"
 path = "benches/lib.rs"
