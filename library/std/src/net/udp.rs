@@ -1,4 +1,4 @@
-#[cfg(all(test, not(any(target_os = "emscripten", target_env = "sgx"))))]
+#[cfg(all(test, not(any(target_os = "emscripten", target_env = "sgx", target_env = "fortanixvme"))))]
 mod tests;
 
 use crate::fmt;
