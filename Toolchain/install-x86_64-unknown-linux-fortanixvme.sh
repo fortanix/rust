@@ -34,7 +34,7 @@ fi
 
 pushd ${repo_root}
 
-if [ -z "${install_dir}" ]; then
+if [ -z "$(ls -A ${install_dir})" ]; then
     # musl-toolchain installation directory is empty, install it
     CFLAGS="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \
         CXXFLAGS="-Wa,-mrelax-relocations=no -Wa,--compress-debug-sections=none -Wl,--compress-debug-sections=none" \
