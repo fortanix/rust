@@ -146,14 +146,14 @@ class EnclaveVerification:
 
         # We assume the usercall function still looks like:
         #
-        # 0000000000019828 <sgx_entry>:
-        #           19828:  65 48 89 0c 25 30 00  mov    %rcx,%gs:0x30
+        # 00000000000141e8 <sgx_entry>:
+        #           141e8:  65 48 89 0c 25 30 00  mov    %rcx,%gs:0x30
         #             ...
-        #           19a22:  b8 04 00 00 00        mov    $0x4,%eax
-        #           19a27:  0f 01 d7              enclu
+        #           143e5:  b8 04 00 00 00        mov    $0x4,%eax
+        #           143ea:  0f 01 d7              enclu
         #
         # and extract the location of the .Laborted symbol
-        addr = self.sgx_entry + 0x1fa
+        addr = self.sgx_entry + 0x1fd
         length = 8
         instrs = self.project.loader.memory.load(addr, length)
         instrs = list(md.disasm(instrs, addr))
@@ -192,17 +192,17 @@ class EnclaveVerification:
 
         # We assume the sgx_entry function still looks like:
         #
-        # 0000000000019828 <sgx_entry>:
+        # 00000000000141e8 <sgx_entry>:
         #    ...
-        #    19980:	e8 2b 09 00 00       	callq  1a2b0 <entry>
-        #    19985:	48 89 c6             	mov    %rax,%rsi
+        #    14343:     e8 28 dd 00 00          callq  22070 <entry>
+        #    14348:     48 89 c6                mov    %rax,%rsi
         #    ...
-        #    19a1f:	0f ae e8             	lfence
-        #    19a22:	b8 04 00 00 00       	mov    $0x4,%eax
-        #    19a27:	0f 01 d7             	enclu
+        #    143e2:     0f ae e8                lfence
+        #    143e5:     b8 04 00 00 00          mov    $0x4,%eax
+        #    143ea:     0f 01 d7                enclu
         #
         # and extract the location of the .Laborted symbol
-        addr = self.sgx_entry + 0x158
+        addr = self.sgx_entry + 0x15b
         length = 5
         instrs = self.project.loader.memory.load(addr, length)
         instrs = list(md.disasm(instrs, addr))

@@ -122,7 +122,7 @@ class Xrstor(angr.SimProcedure):
             # The compacted form of XRSTOR does not make this exception.
             # We may be in this case as xcr0 is set by the enclave at a later stage
             EXPECTED_COMPONENT0 = [0x00] * 32
-            EXPECTED_COMPONENT0[24] = 0x80
+            EXPECTED_COMPONENT0[24] = 0xbf
             EXPECTED_COMPONENT0[25] = 0x1f
 
             component0 = self.read(xsave_area, 32, cast_to=bytes)
