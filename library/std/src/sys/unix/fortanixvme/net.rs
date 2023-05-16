@@ -165,6 +165,8 @@ pub struct Socket {
     /// retrievable. If it fails, it likely would fail on every request. We also store the error
     /// itself so it may be returned on every request. Unfortunately `std::io::Error` is not
     /// `Clone`. We store the `ErrorKind` instead.
+    /// TODO: SyncOnceCell probably isn't required, neither is `ConnectionInfo` (local addr as a
+    /// String is likely sufficient (see SGX))
     info: SyncOnceCell<Result<ConnectionInfo, ErrorKind>>,
 }
 
