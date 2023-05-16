@@ -626,6 +626,8 @@ impl TcpListener {
         // global variable and fetch it here again because of a subtle race condition. When
         // multiple clients are trying to connect on the same port, the peer address received
         // in (2), may not be the one proxied through the incoming connection.
+        // TODO simplify solution by letting the runner start a vsock listener in (1) and
+        // connecting to that listener after the `accept` returned.
         let runner_addr = &mut storage as *const _ as *mut libc::sockaddr_vm;
         let runner_addr = unsafe { VsockAddr::try_from(*runner_addr).expect("Vsock connection") };
         let IncomingInfo{ local, peer, .. } = take_incoming_connection_info(runner_addr.port())
