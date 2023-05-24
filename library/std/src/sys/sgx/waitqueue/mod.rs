@@ -18,6 +18,7 @@ mod unsafe_list;
 
 use crate::num::NonZeroUsize;
 use crate::ops::{Deref, DerefMut};
+use crate::panic::{self, AssertUnwindSafe};
 use crate::time::Duration;
 
 use super::abi::thread;
@@ -157,7 +158,9 @@ impl WaitQueue {
             }));
             let entry = guard.queue.inner.push(&mut entry);
             drop(guard);
-            before_wait();
+            if let Err(_e) = panic::catch_unwind(AssertUnwindSafe(|| before_wait())) {
+                rtabort!("Panic before wait on wakeup event")
+            }
             while !entry.lock().wake {
                 // don't panic, this would invalidate `entry` during unwinding
                 let eventset = rtunwrap!(Ok, usercalls::wait(EV_UNPARK, WAIT_INDEFINITE));
@@ -181,7 +184,9 @@ impl WaitQueue {
                 wake: false,
             }));
             let entry_lock = lock.lock().queue.inner.push(&mut entry);
-            before_wait();
+            if let Err(_e) = panic::catch_unwind(AssertUnwindSafe(|| before_wait())) {
+                rtabort!("Panic before wait on wakeup event or timeout")
+            }
             usercalls::wait_timeout(EV_UNPARK, timeout, || entry_lock.lock().wake);
             // acquire the wait queue's lock first to avoid deadlock.
             let mut guard = lock.lock();
