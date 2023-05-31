@@ -7,6 +7,8 @@ use crate::cmp;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut, Read};
 use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::cvt;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use crate::sys::fortanixvme::client::Client;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 
 #[cfg(any(

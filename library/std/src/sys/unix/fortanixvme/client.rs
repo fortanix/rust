@@ -1,7 +1,11 @@
 use crate::fmt::{self, Display, Formatter};
+use crate::collections::HashMap;
 use crate::io::{self, ErrorKind, Read};
+use crate::lazy::SyncOnceCell;
+use crate::os::fd::raw::{AsRawFd, RawFd};
+use crate::sync::RwLock;
 use fortanix_vme_abi::{self, Addr, Response, Request};
-use vsock::{self, Platform, VsockListener, VsockStream};
+use vsock::{self, Platform, SockAddr as VsockAddr, VsockListener, VsockStream};
 
 const MIN_READ_BUFF: usize = 0x2000;
 
@@ -51,6 +55,73 @@ impl From<vsock::Error> for io::Error {
 }
 
 #[unstable(feature = "fortanixvme", issue = "none")]
+impl From<fortanix_vme_abi::ErrorKind> for io::ErrorKind {
+    fn from(kind: fortanix_vme_abi::ErrorKind) -> io::ErrorKind {
+        match kind {
+            fortanix_vme_abi::ErrorKind::NotFound => io::ErrorKind::NotFound,
+            fortanix_vme_abi::ErrorKind::PermissionDenied => io::ErrorKind::PermissionDenied,
+            fortanix_vme_abi::ErrorKind::ConnectionRefused => io::ErrorKind::ConnectionRefused,
+            fortanix_vme_abi::ErrorKind::ConnectionReset => io::ErrorKind::ConnectionReset,
+            fortanix_vme_abi::ErrorKind::HostUnreachable => io::ErrorKind::HostUnreachable,
+            fortanix_vme_abi::ErrorKind::NetworkUnreachable => io::ErrorKind::NetworkUnreachable,
+            fortanix_vme_abi::ErrorKind::ConnectionAborted => io::ErrorKind::ConnectionAborted,
+            fortanix_vme_abi::ErrorKind::NotConnected => io::ErrorKind::NotConnected,
+            fortanix_vme_abi::ErrorKind::AddrInUse => io::ErrorKind::AddrInUse,
+            fortanix_vme_abi::ErrorKind::AddrNotAvailable => io::ErrorKind::AddrNotAvailable,
+            fortanix_vme_abi::ErrorKind::NetworkDown => io::ErrorKind::NetworkDown,
+            fortanix_vme_abi::ErrorKind::BrokenPipe => io::ErrorKind::BrokenPipe,
+            fortanix_vme_abi::ErrorKind::AlreadyExists => io::ErrorKind::AlreadyExists,
+            fortanix_vme_abi::ErrorKind::WouldBlock => io::ErrorKind::WouldBlock,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::NotADirectory => io::ErrorKind::NotADirectory,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::IsADirectory => io::ErrorKind::IsADirectory,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::DirectoryNotEmpty => io::ErrorKind::DirectoryNotEmpty,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::ReadOnlyFilesystem => io::ErrorKind::ReadOnlyFilesystem,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::FilesystemLoop => io::ErrorKind::FilesystemLoop,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::StaleNetworkFileHandle => io::ErrorKind::StaleNetworkFileHandle,
+            fortanix_vme_abi::ErrorKind::InvalidInput => io::ErrorKind::InvalidInput,
+            fortanix_vme_abi::ErrorKind::InvalidData => io::ErrorKind::InvalidData,
+            fortanix_vme_abi::ErrorKind::TimedOut => io::ErrorKind::TimedOut,
+            fortanix_vme_abi::ErrorKind::WriteZero => io::ErrorKind::WriteZero,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::StorageFull => io::ErrorKind::StorageFull,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::NotSeekable => io::ErrorKind::NotSeekable,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::FilesystemQuotaExceeded => io::ErrorKind::FilesystemQuotaExceeded,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::FileTooLarge => io::ErrorKind::FileTooLarge,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::ResourceBusy => io::ErrorKind::ResourceBusy,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::ExecutableFileBusy => io::ErrorKind::ExecutableFileBusy,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::Deadlock => io::ErrorKind::Deadlock,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::CrossesDevices => io::ErrorKind::CrossesDevices,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::TooManyLinks => io::ErrorKind::TooManyLinks,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::FilenameTooLong => io::ErrorKind::FilenameTooLong,
+            //#[unstable(feature = "io_error_more", issue = "86442")]
+            fortanix_vme_abi::ErrorKind::ArgumentListTooLong => io::ErrorKind::ArgumentListTooLong,
+            fortanix_vme_abi::ErrorKind::Interrupted => io::ErrorKind::Interrupted,
+            fortanix_vme_abi::ErrorKind::Unsupported => io::ErrorKind::Unsupported,
+            fortanix_vme_abi::ErrorKind::UnexpectedEof => io::ErrorKind::UnexpectedEof,
+            fortanix_vme_abi::ErrorKind::OutOfMemory => io::ErrorKind::OutOfMemory,
+            fortanix_vme_abi::ErrorKind::Other => io::ErrorKind::Other,
+            //#[unstable(feature = "io_error_uncategorized", issue = "none")]
+            fortanix_vme_abi::ErrorKind::Uncategorized => io::ErrorKind::Uncategorized,
+        }
+    }
+}
+
+#[unstable(feature = "fortanixvme", issue = "none")]
 impl Read for VsockStream<Fortanixvme> {
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, io::Error> {
         VsockStream::<Fortanixvme>::read(&mut &*self, buf).map_err(|e| e.into())
@@ -91,6 +162,35 @@ pub struct Client {
 }
 
 impl Client {
+    // TODO Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
+    fn connection_info_map() -> &'static RwLock<HashMap<RawFd, ConnectionInfo>> {
+        static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, ConnectionInfo>>> = SyncOnceCell::new();
+        CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
+    }
+
+    pub(crate) fn store_connection_info<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
+        let raw_fd = fd.as_raw_fd();
+        let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
+        if let Some(_prev) = map.insert(raw_fd, info) {
+            panic!("Already keeping track of Connection info related to file descriptor {}", raw_fd);
+        }
+    }
+
+    fn remove_connection_info<FD: AsRawFd>(fd: &FD) {
+        let raw_fd = fd.as_raw_fd();
+        let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
+        map.remove(&raw_fd);
+    }
+
+    pub(crate) fn connection_info<FD: AsRawFd>(fd: &FD) -> Option<ConnectionInfo> {
+        let raw_fd = fd.as_raw_fd();
+        Self::connection_info_map()
+            .read()
+            .expect("ConnectionInfo RwLock poisoned")
+            .get(&raw_fd)
+            .cloned()
+    }
+
     fn connect(port: u32) -> Result<VsockStream<Fortanixvme>, io::Error> {
         // Try to contact the enclave runner through the hypervisor
         VsockStream::connect_with_cid_port(vsock::VMADDR_CID_HOST, port)
@@ -157,9 +257,16 @@ impl Client {
         }
     }
 
-    pub fn close_listener_socket(&mut self, enclave_port: u32) -> Result<(), io::Error> {
+    pub fn close_connection(fd: &RawFd) -> Result<(), io::Error> {
+        let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
+        client.close_socket(fd)
+    }
+
+    fn close_socket(&mut self, fd: &RawFd) -> Result<(), io::Error> {
+        let vsock = VsockAddr::from_raw_fd::<Fortanixvme>(fd.clone())?;
+        Self::remove_connection_info(fd);
         let close = Request::Close {
-            enclave_port
+            enclave_port: vsock.port(),
         };
         self.send(&close)?;
 
@@ -167,32 +274,6 @@ impl Client {
             Ok(())
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
-        }
-    }
-
-    pub(crate) fn info_listener(&mut self, enclave_port: u32) -> Result<ConnectionInfo, io::Error> {
-        let info = Request::Info {
-            enclave_port,
-            runner_port: None,
-        };
-        self.send(&info)?;
-        if let Response::Info { local, peer: None } = self.receive()? {
-            Ok(ConnectionInfo::new_listener_info(local))
-        } else {
-            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
-        }
-    }
-
-    pub(crate) fn info_connection(&mut self, enclave_port: u32, runner_port: u32) -> Result<ConnectionInfo, io::Error> {
-        let info = Request::Info {
-            enclave_port,
-            runner_port: Some(runner_port),
-        };
-        self.send(&info)?;
-        if let Response::Info { local, peer: Some(peer) } = self.receive()? {
-            Ok(ConnectionInfo::new_stream_info(local, peer))
-        } else {
-            Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
         }
     }
 
@@ -245,10 +326,10 @@ impl Client {
             }
         }
         read(&mut self.stream, Vec::new())
-            .map(|resp| if let fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::SystemError(errno)) = resp {
-                Err(io::Error::from_raw_os_error(errno as _))
-            } else {
-                Ok(resp)
+            .map(|resp| match resp {
+                fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::Command(kind)) => Err(io::Error::from(io::ErrorKind::from(kind))),
+                fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::SystemError(errno)) => Err(io::Error::from_raw_os_error(errno as _)),
+                other => Ok(other),
             })?
     }
 }

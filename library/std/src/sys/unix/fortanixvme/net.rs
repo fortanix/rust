@@ -115,18 +115,6 @@ macro_rules! not_available {
     };
 }
 
-pub(crate) fn close_listener(local_fd: RawFd) -> Result<(), io::Error> {
-    if Socket::is_listener(local_fd)? {
-        let local_vsock = VsockAddr::from_raw_fd::<Fortanixvme>(local_fd)?;
-        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        runner.close_listener_socket(local_vsock.port())
-    } else {
-        // Not a listening socket, no need to close it. Could even not be a socket at all (but a
-        // file, ...)!
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug)]
 struct IncomingInfo {
     local: Addr,
@@ -169,24 +157,22 @@ pub struct Socket {
 
 impl Socket {
     fn new(fd: FileDesc, info: ConnectionInfo) -> Self {
+        Client::store_connection_info(&fd, info);
         Socket {
             inner: fd,
-            info: Ok(info).into(),
         }
     }
 
     fn from_stream(stream: VsockStream<Fortanixvme>, local: Addr, peer: Addr) -> Self {
-        Socket {
-            inner: unsafe{ FromRawFd::from_raw_fd(stream.into_raw_fd()) },
-            info: Ok(ConnectionInfo::new_stream_info(local, peer)).into(),
-        }
+        let fd = unsafe { FromRawFd::from_raw_fd(stream.into_raw_fd()) };
+        let info = ConnectionInfo::new_stream_info(local, peer);
+        Socket::new(fd, info)
     }
 
     fn from_listener(listener: VsockListener<Fortanixvme>, local: Addr) -> Self {
-        Socket {
-            inner: unsafe{ FromRawFd::from_raw_fd(listener.into_raw_fd()) },
-            info: Ok(ConnectionInfo::new_listener_info(local)).into(),
-        }
+        let fd = unsafe { FromRawFd::from_raw_fd(listener.into_raw_fd()) };
+        let info = ConnectionInfo::new_listener_info(local);
+        Socket::new(fd, info)
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -202,7 +188,6 @@ impl Socket {
     pub fn duplicate(&self) -> io::Result<Socket> {
         Ok(Socket {
             inner: self.inner.duplicate()?,
-            info: self.info.clone(),
         })
     }
 
@@ -246,10 +231,6 @@ impl Socket {
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         let raw: c_int = getsockopt(self.as_raw(), libc::SOL_SOCKET, libc::SO_ERROR)?;
         if raw == 0 { Ok(None) } else { Ok(Some(io::Error::from_raw_os_error(raw as i32))) }
-    }
-
-    fn is_listener(fd: RawFd) -> io::Result<bool> {
-        getsockopt(fd, libc::SOL_SOCKET, libc::SO_ACCEPTCONN).map(|ret: c_int| ret != 0)
     }
 
     // This is used by sys_common code to abstract over Windows and Unix.
@@ -397,23 +378,6 @@ impl TcpStream {
         self.inner.is_write_vectored()
     }
 
-    fn local_vsock_addr(&self) -> io::Result<VsockAddr> {
-        VsockAddr::from_raw_fd::<Fortanixvme>(self.inner.as_raw_fd()).map_err(|e| e.into())
-    }
-
-    fn peer_vsock_addr(&self) -> io::Result<VsockAddr> {
-        VsockAddr::peer_from_raw_fd::<Fortanixvme>(self.inner.as_raw_fd()).map_err(|e| e.into())
-    }
-
-    fn connection_info(&self) -> io::Result<&ConnectionInfo> {
-        self.inner.info.get_or_init(|| {
-            let enclave_port = self.local_vsock_addr().map_err(|e| e.kind())?.port();
-            let runner_port = self.peer_vsock_addr().map_err(|e| e.kind())?.port();
-            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT).map_err(|e| e.kind())?;
-            runner.info_connection(enclave_port, runner_port).map_err(|e| e.kind())
-        }).as_ref().map_err(|err_kind| io::Error::new(*err_kind, "Failed to retrieve connection info"))
-    }
-
     /// Returns the address of the peer.
     ///
     /// # Warning
@@ -421,7 +385,7 @@ impl TcpStream {
     /// There is no guarantee that the `TcpStream` actually communicates with the returned `SocketAddr`.
     /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        if let ConnectionInfo::Stream{ peer, .. } = self.connection_info()? {
+        if let Some(ConnectionInfo::Stream{ peer, .. }) = Client::connection_info(&self.inner) {
             Ok(addr_to_sockaddr(peer.clone()))
         } else {
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
@@ -434,7 +398,7 @@ impl TcpStream {
     ///
     /// There is no guarantee that the `TcpStream` actually communicates from the `SocketAddr`.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        if let ConnectionInfo::Stream{ local, .. } = self.connection_info()? {
+        if let Some(ConnectionInfo::Stream{ local, .. }) = Client::connection_info(&self.inner) {
             Ok(addr_to_sockaddr(local.clone()))
         } else {
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
@@ -559,16 +523,8 @@ impl TcpListener {
         self.inner
     }
 
-    fn listener_info(&self) -> Result<&ConnectionInfo, io::Error> {
-        self.inner.info.get_or_init(|| {
-            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT).map_err(|e| e.kind())?;
-            let port = self.local_vsock_addr().map_err(|e| e.kind())?.port();
-            runner.info_listener(port).map_err(|e| e.kind())
-        }).as_ref().map_err(|err_kind| io::Error::new(*err_kind, "Failed to retrieve listener info"))
-    }
-
     fn local_addr(&self) -> io::Result<Addr> {
-        if let ConnectionInfo::Listener{ local } = self.listener_info()? {
+        if let Some(ConnectionInfo::Listener{ local }) = Client::connection_info(&self.inner) {
             Ok(local.clone())
         } else {
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
