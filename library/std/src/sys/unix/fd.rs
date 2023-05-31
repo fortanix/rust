@@ -7,6 +7,8 @@ use crate::cmp;
 use crate::io::{self, Initializer, IoSlice, IoSliceMut, Read};
 use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 use crate::sys::cvt;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use crate::sys::fortanixvme::client::Client;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 
 use libc::{c_int, c_void};
@@ -281,6 +283,13 @@ impl FileDesc {
         let cmd = libc::F_DUPFD;
 
         let fd = cvt(unsafe { libc::fcntl(self.as_raw_fd(), cmd, 0) })?;
+
+        #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+        if let Some(info) = Client::connection_info(&self.as_raw_fd()) {
+            println!("[{}:{}] Duplicating FileDesc", file!(), line!());
+            Client::store_connection_info(&fd, info);
+        }
+
         Ok(unsafe { FileDesc::from_raw_fd(fd) })
     }
 }
