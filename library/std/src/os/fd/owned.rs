@@ -97,7 +97,7 @@ impl BorrowedFd<'_> {
         // We want to atomically duplicate this file descriptor and set the
         // CLOEXEC flag, and currently that's done via F_DUPFD_CLOEXEC. This
         // is a POSIX flag that was added to Linux in 2.6.24.
-        #[cfg(not(target_os = "espidf"))]
+        #[cfg(not(any(target_os = "espidf", target_env = "fortanixvme")))]
         let cmd = libc::F_DUPFD_CLOEXEC;
 
         // For ESP-IDF, F_DUPFD is used instead, because the CLOEXEC semantics
@@ -108,7 +108,11 @@ impl BorrowedFd<'_> {
         let cmd = libc::F_DUPFD;
 
         // Avoid using file descriptors below 3 as they are used for stdio
+        #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
         let fd = cvt(unsafe { libc::fcntl(self.as_raw_fd(), cmd, 3) })?;
+
+        #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+        let fd = FortanixvmeClient::duplicate_fd(self.as_raw_fd())?;
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
@@ -170,11 +174,13 @@ impl FromRawFd for OwnedFd {
 impl Drop for OwnedFd {
     #[inline]
     fn drop(&mut self) {
+        // TODO remove connection info
         // We can't handle errors properly here and ignore them. Worst case the runner keeps listening on the TCP socket. The
         // enclave won't ever accept a new connection, but the port may not be released.
         #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-        let _ = FortanixvmeClient::close_connection(&self.fd);
+        let _ = FortanixvmeClient::remove_connection_info(self);
 
+        #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
         unsafe {
             // Note that errors are ignored when closing a file descriptor. The
             // reason for this is that if an error occurs we don't actually know if
