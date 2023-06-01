@@ -1,11 +1,13 @@
 use crate::collections::HashMap;
 use crate::io::{self, ErrorKind, Read};
 use crate::lazy::SyncOnceCell;
+use crate::ops::Deref;
 use crate::os::fd::raw::{AsRawFd, FromRawFd, RawFd};
-use crate::sync::RwLock;
+use crate::sync::{Arc, RwLock};
+use crate::sys::cvt;
 use crate::sys::fd::FileDesc;
 use fortanix_vme_abi::{self, Addr, Response, Request};
-use vsock::{self, Platform, SockAddr as VsockAddr, VsockListener, VsockStream};
+use vsock::{self, Platform, VsockListener, VsockStream};
 
 const MIN_READ_BUFF: usize = 0x2000;
 
@@ -113,16 +115,6 @@ impl Read for VsockStream<Fortanixvme> {
     }
 }
 
-/*
-struct ConnectionGuard(ConnectionInfo);
-
-impl Drop for ConnectionGuard {
-    fn drop(guard: ConnectionGuard) {
-        // close connection
-    }
-}
-*/
-
 #[derive(Clone, Debug)]
 pub(crate) enum ConnectionInfo {
     Listener {
@@ -156,6 +148,30 @@ impl ConnectionInfo {
             enclave_port,
         }
     }
+
+    pub fn enclave_port(&self) -> u32 {
+        match self {
+            ConnectionInfo::Listener { enclave_port, .. } => *enclave_port,
+            ConnectionInfo::Stream { enclave_port, .. }   => *enclave_port,
+        }
+    }
+}
+
+pub(crate) struct ConnectionGuard(ConnectionInfo);
+
+impl Deref for ConnectionGuard {
+    type Target = ConnectionInfo;
+
+    fn deref(&self) -> &ConnectionInfo {
+        &self.0
+    }
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        println!("[{}:{}] Dropping connection", file!(), line!());
+        let _ = Client::close_connection(self.enclave_port());
+    }
 }
 
 pub struct Client {
@@ -164,32 +180,72 @@ pub struct Client {
 
 impl Client {
     // TODO Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
-    fn connection_info_map() -> &'static RwLock<HashMap<RawFd, ConnectionInfo>> {
-        static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, ConnectionInfo>>> = SyncOnceCell::new();
+    fn connection_info_map() -> &'static RwLock<HashMap<RawFd, Arc<ConnectionGuard>>> {
+        println!("{}:{} connection_info_map", file!(), line!());
+        static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, Arc<ConnectionGuard>>>> = SyncOnceCell::new();
         CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
     }
 
     pub(crate) fn store_connection_info<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
+        println!("{}:{} store connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
+        println!("{}:{} store connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
-        if let Some(_prev) = map.insert(raw_fd, info) {
-            panic!("Already keeping track of Connection info related to file descriptor {}", raw_fd);
+        println!("{}:{} store connection info", file!(), line!());
+        if let Some(_prev) = map.insert(raw_fd, Arc::new(ConnectionGuard(info))) {
+            println!("{}:{} store connection info", file!(), line!());
+            eprintln!("panic! Already keeping track of Connection info related to file descriptor {}", raw_fd);
         }
     }
 
-    fn remove_connection_info<FD: AsRawFd>(fd: &FD) {
+    pub(crate) fn remove_connection_info<FD: AsRawFd>(fd: &FD) {
+        println!("[{}:{}] Removing connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
+        println!("[{}:{}] Removing connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
+        println!("[{}:{}] Removing connection info", file!(), line!());
         map.remove(&raw_fd);
+        println!("[{}:{}] Removing connection info", file!(), line!());
+        unsafe {
+            // Now there's no mapping anymore, we can close the actual fd
+            // Note that errors are ignored when closing a file descriptor. The
+            // reason for this is that if an error occurs we don't actually know if
+            // the file descriptor was closed or not, and if we retried (for
+            // something like EINTR), we might close another valid file descriptor
+            // opened after we closed ours.
+            let _ = libc::close(raw_fd);
+        }
     }
 
-    pub(crate) fn connection_info<FD: AsRawFd>(fd: &FD) -> Option<ConnectionInfo> {
+    pub(crate) fn connection_info<FD: AsRawFd>(fd: &FD) -> Option<Arc<ConnectionGuard>> {
+        println!("[{}:{}] connection_info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
         Self::connection_info_map()
             .read()
             .expect("ConnectionInfo RwLock poisoned")
             .get(&raw_fd)
             .cloned()
+    }
+
+    pub fn duplicate_fd(fd: RawFd) -> io::Result<RawFd> {
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        let dup = cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) })?;
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        assert!(dup != fd);
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        let mut map = Self::connection_info_map()
+            .write()
+            .expect("ConnectionInfo RwLock poisoned");
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        let info = map.get(&fd)
+            .ok_or(io::Error::from(io::ErrorKind::InvalidData))?
+            .clone();
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        if map.insert(dup, info).is_none() {
+            eprintln!("panic! Connection info still exists");
+        }
+        println!("[{}:{}] duplicate fd", file!(), line!());
+        Ok(dup)
     }
 
     fn connect(port: u32) -> Result<VsockStream<Fortanixvme>, io::Error> {
@@ -264,35 +320,32 @@ impl Client {
         }
     }
 
-    pub fn close_connection(fd: &RawFd) -> Result<(), io::Error> {
+    fn close_connection(enclave_port: u32) -> Result<(), io::Error> {
+        println!("[{}:{}] close connection", file!(), line!());
         let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
-        client.close_socket(fd)
-    }
+        println!("[{}:{}] close connection", file!(), line!());
 
-    fn close_socket(&mut self, fd: &RawFd) -> Result<(), io::Error> {
-        let vsock = VsockAddr::from_raw_fd::<Fortanixvme>(fd.clone())?;
-        Self::remove_connection_info(fd);
         let close = Request::Close {
-            enclave_port: vsock.port(),
+            enclave_port,
         };
-        self.send(&close)?;
+        println!("[{}:{}] close connection", file!(), line!());
+        client.send(&close)?;
+        println!("[{}:{}] close connection", file!(), line!());
 
-        if let Response::Closed = self.receive()? {
+        if let Response::Closed = client.receive()? {
+            println!("[{}:{}] close connection", file!(), line!());
+
             Ok(())
         } else {
+            println!("[{}:{}] close connection", file!(), line!());
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
     }
 
     pub(crate) fn args() -> Result<Vec<String>, io::Error> {
-        println!("{}:{} args", file!(), line!());
         let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
-        println!("{}:{} args", file!(), line!());
         client.send(&Request::Init)?;
-        println!("{}:{} args", file!(), line!());
         let r = client.receive()?;
-        println!("{}:{} args", file!(), line!());
-        println!("args = {:?}", r);
         if let Response::Init { args } = r {
             println!("{}:{} args", file!(), line!());
             Ok(args)

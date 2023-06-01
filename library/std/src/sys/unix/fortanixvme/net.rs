@@ -8,10 +8,12 @@ use crate::time::Duration;
 use crate::fmt;
 use crate::mem;
 use crate::net::{Ipv4Addr, Ipv6Addr, Shutdown, SocketAddr};
+use crate::ops::Deref;
 use crate::os::fd::raw::AsRawFd;
 use crate::os::fd::owned::{AsFd, BorrowedFd};
 use crate::os::unix::prelude::{IntoRawFd, FromRawFd, RawFd};
 use crate::sys::{cvt, cvt_r};
+use crate::sys_common::AsInner;
 use fortanix_vme_abi::{self, Addr};
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, ConnectionInfo, Fortanixvme};
@@ -158,13 +160,8 @@ impl Socket {
         }
     }
 
-    pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
-        let how = match how {
-            Shutdown::Write => libc::SHUT_WR,
-            Shutdown::Read => libc::SHUT_RD,
-            Shutdown::Both => libc::SHUT_RDWR,
-        };
-        cvt(unsafe { libc::shutdown(self.as_raw_fd(), how) })?;
+    pub fn shutdown(&self, _how: Shutdown) -> io::Result<()> {
+        // ineffective
         Ok(())
     }
 
@@ -365,9 +362,12 @@ impl TcpStream {
     /// There is no guarantee that the `TcpStream` actually communicates with the returned `SocketAddr`.
     /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        if let Some(ConnectionInfo::Stream{ peer, .. }) = Client::connection_info(&self.inner) {
+        println!("{}:{} peer_addr", file!(), line!());
+        if let Some(ConnectionInfo::Stream{ peer, .. }) = Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref()) {
+            println!("{}:{} peer_addr", file!(), line!());
             Ok(addr_to_sockaddr(peer.clone()))
         } else {
+            println!("{}:{} peer_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
@@ -378,9 +378,12 @@ impl TcpStream {
     ///
     /// There is no guarantee that the `TcpStream` actually communicates from the `SocketAddr`.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        if let Some(ConnectionInfo::Stream{ local, .. }) = Client::connection_info(&self.inner) {
+        println!("{}:{} socket_addr", file!(), line!());
+        if let Some(ConnectionInfo::Stream{ local, .. }) = Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref()) {
+            println!("{}:{} socket_addr", file!(), line!());
             Ok(addr_to_sockaddr(local.clone()))
         } else {
+            println!("{}:{} socket_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
@@ -504,9 +507,12 @@ impl TcpListener {
     }
 
     fn local_addr(&self) -> io::Result<Addr> {
-        if let Some(ConnectionInfo::Listener{ local, .. }) = Client::connection_info(&self.inner) {
+        println!("{}:{} local_addr", file!(), line!());
+        if let Some(ConnectionInfo::Listener{ local, .. }) = Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref()) {
+            println!("{}:{} local_addr", file!(), line!());
             Ok(local.clone())
         } else {
+            println!("{}:{} local_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
@@ -612,7 +618,13 @@ impl FromInner<Socket> for TcpListener {
 
 impl fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "No networking support available on L4Re.")
+        let mut res = f.debug_struct("TcpListener");
+
+        if let Ok(ref addr) = self.local_addr() {
+            res.field("addr", addr);
+        }
+
+        res.field("fd", &self.inner.inner.as_inner()).finish()
     }
 }
     

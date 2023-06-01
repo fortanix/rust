@@ -272,7 +272,7 @@ impl FileDesc {
         // We want to atomically duplicate this file descriptor and set the
         // CLOEXEC flag, and currently that's done via F_DUPFD_CLOEXEC. This
         // is a POSIX flag that was added to Linux in 2.6.24.
-        #[cfg(not(target_os = "espidf"))]
+        #[cfg(not(any(target_os = "espidf", target_env = "fortanixvme")))]
         let cmd = libc::F_DUPFD_CLOEXEC;
 
         // For ESP-IDF, F_DUPFD is used instead, because the CLOEXEC semantics
@@ -282,13 +282,11 @@ impl FileDesc {
         #[cfg(target_os = "espidf")]
         let cmd = libc::F_DUPFD;
 
+        #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
         let fd = cvt(unsafe { libc::fcntl(self.as_raw_fd(), cmd, 0) })?;
 
         #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-        if let Some(info) = Client::connection_info(&self.as_raw_fd()) {
-            println!("[{}:{}] Duplicating FileDesc", file!(), line!());
-            Client::store_connection_info(&fd, info);
-        }
+        let fd = Client::duplicate_fd(self.as_raw_fd())?;
 
         Ok(unsafe { FileDesc::from_raw_fd(fd) })
     }
