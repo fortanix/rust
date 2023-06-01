@@ -14,7 +14,7 @@ use crate::sys::{cvt, cvt_r};
 use fortanix_vme_abi::{self, Addr};
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, ConnectionInfo, Fortanixvme};
-use vsock::{SockAddr as VsockAddr, VsockStream};
+use vsock::{SockAddr as VsockAddr};
 
 pub(crate) extern crate libc as netc;
 
@@ -156,17 +156,7 @@ pub struct Socket {
 }
 
 impl Socket {
-    pub(crate) fn new(fd: FileDesc) -> Self {
-        Socket {
-            inner: fd,
-        }
-    }
-
-    fn from_stream(stream: VsockStream<Fortanixvme>, local: Addr, peer: Addr) -> Self {
-        let fd = unsafe { FromRawFd::from_raw_fd(stream.into_raw_fd()) };
-        let info = ConnectionInfo::new_stream_info(local, peer);
-        //TODO Store info already in client and return socket directly
-        Client::store_connection_info(&fd, info);
+    fn new(fd: FileDesc) -> Self {
         Socket {
             inner: fd,
         }
@@ -301,9 +291,9 @@ impl TcpStream {
     pub fn connect(addr: io::Result<&SocketAddr>) -> io::Result<TcpStream> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (stream, local, peer) = runner.open_proxy_connection(addr.clone())?;
+        let fd = runner.open_proxy_connection(addr.clone())?;
         Ok(TcpStream {
-            inner: Socket::from_stream(stream, local, peer),
+            inner: Socket::new(fd),
         })
     }
 
@@ -506,9 +496,9 @@ impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let socket = runner.bind_socket(addr)?;
+        let fd = runner.bind_socket(addr)?;
         Ok(TcpListener {
-            inner: socket
+            inner: Socket::new(fd),
             })
     }
 

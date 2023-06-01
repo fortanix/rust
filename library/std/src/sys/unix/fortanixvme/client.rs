@@ -4,7 +4,7 @@ use crate::io::{self, ErrorKind, Read};
 use crate::lazy::SyncOnceCell;
 use crate::os::fd::raw::{AsRawFd, FromRawFd, RawFd};
 use crate::sync::RwLock;
-use crate::sys::net::Socket;
+use crate::sys::fd::FileDesc;
 use fortanix_vme_abi::{self, Addr, Response, Request};
 use vsock::{self, Platform, SockAddr as VsockAddr, VsockListener, VsockStream};
 
@@ -222,14 +222,17 @@ impl Client {
         })
     }
 
-    pub fn open_proxy_connection(&mut self, addr: String) -> Result<(VsockStream<Fortanixvme>, Addr, Addr), io::Error> {
+    pub fn open_proxy_connection(&mut self, addr: String) -> Result<FileDesc, io::Error> {
         let connect = Request::Connect {
             addr
         };
         self.send(&connect)?;
         if let Response::Connected { proxy_port, local, peer } = self.receive()? {
             let proxy = Self::connect(proxy_port)?;
-            Ok((proxy, local, peer))
+            let fd = unsafe { FromRawFd::from_raw_fd(proxy.into_raw_fd()) };
+            let info = ConnectionInfo::new_stream_info(local, peer);
+            Client::store_connection_info(&fd, info);
+            Ok(fd)
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
@@ -237,7 +240,7 @@ impl Client {
 
     /// Bind a TCP socket in the parent VM to the specified address. Returns a Socket
     /// listening for incoming connections forwarded by the parent VM
-    pub fn bind_socket(&mut self, addr: String) -> Result<Socket, io::Error> {
+    pub fn bind_socket(&mut self, addr: String) -> Result<FileDesc, io::Error> {
         // Start listener socket within enclave, waiting for incoming connections from enclave
         // runner
         let listener = VsockListener::<Fortanixvme>::bind_with_cid(vsock::VMADDR_CID_ANY)?;
@@ -254,7 +257,7 @@ impl Client {
             let fd = unsafe { FromRawFd::from_raw_fd(listener.into_raw_fd()) };
             let info = ConnectionInfo::new_listener_info(local, enclave_port);
             Self::store_connection_info(&fd, info);
-            Ok(Socket::new(fd))
+            Ok(fd)
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
