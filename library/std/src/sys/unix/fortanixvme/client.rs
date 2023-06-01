@@ -2,8 +2,9 @@ use crate::fmt::{self, Display, Formatter};
 use crate::collections::HashMap;
 use crate::io::{self, ErrorKind, Read};
 use crate::lazy::SyncOnceCell;
-use crate::os::fd::raw::{AsRawFd, RawFd};
+use crate::os::fd::raw::{AsRawFd, FromRawFd, RawFd};
 use crate::sync::RwLock;
+use crate::sys::net::Socket;
 use fortanix_vme_abi::{self, Addr, Response, Request};
 use vsock::{self, Platform, SockAddr as VsockAddr, VsockListener, VsockStream};
 
@@ -128,11 +129,23 @@ impl Read for VsockStream<Fortanixvme> {
     }
 }
 
+/*
+struct ConnectionGuard(ConnectionInfo);
+
+impl Drop for ConnectionGuard {
+    fn drop(guard: ConnectionGuard) {
+        // close connection
+    }
+}
+*/
+
 #[derive(Clone, Debug)]
 pub(crate) enum ConnectionInfo {
     Listener {
-        /// The local address the socket is bound to.
+        /// The local address (of the runner) the socket is bound to
         local: Addr,
+        /// The vsock port the enclave is listening on to receive connections from the runner
+        enclave_port: u32,
     },
     Stream {
         /// The local address the socket is bound to.
@@ -150,9 +163,10 @@ impl ConnectionInfo {
         }
     }
 
-    pub(crate) fn new_listener_info(local: Addr) -> Self {
+    pub(crate) fn new_listener_info(local: Addr, enclave_port: u32) -> Self {
         ConnectionInfo::Listener {
             local,
+            enclave_port,
         }
     }
 }
@@ -221,13 +235,12 @@ impl Client {
         }
     }
 
-    /// Bind a TCP socket in the parent VM to the specified address. Returns the `VsockListener`
-    /// listening for incoming connections forwarded by the parent VM and the local address the runner
-    /// is listening on
-    pub fn bind_socket(&mut self, addr: String) -> Result<(VsockListener<Fortanixvme>, Addr), io::Error> {
+    /// Bind a TCP socket in the parent VM to the specified address. Returns a Socket
+    /// listening for incoming connections forwarded by the parent VM
+    pub fn bind_socket(&mut self, addr: String) -> Result<Socket, io::Error> {
         // Start listener socket within enclave, waiting for incoming connections from enclave
         // runner
-        let listener = VsockListener::bind_with_cid(vsock::VMADDR_CID_ANY)?;
+        let listener = VsockListener::<Fortanixvme>::bind_with_cid(vsock::VMADDR_CID_ANY)?;
         let enclave_port = listener.local_addr()?.port();
 
         // Tell runner to start listening on the specified address and forward trafic to the
@@ -238,7 +251,10 @@ impl Client {
         };
         self.send(&bind)?;
         if let Response::Bound { local } = self.receive()? {
-            Ok((listener, local))
+            let fd = unsafe { FromRawFd::from_raw_fd(listener.into_raw_fd()) };
+            let info = ConnectionInfo::new_listener_info(local, enclave_port);
+            Self::store_connection_info(&fd, info);
+            Ok(Socket::new(fd))
         } else {
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
@@ -278,11 +294,19 @@ impl Client {
     }
 
     pub(crate) fn args() -> Result<Vec<String>, io::Error> {
+        println!("{}:{} args", file!(), line!());
         let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
+        println!("{}:{} args", file!(), line!());
         client.send(&Request::Init)?;
-        if let Response::Init { args } = client.receive()? {
+        println!("{}:{} args", file!(), line!());
+        let r = client.receive()?;
+        println!("{}:{} args", file!(), line!());
+        println!("args = {:?}", r);
+        if let Response::Init { args } = r {
+            println!("{}:{} args", file!(), line!());
             Ok(args)
         } else {
+            println!("{}:{} args", file!(), line!());
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
         }
     }

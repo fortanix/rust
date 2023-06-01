@@ -14,7 +14,7 @@ use crate::sys::{cvt, cvt_r};
 use fortanix_vme_abi::{self, Addr};
 use libc::{self, c_int, c_void, MSG_PEEK};
 use super::client::{Client, ConnectionInfo, Fortanixvme};
-use vsock::{SockAddr as VsockAddr, VsockStream, VsockListener};
+use vsock::{SockAddr as VsockAddr, VsockStream};
 
 pub(crate) extern crate libc as netc;
 
@@ -156,8 +156,7 @@ pub struct Socket {
 }
 
 impl Socket {
-    fn new(fd: FileDesc, info: ConnectionInfo) -> Self {
-        Client::store_connection_info(&fd, info);
+    pub(crate) fn new(fd: FileDesc) -> Self {
         Socket {
             inner: fd,
         }
@@ -166,13 +165,11 @@ impl Socket {
     fn from_stream(stream: VsockStream<Fortanixvme>, local: Addr, peer: Addr) -> Self {
         let fd = unsafe { FromRawFd::from_raw_fd(stream.into_raw_fd()) };
         let info = ConnectionInfo::new_stream_info(local, peer);
-        Socket::new(fd, info)
-    }
-
-    fn from_listener(listener: VsockListener<Fortanixvme>, local: Addr) -> Self {
-        let fd = unsafe { FromRawFd::from_raw_fd(listener.into_raw_fd()) };
-        let info = ConnectionInfo::new_listener_info(local);
-        Socket::new(fd, info)
+        //TODO Store info already in client and return socket directly
+        Client::store_connection_info(&fd, info);
+        Socket {
+            inner: fd,
+        }
     }
 
     pub fn shutdown(&self, how: Shutdown) -> io::Result<()> {
@@ -509,9 +506,9 @@ impl TcpListener {
     pub fn bind(addr: io::Result<&SocketAddr>) -> io::Result<TcpListener> {
         let addr = io_err_to_addr(addr)?;
         let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-        let (listener, local) = runner.bind_socket(addr)?;
+        let socket = runner.bind_socket(addr)?;
         Ok(TcpListener {
-            inner: Socket::from_listener(listener, local)
+            inner: socket
             })
     }
 
@@ -524,7 +521,7 @@ impl TcpListener {
     }
 
     fn local_addr(&self) -> io::Result<Addr> {
-        if let Some(ConnectionInfo::Listener{ local }) = Client::connection_info(&self.inner) {
+        if let Some(ConnectionInfo::Listener{ local, .. }) = Client::connection_info(&self.inner) {
             Ok(local.clone())
         } else {
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
@@ -589,7 +586,9 @@ impl TcpListener {
         let IncomingInfo{ local, peer, .. } = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
 
-        let sock_runner = Socket::new(sock_runner, ConnectionInfo::new_stream_info(local, peer.clone()));
+        let info = ConnectionInfo::new_stream_info(local, peer.clone());
+        Client::store_connection_info(&sock_runner, info);
+        let sock_runner = Socket::new(sock_runner);
         Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer)))
     }
 

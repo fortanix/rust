@@ -729,6 +729,7 @@ fn timeouts() {
 
 #[test]
 #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn test_read_timeout() {
     let addr = next_test_ip4();
     let listener = t!(TcpListener::bind(&addr));
@@ -750,6 +751,7 @@ fn test_read_timeout() {
 
 #[test]
 #[cfg_attr(target_env = "sgx", ignore)] // FIXME: https://github.com/fortanix/rust-sgx/issues/31
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn test_read_with_timeout() {
     let addr = next_test_ip4();
     let listener = t!(TcpListener::bind(&addr));
@@ -844,6 +846,7 @@ fn ttl() {
 
 #[test]
 #[cfg_attr(target_env = "sgx", ignore)]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn set_nonblocking() {
     let addr = next_test_ip4();
     let listener = t!(TcpListener::bind(&addr));
