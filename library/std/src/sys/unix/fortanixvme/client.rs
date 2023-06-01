@@ -148,6 +148,8 @@ pub(crate) enum ConnectionInfo {
         enclave_port: u32,
     },
     Stream {
+        /// The vsock port the enclave is using to communicate with the runner
+        enclave_port: u32,
         /// The local address the socket is bound to.
         local: Addr,
         /// The peer the socket is connected to.
@@ -156,8 +158,9 @@ pub(crate) enum ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    pub(crate) fn new_stream_info(local: Addr, peer: Addr) -> Self {
+    pub(crate) fn new_stream_info(enclave_port: u32, local: Addr, peer: Addr) -> Self {
         ConnectionInfo::Stream {
+            enclave_port,
             local,
             peer,
         }
@@ -229,8 +232,9 @@ impl Client {
         self.send(&connect)?;
         if let Response::Connected { proxy_port, local, peer } = self.receive()? {
             let proxy = Self::connect(proxy_port)?;
+            let enclave_port = proxy.local_addr()?.port();
             let fd = unsafe { FromRawFd::from_raw_fd(proxy.into_raw_fd()) };
-            let info = ConnectionInfo::new_stream_info(local, peer);
+            let info = ConnectionInfo::new_stream_info(enclave_port, local, peer);
             Client::store_connection_info(&fd, info);
             Ok(fd)
         } else {

@@ -576,7 +576,7 @@ impl TcpListener {
         let IncomingInfo{ local, peer, .. } = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
 
-        let info = ConnectionInfo::new_stream_info(local, peer.clone());
+        let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone());
         Client::store_connection_info(&sock_runner, info);
         let sock_runner = Socket::new(sock_runner);
         Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer)))
