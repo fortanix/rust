@@ -1023,7 +1023,16 @@ impl OpenOptions {
 
 impl File {
     pub fn open(path: &Path, opts: &OpenOptions) -> io::Result<File> {
-        run_path_with_cstr(path, |path| File::open_c(path, opts))
+        run_path_with_cstr(path, |path| {
+            #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+            {
+                // TODO allow nitro device to be opened
+                Err(Error::new(io::ErrorKind::PermissionDenied, "File accesses not supported on fortanixvme"));
+            }
+
+            #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
+            File::open_c(path, opts)
+        })
     }
 
     pub fn open_c(path: &CStr, opts: &OpenOptions) -> io::Result<File> {
