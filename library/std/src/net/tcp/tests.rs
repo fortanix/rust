@@ -157,16 +157,19 @@ fn multiple_connect_serial() {
         let acceptor = t!(TcpListener::bind(&addr));
 
         let _t = thread::spawn(move || {
-            for _ in 0..max {
+            for i in 0..max {
+                println!("[multiple_connect_serial:{}] connecting {}", line!(), i);
                 let mut stream = t!(TcpStream::connect(&addr));
-                t!(stream.write(&[99]));
+                t!(stream.write_all(&[99]));
             }
         });
 
         for stream in acceptor.incoming().take(max) {
+            println!("[multiple_connect_serial:{}] incoming", line!());
             let mut stream = t!(stream);
             let mut buf = [0];
-            t!(stream.read(&mut buf));
+            //println!("[multiple_connect_serial:{}] read", line!());
+            t!(stream.read_exact(&mut buf));
             assert_eq!(buf[0], 99);
         }
     })
@@ -624,11 +627,11 @@ fn clone_accept_concurrent() {
 
 #[test]
 fn debug() {
-    #[cfg(not(target_env = "sgx"))]
+    #[cfg(not(any(target_env = "fortanixvme", target_env = "sgx")))]
     fn render_socket_addr<'a>(addr: &'a SocketAddr) -> impl fmt::Debug + 'a {
         addr
     }
-    #[cfg(target_env = "sgx")]
+    #[cfg(any(target_env = "fortanixvme", target_env = "sgx"))]
     fn render_socket_addr<'a>(addr: &'a SocketAddr) -> impl fmt::Debug + 'a {
         addr.to_string()
     }

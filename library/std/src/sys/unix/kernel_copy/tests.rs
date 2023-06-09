@@ -7,6 +7,7 @@ use crate::os::unix::io::AsRawFd;
 use crate::sys_common::io::test::tmpdir;
 
 #[test]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 fn copy_specialization() -> Result<()> {
     use crate::io::{BufReader, BufWriter};
 
@@ -66,6 +67,7 @@ fn copy_specialization() -> Result<()> {
 }
 
 #[test]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 fn copies_append_mode_sink() -> Result<()> {
     let tmp_path = tmpdir();
     let source_path = tmp_path.join("copies_append_mode.source");
@@ -84,6 +86,7 @@ fn copies_append_mode_sink() -> Result<()> {
 }
 
 #[bench]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 fn bench_file_to_file_copy(b: &mut test::Bencher) {
     const BYTES: usize = 128 * 1024;
     let temp_path = tmpdir();
@@ -114,6 +117,7 @@ fn bench_file_to_file_copy(b: &mut test::Bencher) {
 }
 
 #[bench]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 fn bench_file_to_socket_copy(b: &mut test::Bencher) {
     const BYTES: usize = 128 * 1024;
     let temp_path = tmpdir();

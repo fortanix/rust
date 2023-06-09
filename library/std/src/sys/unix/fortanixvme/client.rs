@@ -181,7 +181,7 @@ pub struct Client {
 impl Client {
     // TODO Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
     fn connection_info_map() -> &'static RwLock<HashMap<RawFd, Arc<ConnectionGuard>>> {
-        println!("{}:{} connection_info_map", file!(), line!());
+        //println!("{}:{} connection_info_map", file!(), line!());
         static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, Arc<ConnectionGuard>>>> = SyncOnceCell::new();
         CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
     }
@@ -189,11 +189,11 @@ impl Client {
     pub(crate) fn store_connection_info<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
         println!("{}:{} store connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
-        println!("{}:{} store connection info", file!(), line!());
+        //println!("{}:{} store connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
-        println!("{}:{} store connection info", file!(), line!());
+        //println!("{}:{} store connection info", file!(), line!());
         if let Some(_prev) = map.insert(raw_fd, Arc::new(ConnectionGuard(info))) {
-            println!("{}:{} store connection info", file!(), line!());
+            //println!("{}:{} store connection info", file!(), line!());
             eprintln!("panic! Already keeping track of Connection info related to file descriptor {}", raw_fd);
         }
     }
@@ -201,11 +201,11 @@ impl Client {
     pub(crate) fn remove_connection_info<FD: AsRawFd>(fd: &FD) {
         println!("[{}:{}] Removing connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
-        println!("[{}:{}] Removing connection info", file!(), line!());
+        //println!("[{}:{}] Removing connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
-        println!("[{}:{}] Removing connection info", file!(), line!());
+        //println!("[{}:{}] Removing connection info", file!(), line!());
         map.remove(&raw_fd);
-        println!("[{}:{}] Removing connection info", file!(), line!());
+        //println!("[{}:{}] Removing connection info", file!(), line!());
         unsafe {
             // Now there's no mapping anymore, we can close the actual fd
             // Note that errors are ignored when closing a file descriptor. The
@@ -218,7 +218,7 @@ impl Client {
     }
 
     pub(crate) fn connection_info<FD: AsRawFd>(fd: &FD) -> Option<Arc<ConnectionGuard>> {
-        println!("[{}:{}] connection_info", file!(), line!());
+        //println!("[{}:{}] connection_info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
         Self::connection_info_map()
             .read()
@@ -230,21 +230,21 @@ impl Client {
     pub fn duplicate_fd(fd: RawFd) -> io::Result<RawFd> {
         println!("[{}:{}] duplicate fd", file!(), line!());
         let dup = cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) })?;
-        println!("[{}:{}] duplicate fd", file!(), line!());
+        //println!("[{}:{}] duplicate fd", file!(), line!());
         assert!(dup != fd);
-        println!("[{}:{}] duplicate fd", file!(), line!());
+        //println!("[{}:{}] duplicate fd", file!(), line!());
         let mut map = Self::connection_info_map()
             .write()
             .expect("ConnectionInfo RwLock poisoned");
-        println!("[{}:{}] duplicate fd", file!(), line!());
+        //println!("[{}:{}] duplicate fd", file!(), line!());
         let info = map.get(&fd)
             .ok_or(io::Error::from(io::ErrorKind::InvalidData))?
             .clone();
-        println!("[{}:{}] duplicate fd", file!(), line!());
+        //println!("[{}:{}] duplicate fd", file!(), line!());
         if map.insert(dup, info).is_none() {
             eprintln!("panic! Connection info still exists");
         }
-        println!("[{}:{}] duplicate fd", file!(), line!());
+        //println!("[{}:{}] duplicate fd", file!(), line!());
         Ok(dup)
     }
 
@@ -323,21 +323,21 @@ impl Client {
     fn close_connection(enclave_port: u32) -> Result<(), io::Error> {
         println!("[{}:{}] close connection", file!(), line!());
         let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
-        println!("[{}:{}] close connection", file!(), line!());
+        //println!("[{}:{}] close connection", file!(), line!());
 
         let close = Request::Close {
             enclave_port,
         };
-        println!("[{}:{}] close connection", file!(), line!());
+        //println!("[{}:{}] close connection", file!(), line!());
         client.send(&close)?;
-        println!("[{}:{}] close connection", file!(), line!());
+        //println!("[{}:{}] close connection", file!(), line!());
 
         if let Response::Closed = client.receive()? {
-            println!("[{}:{}] close connection", file!(), line!());
+            //println!("[{}:{}] close connection", file!(), line!());
 
             Ok(())
         } else {
-            println!("[{}:{}] close connection", file!(), line!());
+            //println!("[{}:{}] close connection", file!(), line!());
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
     }
@@ -347,10 +347,8 @@ impl Client {
         client.send(&Request::Init)?;
         let r = client.receive()?;
         if let Response::Init { args } = r {
-            println!("{}:{} args", file!(), line!());
             Ok(args)
         } else {
-            println!("{}:{} args", file!(), line!());
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response"))
         }
     }

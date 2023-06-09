@@ -115,7 +115,6 @@ impl FromRawFd for OwnedFd {
 impl Drop for OwnedFd {
     #[inline]
     fn drop(&mut self) {
-        // TODO remove connection info
         // We can't handle errors properly here and ignore them. Worst case the runner keeps listening on the TCP socket. The
         // enclave won't ever accept a new connection, but the port may not be released.
         #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]

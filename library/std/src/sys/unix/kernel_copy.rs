@@ -66,6 +66,7 @@ use crate::sys::weak::syscall;
 use libc::{EBADF, EINVAL, ENOSYS, EOPNOTSUPP, EOVERFLOW, EPERM, EXDEV};
 
 #[cfg(test)]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 mod tests;
 
 pub(crate) fn copy_spec<R: Read + ?Sized, W: Write + ?Sized>(
