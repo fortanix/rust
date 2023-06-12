@@ -5,6 +5,9 @@ use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use super::display_buffer::DisplayBuffer;
 
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use fortanix_vme_abi::{self, Addr};
+
 /// An internet socket address, either IPv4 or IPv6.
 ///
 /// Internet socket addresses consist of an [IP address], a 16-bit port number, as well
@@ -36,6 +39,21 @@ pub enum SocketAddr {
     /// An IPv6 socket address.
     #[stable(feature = "rust1", since = "1.0.0")]
     V6(#[stable(feature = "rust1", since = "1.0.0")] SocketAddrV6),
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl From<Addr> for SocketAddr {
+    fn from(addr: Addr) -> SocketAddr {
+        match addr {
+            Addr::IPv4{ ip, port } => {
+                SocketAddr::new(IpAddr::V4(ip.to_owned().into()), port)
+            },
+            Addr::IPv6{ ip, port, .. } => {
+                SocketAddr::new(IpAddr::V6(ip.to_owned().into()), port)
+            },
+        }
+    }
 }
 
 /// An IPv4 socket address.
