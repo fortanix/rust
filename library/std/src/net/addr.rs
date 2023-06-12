@@ -15,6 +15,8 @@ use crate::sys::net::netc as c;
 use crate::sys_common::net::LookupHost;
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::vec;
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use fortanix_vme_abi::{self, Addr};
 
 /// An internet socket address, either IPv4 or IPv6.
 ///
@@ -47,6 +49,21 @@ pub enum SocketAddr {
     /// An IPv6 socket address.
     #[stable(feature = "rust1", since = "1.0.0")]
     V6(#[stable(feature = "rust1", since = "1.0.0")] SocketAddrV6),
+}
+
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+#[unstable(feature = "fortanixvme", issue = "none")]
+impl From<Addr> for SocketAddr {
+    fn from(addr: Addr) -> SocketAddr {
+        match addr {
+            Addr::IPv4{ ip, port } => {
+                SocketAddr::new(IpAddr::V4(ip.to_owned().into()), port)
+            },
+            Addr::IPv6{ ip, port, .. } => {
+                SocketAddr::new(IpAddr::V6(ip.to_owned().into()), port)
+            },
+        }
+    }
 }
 
 /// An IPv4 socket address.

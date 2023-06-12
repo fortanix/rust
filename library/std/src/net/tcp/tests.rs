@@ -627,11 +627,11 @@ fn clone_accept_concurrent() {
 
 #[test]
 fn debug() {
-    #[cfg(not(any(target_env = "fortanixvme", target_env = "sgx")))]
+    #[cfg(not(target_env = "sgx"))]
     fn render_socket_addr<'a>(addr: &'a SocketAddr) -> impl fmt::Debug + 'a {
         addr
     }
-    #[cfg(any(target_env = "fortanixvme", target_env = "sgx"))]
+    #[cfg(target_env = "sgx")]
     fn render_socket_addr<'a>(addr: &'a SocketAddr) -> impl fmt::Debug + 'a {
         addr.to_string()
     }

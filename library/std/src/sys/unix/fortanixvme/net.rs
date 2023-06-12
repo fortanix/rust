@@ -365,7 +365,7 @@ impl TcpStream {
         println!("{}:{} peer_addr", file!(), line!());
         if let Some(ConnectionInfo::Stream{ peer, .. }) = Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref()) {
             println!("{}:{} peer_addr", file!(), line!());
-            Ok(addr_to_sockaddr(peer.clone()))
+            Ok(peer.to_owned().into())
         } else {
             println!("{}:{} peer_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
@@ -381,7 +381,7 @@ impl TcpStream {
         println!("{}:{} socket_addr", file!(), line!());
         if let Some(ConnectionInfo::Stream{ local, .. }) = Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref()) {
             println!("{}:{} socket_addr", file!(), line!());
-            Ok(addr_to_sockaddr(local.clone()))
+            Ok(local.to_owned().into())
         } else {
             println!("{}:{} socket_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
@@ -431,50 +431,24 @@ impl TcpStream {
 
 impl fmt::Debug for TcpStream {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("TcpStream").field("fd", &self.inner.as_raw_fd()).finish()
+        let mut res = f.debug_struct("TcpStream");
+
+        if let Ok(addr) = self.socket_addr() {
+            res.field("addr", &addr);
+        }
+
+        if let Ok(peer) = self.peer_addr() {
+            res.field("peer", &peer);
+        }
+
+        res.field("fd", &self.inner.as_raw_fd());
+        res.finish()
     }
 }
 
 impl FromInner<Socket> for TcpStream {
     fn from_inner(inner: Socket) -> TcpStream {
         TcpStream { inner }
-    }
-}
-
-fn addr_to_sockaddr(addr: Addr) -> SocketAddr {
-    fn hton16(x: u16) -> u16 {
-        u16::from_be(x)
-    }
-
-    fn hton32(x: u32) -> u32 {
-        u32::from_be(x)
-    }
-
-    match addr {
-        Addr::IPv4 { port, ip } => {
-            unsafe {
-                let mut storage: libc::sockaddr_storage = mem::zeroed();
-                let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in;
-                (*sockaddr).sin_family = libc::AF_INET as libc::sa_family_t;
-                (*sockaddr).sin_port = hton16(port);
-                (*sockaddr).sin_addr = libc::in_addr { s_addr: u32::from_le_bytes(ip) as libc::in_addr_t };
-                assert!(mem::size_of::<libc::sockaddr_in>() <= mem::size_of::<libc::sockaddr_storage>());
-                SocketAddr::V4(FromInner::from_inner(*sockaddr))
-            }
-        }
-        Addr::IPv6 { ip, port, flowinfo, scope_id } => {
-            unsafe {
-                let mut storage: libc::sockaddr_storage = mem::zeroed();
-                let sockaddr = &mut storage as *const _ as *mut libc::sockaddr_in6;
-                (*sockaddr).sin6_family = libc::AF_INET6 as libc::sa_family_t;
-                (*sockaddr).sin6_port = hton16(port);
-                (*sockaddr).sin6_flowinfo = hton32(flowinfo);
-                (*sockaddr).sin6_addr = libc::in6_addr { s6_addr: ip };
-                (*sockaddr).sin6_scope_id = hton32(scope_id);
-                assert!(mem::size_of::<libc::sockaddr_in6>() <= mem::size_of::<libc::sockaddr_storage>());
-                SocketAddr::V6(FromInner::from_inner(*sockaddr))
-            }
-        }
     }
 }
 
@@ -518,8 +492,7 @@ impl TcpListener {
     }
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        self.local_addr()
-            .map(|addr| addr_to_sockaddr(addr))
+        self.local_addr().map(|e| e.into())
     }
 
     fn local_vsock_addr(&self) -> io::Result<VsockAddr> {
@@ -578,7 +551,7 @@ impl TcpListener {
         let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone());
         Client::store_connection_info(&sock_runner, info);
         let sock_runner = Socket::new(sock_runner);
-        Ok((TcpStream { inner: sock_runner }, addr_to_sockaddr(peer)))
+        Ok((TcpStream { inner: sock_runner }, peer.into()))
     }
 
     pub fn duplicate(&self) -> io::Result<TcpListener> {
@@ -620,11 +593,12 @@ impl fmt::Debug for TcpListener {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut res = f.debug_struct("TcpListener");
 
-        if let Ok(ref addr) = self.local_addr() {
-            res.field("addr", addr);
+        if let Ok(addr) = self.local_addr() {
+            let addr: SocketAddr = addr.into();
+            res.field("addr", &addr);
         }
 
-        res.field("fd", &self.inner.inner.as_inner()).finish()
+        res.field("fd", &self.inner.inner.as_inner().as_raw_fd()).finish()
     }
 }
     
