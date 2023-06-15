@@ -228,23 +228,17 @@ impl Client {
     }
 
     pub fn duplicate_fd(fd: RawFd) -> io::Result<RawFd> {
-        println!("[{}:{}] duplicate fd", file!(), line!());
-        let dup = cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) })?;
-        //println!("[{}:{}] duplicate fd", file!(), line!());
-        assert!(dup != fd);
-        //println!("[{}:{}] duplicate fd", file!(), line!());
         let mut map = Self::connection_info_map()
             .write()
             .expect("ConnectionInfo RwLock poisoned");
-        //println!("[{}:{}] duplicate fd", file!(), line!());
         let info = map.get(&fd)
             .ok_or(io::Error::from(io::ErrorKind::InvalidData))?
             .clone();
-        //println!("[{}:{}] duplicate fd", file!(), line!());
-        if map.insert(dup, info).is_none() {
-            eprintln!("panic! Connection info still exists");
+        let dup = cvt(unsafe { libc::fcntl(fd, libc::F_DUPFD_CLOEXEC, 0) })?;
+        assert!(dup != fd);
+        if map.insert(dup, info).is_some() {
+            panic!("Connection info still exists");
         }
-        //println!("[{}:{}] duplicate fd", file!(), line!());
         Ok(dup)
     }
 
