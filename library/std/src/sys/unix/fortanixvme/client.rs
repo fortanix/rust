@@ -204,8 +204,12 @@ impl Client {
         //println!("[{}:{}] Removing connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
         //println!("[{}:{}] Removing connection info", file!(), line!());
-        map.remove(&raw_fd);
         //println!("[{}:{}] Removing connection info", file!(), line!());
+        let info = map.remove(&raw_fd);
+        // Instruct the runner to close the connection nicely, before we close it in the enclave to
+        // ensure file descriptors and ports won't be reused before existing references are cleaned
+        // up in the runner.
+        drop(info);
         unsafe {
             // Now there's no mapping anymore, we can close the actual fd
             // Note that errors are ignored when closing a file descriptor. The
