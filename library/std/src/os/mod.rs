@@ -143,7 +143,7 @@ pub mod vxworks;
 pub(crate) mod watchos;
 
 #[cfg(any(unix, target_os = "wasi", doc))]
-pub mod fd;
+pub(crate) mod fd;
 
 #[cfg(any(target_os = "linux", target_os = "android", doc))]
 mod net;

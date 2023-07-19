@@ -36,7 +36,7 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(target_env = "musl")]
+#[cfg(any(target_env = "musl", target_env = "fortanixvme"))]
 cfg_if::cfg_if! {
     if #[cfg(all(feature = "llvm-libunwind", feature = "system-llvm-libunwind"))] {
         compile_error!("`llvm-libunwind` and `system-llvm-libunwind` cannot be enabled at the same time");

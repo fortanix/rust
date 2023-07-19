@@ -619,10 +619,6 @@ impl Read for TcpStream {
         self.0.read(buf)
     }
 
-    fn read_buf(&mut self, buf: BorrowedCursor<'_>) -> io::Result<()> {
-        self.0.read_buf(buf)
-    }
-
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         self.0.read_vectored(bufs)
     }
@@ -655,10 +651,6 @@ impl Write for TcpStream {
 impl Read for &TcpStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
-    }
-
-    fn read_buf(&mut self, buf: BorrowedCursor<'_>) -> io::Result<()> {
-        self.0.read_buf(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {

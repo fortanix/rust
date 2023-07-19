@@ -215,6 +215,7 @@ fn copy_third_party_objects(
     }
 
     if target == "x86_64-fortanix-unknown-sgx"
+        || target == "x86_64-unknown-linux-fortanixvme"
         || builder.config.llvm_libunwind(target) == LlvmLibunwind::InTree
             && (target.contains("linux") || target.contains("fuchsia"))
     {
@@ -243,7 +244,7 @@ fn copy_self_contained_objects(
     // to using gcc from a glibc-targeting toolchain for linking.
     // To do that we have to distribute musl startup objects as a part of Rust toolchain
     // and link with them manually in the self-contained mode.
-    if target.contains("musl") {
+    if target.contains("musl") || target.contains("fortanixvme") {
         let srcdir = builder.musl_libdir(target).unwrap_or_else(|| {
             panic!("Target {:?} does not have a \"musl-libdir\" key", target.triple)
         });
@@ -368,7 +369,7 @@ pub fn std_cargo(builder: &Builder<'_>, target: TargetSelection, stage: u32, car
 
         // Help the libc crate compile by assisting it in finding various
         // sysroot native libraries.
-        if target.contains("musl") {
+        if target.contains("musl") || target.contains("fortanixvme") {
             if let Some(p) = builder.musl_libdir(target) {
                 let root = format!("native={}", p.to_str().unwrap());
                 cargo.rustflag("-L").rustflag(&root);

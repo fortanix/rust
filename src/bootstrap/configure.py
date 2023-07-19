@@ -115,6 +115,8 @@ v("musl-root", "target.x86_64-unknown-linux-musl.musl-root",
   "MUSL root installation directory (deprecated)")
 v("musl-root-x86_64", "target.x86_64-unknown-linux-musl.musl-root",
   "x86_64-unknown-linux-musl install directory")
+v("musl-root-fortanixvme", "target.x86_64-unknown-linux-fortanixvme.musl-root",
+  "x86_64-unknown-linux-fortanixvme install directory")
 v("musl-root-i586", "target.i586-unknown-linux-musl.musl-root",
   "i586-unknown-linux-musl install directory")
 v("musl-root-i686", "target.i686-unknown-linux-musl.musl-root",

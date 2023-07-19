@@ -7,10 +7,10 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 // `RawFd`, `AsRawFd`, etc.
-mod raw;
+pub(crate) mod raw;
 
 // `OwnedFd`, `AsFd`, etc.
-mod owned;
+pub(crate) mod owned;
 
 // Implementations for `AsRawFd` etc. for network types.
 mod net;

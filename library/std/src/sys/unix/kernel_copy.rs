@@ -53,6 +53,7 @@ use crate::mem::ManuallyDrop;
 use crate::net::TcpStream;
 use crate::os::unix::fs::FileTypeExt;
 use crate::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 use crate::os::unix::net::UnixStream;
 use crate::process::{ChildStderr, ChildStdin, ChildStdout};
 use crate::ptr;
@@ -366,6 +367,7 @@ impl CopyWrite for &TcpStream {
     }
 }
 
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 impl CopyRead for UnixStream {
     fn properties(&self) -> CopyParams {
         // avoid the stat syscall since we can be fairly sure it's a socket
@@ -373,6 +375,7 @@ impl CopyRead for UnixStream {
     }
 }
 
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 impl CopyRead for &UnixStream {
     fn properties(&self) -> CopyParams {
         // avoid the stat syscall since we can be fairly sure it's a socket
@@ -380,6 +383,7 @@ impl CopyRead for &UnixStream {
     }
 }
 
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 impl CopyWrite for UnixStream {
     fn properties(&self) -> CopyParams {
         // avoid the stat syscall since we can be fairly sure it's a socket
@@ -387,6 +391,7 @@ impl CopyWrite for UnixStream {
     }
 }
 
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 impl CopyWrite for &UnixStream {
     fn properties(&self) -> CopyParams {
         // avoid the stat syscall since we can be fairly sure it's a socket

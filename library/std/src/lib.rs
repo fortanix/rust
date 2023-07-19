@@ -272,6 +272,7 @@
 #![feature(thread_local)]
 #![feature(try_blocks)]
 #![feature(utf8_chunks)]
+#![feature(unboxed_closures)]
 // tidy-alphabetical-end
 //
 // Library features (core):
