@@ -47,6 +47,7 @@ fn connect_error() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn listen_localhost() {
     let socket_addr = next_test_ip4();
     let listener = t!(TcpListener::bind(&socket_addr));
@@ -63,6 +64,7 @@ fn listen_localhost() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn connect_loopback() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -84,6 +86,7 @@ fn connect_loopback() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn smoke_test() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -104,6 +107,7 @@ fn smoke_test() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn read_eof() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -123,6 +127,7 @@ fn read_eof() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn write_close() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -151,6 +156,7 @@ fn write_close() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn multiple_connect_serial() {
     each_ip(&mut |addr| {
         let max = 10;
@@ -176,6 +182,7 @@ fn multiple_connect_serial() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn multiple_connect_interleaved_greedy_schedule() {
     const MAX: usize = 10;
     each_ip(&mut |addr| {
@@ -213,6 +220,7 @@ fn multiple_connect_interleaved_greedy_schedule() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn multiple_connect_interleaved_lazy_schedule() {
     const MAX: usize = 10;
     each_ip(&mut |addr| {
@@ -248,6 +256,7 @@ fn multiple_connect_interleaved_lazy_schedule() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn socket_and_peer_name() {
     each_ip(&mut |addr| {
         let listener = t!(TcpListener::bind(&addr));
@@ -309,6 +318,7 @@ fn read_buf() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn read_vectored() {
     each_ip(&mut |addr| {
         let srv = t!(TcpListener::bind(&addr));
@@ -334,6 +344,7 @@ fn read_vectored() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn write_vectored() {
     each_ip(&mut |addr| {
         let srv = t!(TcpListener::bind(&addr));
@@ -382,6 +393,7 @@ fn double_bind() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn tcp_clone_smoke() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -413,6 +425,7 @@ fn tcp_clone_smoke() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn tcp_clone_two_read() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
@@ -566,6 +579,7 @@ fn close_read_wakes_up() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn clone_while_reading() {
     each_ip(&mut |addr| {
         let accept = t!(TcpListener::bind(&addr));
@@ -606,6 +620,7 @@ fn clone_while_reading() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn clone_accept_smoke() {
     each_ip(&mut |addr| {
         let a = t!(TcpListener::bind(&addr));
@@ -624,6 +639,7 @@ fn clone_accept_smoke() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn clone_accept_concurrent() {
     each_ip(&mut |addr| {
         let a = t!(TcpListener::bind(&addr));
@@ -786,6 +802,7 @@ fn test_read_with_timeout() {
 // Ensure the `set_read_timeout` and `set_write_timeout` calls return errors
 // when passed zero Durations
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn test_timeout_zero_duration() {
     let addr = next_test_ip4();
 
