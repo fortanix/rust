@@ -169,7 +169,6 @@ impl Deref for ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        println!("[{}:{}] Dropping connection", file!(), line!());
         let _ = Client::close_connection(self.enclave_port());
     }
 }
@@ -181,30 +180,21 @@ pub struct Client {
 impl Client {
     // TODO Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
     fn connection_info_map() -> &'static RwLock<HashMap<RawFd, Arc<ConnectionGuard>>> {
-        //println!("{}:{} connection_info_map", file!(), line!());
         static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, Arc<ConnectionGuard>>>> = SyncOnceCell::new();
         CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
     }
 
     pub(crate) fn store_connection_info<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
-        println!("{}:{} store connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
-        //println!("{}:{} store connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
-        //println!("{}:{} store connection info", file!(), line!());
         if let Some(_prev) = map.insert(raw_fd, Arc::new(ConnectionGuard(info))) {
-            //println!("{}:{} store connection info", file!(), line!());
             eprintln!("panic! Already keeping track of Connection info related to file descriptor {}", raw_fd);
         }
     }
 
     pub(crate) fn remove_connection_info<FD: AsRawFd>(fd: &FD) {
-        println!("[{}:{}] Removing connection info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
-        //println!("[{}:{}] Removing connection info", file!(), line!());
         let mut map = Self::connection_info_map().write().expect("ConnectionInfo RwLock poisoned");
-        //println!("[{}:{}] Removing connection info", file!(), line!());
-        //println!("[{}:{}] Removing connection info", file!(), line!());
         let info = map.remove(&raw_fd);
         // Instruct the runner to close the connection nicely, before we close it in the enclave to
         // ensure file descriptors and ports won't be reused before existing references are cleaned
@@ -222,7 +212,6 @@ impl Client {
     }
 
     pub(crate) fn connection_info<FD: AsRawFd>(fd: &FD) -> Option<Arc<ConnectionGuard>> {
-        //println!("[{}:{}] connection_info", file!(), line!());
         let raw_fd = fd.as_raw_fd();
         Self::connection_info_map()
             .read()
@@ -319,23 +308,16 @@ impl Client {
     }
 
     fn close_connection(enclave_port: u32) -> Result<(), io::Error> {
-        println!("[{}:{}] close connection", file!(), line!());
         let mut client = Self::new(fortanix_vme_abi::SERVER_PORT)?;
-        //println!("[{}:{}] close connection", file!(), line!());
 
         let close = Request::Close {
             enclave_port,
         };
-        //println!("[{}:{}] close connection", file!(), line!());
         client.send(&close)?;
-        //println!("[{}:{}] close connection", file!(), line!());
 
         if let Response::Closed = client.receive()? {
-            //println!("[{}:{}] close connection", file!(), line!());
-
             Ok(())
         } else {
-            //println!("[{}:{}] close connection", file!(), line!());
             Err(io::Error::new(ErrorKind::InvalidData, "Unexpected response received"))
         }
     }
