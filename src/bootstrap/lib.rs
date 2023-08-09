@@ -129,7 +129,7 @@ const EXTRA_CHECK_CFGS: &[(Option<Mode>, &'static str, Option<&[&'static str]>)]
     (Some(Mode::Std), "freebsd13", None),
     (Some(Mode::Std), "backtrace_in_libstd", None),
     /* Extra values not defined in the built-in targets yet, but used in std */
-    (Some(Mode::Std), "target_env", Some(&["libnx"])),
+    (Some(Mode::Std), "target_env", Some(&["libnx", "fortanixvme"])),
     // (Some(Mode::Std), "target_os", Some(&[])),
     (Some(Mode::Std), "target_arch", Some(&["asmjs", "spirv", "nvptx", "xtensa"])),
     /* Extra names used by dependencies */

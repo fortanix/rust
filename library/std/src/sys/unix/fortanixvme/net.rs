@@ -150,11 +150,6 @@ fn take_incoming_connection_info(runner_port: u32) -> Option<IncomingInfo> {
 
 pub struct Socket {
     inner: FileDesc,
-    /// Information about the proxy connection in the runner. This information should always be
-    /// retrievable. If it fails, it likely would fail on every request. We also store the error
-    /// itself so it may be returned on every request. Unfortunately `std::io::Error` is not
-    /// `Clone`. We store the `ErrorKind` instead.
-    info: OnceLock<Result<ConnectionInfo, ErrorKind>>,
 }
 
 impl Socket {
@@ -231,7 +226,6 @@ impl Socket {
             let fd = cvt_r(|| libc::accept4(self.as_raw_fd(), storage, len, libc::SOCK_CLOEXEC))?;
             Ok(Socket {
                 inner: FileDesc::from_raw_fd(fd),
-                info: OnceLock::new(),
             })
         }
     }
@@ -241,7 +235,6 @@ impl FromInner<FileDesc> for Socket {
     fn from_inner(fd: FileDesc) -> Socket {
         Socket {
             inner: fd,
-            info: OnceLock::new(),
         }
     }
 }
@@ -275,7 +268,6 @@ impl FromRawFd for Socket {
     unsafe fn from_raw_fd(raw_fd: RawFd) -> Self {
         Socket {
             inner: FromRawFd::from_raw_fd(raw_fd),
-            info: OnceLock::new(),
         }
     }
 }

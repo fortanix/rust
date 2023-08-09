@@ -171,11 +171,11 @@ mod imp {
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
 mod imp {
     use crate::ffi::OsString;
-    use crate::lazy::SyncOnceCell;
+    use crate::sync::OnceLock;
     use crate::sys::unix::fortanixvme::client::{Client as FortanixvmeClient};
     use super::Args;
 
-    static ARGS: SyncOnceCell<Vec<OsString>> = SyncOnceCell::new();
+    static ARGS: OnceLock<Vec<OsString>> = OnceLock::new();
 
     fn enclave_args() -> &'static Vec<OsString> {
         ARGS.get_or_init(|| {

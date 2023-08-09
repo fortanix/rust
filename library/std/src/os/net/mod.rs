@@ -9,5 +9,6 @@
         all(target_vendor = "fortanix", target_env = "sgx")
     )
 )))]
-#[cfg(all(any(target_os = "linux", target_os = "android", not(target_env = "fortanixvme")), doc))]
+#[cfg(any(target_os = "linux", target_os = "android", doc))]
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 pub(super) mod linux_ext;

@@ -9,7 +9,7 @@ use crate::fs;
 use crate::io;
 use crate::marker::PhantomData;
 use crate::mem::forget;
-#[cfg(not(any(target_arch = "wasm32", target_env = "sgx", target_os = "hermit")))]
+#[cfg(not(any(target_arch = "wasm32", target_env = "sgx", target_os = "hermit", target_env = "fortanixvme")))]
 use crate::sys::cvt;
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
 use crate::sys::fortanixvme::client::{Client as FortanixvmeClient};

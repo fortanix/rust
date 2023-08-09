@@ -6,7 +6,7 @@ mod tests;
 use crate::io::prelude::*;
 
 use crate::fmt;
-use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
+use crate::io::{self, IoSlice, IoSliceMut};
 use crate::iter::FusedIterator;
 use crate::net::{Shutdown, SocketAddr, ToSocketAddrs};
 use crate::sys_common::net as net_imp;

@@ -1349,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/EDP-108-exit_api#98645bd36f1c437615390b75b34d3d584ab67515"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/gh-470-addr_translation#6f60aea9f52e9ee890dd38d10afef4aef7c3a8d7"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
@@ -5327,7 +5327,7 @@ version = "1.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
- "cfg-if 1.0.0",
+ "cfg-if 0.1.10",
  "rand 0.7.3",
  "static_assertions",
 ]

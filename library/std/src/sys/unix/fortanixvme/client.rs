@@ -1,7 +1,7 @@
 use crate::fmt::{self, Display, Formatter};
 use crate::collections::HashMap;
 use crate::io::{self, ErrorKind, Read};
-use crate::lazy::SyncOnceCell;
+use crate::sync::OnceLock;
 use crate::ops::Deref;
 use crate::os::fd::raw::{AsRawFd, FromRawFd, RawFd};
 use crate::sync::{Arc, RwLock};
@@ -110,7 +110,7 @@ impl From<fortanix_vme_abi::ErrorKind> for io::ErrorKind {
             //#[unstable(feature = "io_error_more", issue = "86442")]
             fortanix_vme_abi::ErrorKind::TooManyLinks => io::ErrorKind::TooManyLinks,
             //#[unstable(feature = "io_error_more", issue = "86442")]
-            fortanix_vme_abi::ErrorKind::FilenameTooLong => io::ErrorKind::FilenameTooLong,
+            //fortanix_vme_abi::ErrorKind::FilenameTooLong => io::ErrorKind::FilenameTooLong,
             //#[unstable(feature = "io_error_more", issue = "86442")]
             fortanix_vme_abi::ErrorKind::ArgumentListTooLong => io::ErrorKind::ArgumentListTooLong,
             fortanix_vme_abi::ErrorKind::Interrupted => io::ErrorKind::Interrupted,
@@ -196,7 +196,7 @@ pub struct Client {
 impl Client {
     // TODO Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
     fn connection_info_map() -> &'static RwLock<HashMap<RawFd, Arc<ConnectionGuard>>> {
-        static CONNECTION_INFO: SyncOnceCell<RwLock<HashMap<RawFd, Arc<ConnectionGuard>>>> = SyncOnceCell::new();
+        static CONNECTION_INFO: OnceLock<RwLock<HashMap<RawFd, Arc<ConnectionGuard>>>> = OnceLock::new();
         CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
     }
 

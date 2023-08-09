@@ -73,9 +73,9 @@ export CXX_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl
 export LD_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-ld
 
 if [ "${arg}" == "test" ]; then
-    RUST_TEST_THREADS=1 ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker ${testname}
+    RUST_TEST_THREADS=1 nice -n 19 ionice -c idle ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker ${testname}
 else
-    python3 ./x.py build
+    nice -n 19 ionice -c idle python3 ./x.py build
 
     source $HOME/.cargo/env
     # force use of older cargo that doesn't add unknown flags when it calls rustc

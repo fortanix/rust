@@ -1026,8 +1026,11 @@ impl File {
         run_path_with_cstr(path, |path| {
             #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
             {
+                let _opts = opts;
+                let _path = path;
+
                 // TODO allow nitro device to be opened
-                Err(Error::new(io::ErrorKind::PermissionDenied, "File accesses not supported on fortanixvme"));
+                Err(Error::new(io::ErrorKind::PermissionDenied, "File accesses not supported on fortanixvme"))
             }
 
             #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
