@@ -307,8 +307,8 @@ fn read_buf() {
         t!(s.read_buf(buf.unfilled()));
         assert_eq!(buf.filled(), &[1, 2, 3, 4]);
 
-        // FIXME: sgx uses default_read_buf that initializes the buffer.
-        if cfg!(not(target_env = "sgx")) {
+        // FIXME: sgx and fortanixvme uses default implementation of `Read::read_buf` (i.e., `default_read_buf`) that initializes the buffer.
+        if cfg!(not(target_env = "sgx")) && cfg!(not(target_env = "fortanixvme")) {
             // TcpStream::read_buf should omit buffer initialization.
             assert_eq!(buf.init_len(), 4);
         }
