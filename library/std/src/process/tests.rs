@@ -152,7 +152,7 @@ fn child_stdout_read_buf() {
 }
 
 #[test]
-#[cfg_attr(any(target_os = "vxworks"), ignore)]
+#[cfg_attr(any(target_os = "vxworks", target_env = "fortanixvme"), ignore)]
 fn test_process_status() {
     let mut status = if cfg!(target_os = "windows") {
         Command::new("cmd").args(&["/C", "exit 1"]).status().unwrap()

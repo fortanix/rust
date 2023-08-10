@@ -111,6 +111,8 @@ use crate::ffi::OsStr;
 use crate::fmt;
 use crate::fs;
 use crate::io::{self, BorrowedCursor, IoSlice, IoSliceMut};
+#[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
+use crate::io::{Error, ErrorKind};
 use crate::num::NonZeroI32;
 use crate::path::Path;
 use crate::str;
@@ -990,10 +992,16 @@ impl Command {
     /// ```
     #[stable(feature = "process", since = "1.0.0")]
     pub fn status(&mut self) -> io::Result<ExitStatus> {
-        self.inner
-            .spawn(imp::Stdio::Inherit, true)
-            .map(Child::from_inner)
-            .and_then(|mut p| p.wait())
+        cfg_if::cfg_if! {
+            if #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))] {
+                Err(Error::new(ErrorKind::Unsupported, "Not supported on the fortanixvme platform"))
+            } else {
+                self.inner
+                    .spawn(imp::Stdio::Inherit, true)
+                    .map(Child::from_inner)
+                    .and_then(|mut p| p.wait())
+            }
+        }
     }
 
     /// Returns the path to the program that was given to [`Command::new`].
