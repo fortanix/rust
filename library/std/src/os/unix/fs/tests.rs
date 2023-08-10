@@ -1,6 +1,7 @@
 use super::*;
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)] // FS access currently not supported by fortanixvme
 fn read_vectored_at() {
     let msg = b"preadv is working!";
     let dir = crate::sys_common::io::test::tmpdir();
@@ -29,6 +30,7 @@ fn read_vectored_at() {
 }
 
 #[test]
+#[cfg_attr(target_env = "fortanixvme", ignore)] // FS access currently not supported by fortanixvme
 fn write_vectored_at() {
     let msg = b"pwritev is not working!";
     let dir = crate::sys_common::io::test::tmpdir();
