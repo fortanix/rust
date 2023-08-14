@@ -5637,7 +5637,7 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 [[package]]
 name = "vsock"
 version = "0.2.4"
-source = "git+https://github.com/fortanix/vsock-rs.git?branch=fortanixvme#4628538042a0308d9a1f737da816666ab899dba4"
+source = "git+https://github.com/fortanix/vsock-rs.git?branch=raoul/gh-461-read_write_all#7c08cd19463555a1e9ce9fe2b1eb1b5576257658"
 dependencies = [
  "compiler_builtins",
  "getrandom 0.2.3",

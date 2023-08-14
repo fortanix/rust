@@ -10,8 +10,6 @@ use crate::sys::fd::FileDesc;
 use fortanix_vme_abi::{self, Addr, Response, Request};
 use vsock::{self, Platform, VsockListener, VsockStream};
 
-const MIN_READ_BUFF: usize = 0x2000;
-
 #[unstable(feature = "fortanixvme", issue = "none")]
 pub struct Fortanixvme;
 
@@ -363,35 +361,26 @@ impl Client {
 
     fn send(&mut self, req: &Request) -> Result<(), io::Error> {
         let req: Vec<u8> = serde_cbor::ser::to_vec(req).map_err(|_e| io::Error::new(ErrorKind::Other, "serialization failed"))?;
-        self.stream.write(req.as_slice())?;
+        self.stream.write_all(&req.len().to_le_bytes())?;
+        self.stream.write_all(req.as_slice())?;
         Ok(())
     }
 
     fn receive(&mut self) -> Result<Response, io::Error> {
-        // We'd like to have used a streaming deserializer. Unfortunately, that implies that we
-        // are able to create a `Deserializer` from a reader (i.e., the socket). Unfortunately
-        // that requires enabling the std feature of serde_cbor and that's obvious not possible
-        fn read<P: Platform>(stream: &mut VsockStream<P>, mut buff: Vec<u8>) -> Result<Response, io::Error> {
-            let old_size = buff.len();
-            let new_size = crate::cmp::max(old_size.next_power_of_two(), MIN_READ_BUFF);
-            buff.resize(new_size, 0);
-            let n = stream.read(&mut buff[old_size..])?;
-            buff.truncate(old_size + n);
+        let mut size = [0u8; usize::BITS as usize / 8];
+        self.stream.read_exact(&mut size[..])?;
+        let size = usize::from_le_bytes(size);
 
-            match serde_cbor::from_slice(buff.as_slice()) {
-                Ok(resp)  => Ok(resp),
-                Err(e)    => if e.is_eof() {
-                        read(stream, buff)
-                    } else {
-                        Err(io::Error::new(ErrorKind::InvalidData, "Deserialization failed"))
-                    },
-            }
+        let mut resp = Vec::new();
+        resp.resize(size, 0);
+        self.stream.read_exact(&mut resp[..])?;
+        let resp = serde_cbor::from_slice(&resp)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidData, "Deserialization failed"))?;
+
+        match resp {
+            fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::Command(kind)) => Err(io::Error::from(io::ErrorKind::from(kind))),
+            fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::SystemError(errno)) => Err(io::Error::from_raw_os_error(errno as _)),
+            other => Ok(other),
         }
-        read(&mut self.stream, Vec::new())
-            .map(|resp| match resp {
-                fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::Command(kind)) => Err(io::Error::from(io::ErrorKind::from(kind))),
-                fortanix_vme_abi::Response::Failed(fortanix_vme_abi::Error::SystemError(errno)) => Err(io::Error::from_raw_os_error(errno as _)),
-                other => Ok(other),
-            })?
     }
 }

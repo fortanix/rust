@@ -49,7 +49,7 @@ hermit-abi = { version = "0.3.0", features = ['rustc-dep-of-std'] }
 fortanix-vme-abi = { git = "https://github.com/fortanix/rust-sgx.git", branch = "raoul/gh-470-addr_translation", default-features = false, features = ['rustc-dep-of-std'] }
 serde = { git = "https://github.com/fortanix/serde.git", branch = "master", default-features = false, features = ["rustc-dep-of-std"] }
 serde_cbor = { git = "https://github.com/fortanix/cbor.git", branch = "fortanixvme", default-features = false, features = ["alloc", "rustc-dep-of-std"] }
-vsock = { git = "https://github.com/fortanix/vsock-rs.git", branch = "fortanixvme", default-features = false, features = ['rustc-dep-of-std', 'random_port'] }
+vsock = { git = "https://github.com/fortanix/vsock-rs.git", branch = "raoul/gh-461-read_write_all", default-features = false, features = ['rustc-dep-of-std', 'random_port'] }
 
 [target.wasm32-wasi.dependencies]
 wasi = { version = "0.11.0", features = ['rustc-dep-of-std'], default-features = false }
