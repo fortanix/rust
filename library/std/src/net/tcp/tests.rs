@@ -104,7 +104,6 @@ fn smoke_test() {
 }
 
 #[test]
-#[cfg_attr(target_env = "fortanixvme", ignore)]
 fn read_eof() {
     each_ip(&mut |addr| {
         let acceptor = t!(TcpListener::bind(&addr));
