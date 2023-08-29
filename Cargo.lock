@@ -221,8 +221,8 @@ dependencies = [
  "nom",
  "proc-macro2",
  "quote",
- "serde 1.0.171",
- "syn 2.0.26",
+ "serde 1.0.188",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -269,7 +269,7 @@ version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bfc506e7a2370ec239e1d072507b2a80c833083699d3c6fa176fbb4de8448c6"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -333,7 +333,7 @@ checksum = "6798148dccfbff0fae41c7574d2fa8f1ef3492fba0face179de5d8d447d67b05"
 dependencies = [
  "memchr",
  "regex-automata 0.3.3",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -344,7 +344,7 @@ dependencies = [
  "flate2",
  "hex",
  "rayon",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "sha2",
  "tar",
@@ -363,7 +363,7 @@ dependencies = [
  "anyhow",
  "curl",
  "indexmap 1.9.3",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "toml",
 ]
@@ -401,7 +401,7 @@ version = "1.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c59e92b5a388f549b863a7bea62612c09f24c8393560709a54558a9abdfb3b9c"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -414,7 +414,7 @@ dependencies = [
  "rustc-workspace-hack",
  "rustc_tools_util",
  "rustc_version",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -424,7 +424,7 @@ version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2cfa25e60aea747ec7e1124f238816749faa93759c6ff5b31f1ccdda137f4479"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -436,7 +436,7 @@ dependencies = [
  "camino",
  "cargo-platform",
  "semver",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -449,7 +449,7 @@ dependencies = [
  "camino",
  "cargo-platform",
  "semver",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "thiserror",
 ]
@@ -543,7 +543,7 @@ dependencies = [
  "libc 0.2.147",
  "num-integer",
  "num-traits",
- "serde 1.0.171",
+ "serde 1.0.188",
  "winapi",
 ]
 
@@ -620,7 +620,7 @@ dependencies = [
  "heck",
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -657,8 +657,8 @@ dependencies = [
  "rustc-semver",
  "rustc-workspace-hack",
  "rustc_tools_util",
- "serde 1.0.171",
- "syn 2.0.26",
+ "serde 1.0.188",
+ "syn 2.0.29",
  "tempfile",
  "termize",
  "tester",
@@ -695,7 +695,7 @@ dependencies = [
  "regex-syntax 0.6.25",
  "rustc-semver",
  "semver",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "tempfile",
  "toml",
@@ -719,7 +719,7 @@ name = "collect-license-metadata"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "spdx-rs",
 ]
@@ -794,7 +794,7 @@ dependencies = [
  "once_cell",
  "regex",
  "rustfix",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "tracing",
  "tracing-subscriber",
@@ -818,8 +818,8 @@ dependencies = [
  "miow 0.3.7",
  "regex",
  "rustfix",
- "serde 1.0.171",
- "serde_derive",
+ "serde 1.0.188",
+ "serde_derive 1.0.171",
  "serde_json",
  "tempfile",
  "tester",
@@ -967,7 +967,7 @@ version = "0.1.71"
 dependencies = [
  "itertools",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -1077,7 +1077,7 @@ checksum = "487585f4d0c6655fe74905e2504d8ad6908e4db67f744eb140876906c2f3175d"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -1110,8 +1110,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "41e83863a500656dfa214fee6682de9c5b9f03de6860fec531235ed2ae9f6571"
 dependencies = [
  "regex",
- "serde 1.0.171",
- "serde_derive",
+ "serde 1.0.188",
+ "serde_derive 1.0.171",
  "serde_json",
 ]
 
@@ -1349,7 +1349,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul/gh-470-addr_translation#6f60aea9f52e9ee890dd38d10afef4aef7c3a8d7"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=fortanixvme-2023-05-07-alpha#c68f510e9dc561c8765ddcd70585abff5b71cb39"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-alloc",
@@ -1473,7 +1473,7 @@ name = "generate-copyright"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -1520,24 +1520,14 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
-version = "0.2.3"
-source = "git+https://github.com/fortanix/getrandom.git?branch=fortanixvme#cf4c6875ca03932aca760eb3a1fcfc4d4f9b47cd"
-dependencies = [
- "cfg-if 1.0.0",
- "compiler_builtins",
- "libc 0.2.138",
- "rustc-std-workspace-core",
- "wasi 0.10.2+wasi-snapshot-preview1",
-]
-
-[[package]]
-name = "getrandom"
 version = "0.2.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be4136b2a15dd319360be1c07d9933517ccf0be8f16bf62a3bee4f0d618df427"
 dependencies = [
  "cfg-if 1.0.0",
+ "compiler_builtins",
  "libc 0.2.147",
+ "rustc-std-workspace-core",
  "wasi 0.11.0+wasi-snapshot-preview1",
 ]
 
@@ -1588,7 +1578,7 @@ version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0d876ce7262df96262a2a19531da6ff9a86048224d49580a585fc5c04617825"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -1611,7 +1601,7 @@ dependencies = [
  "pest",
  "pest_derive",
  "quick-error 2.0.0",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -1825,7 +1815,7 @@ dependencies = [
  "autocfg",
  "hashbrown 0.12.3",
  "rustc-rayon",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -1962,7 +1952,7 @@ dependencies = [
  "fs-err",
  "rustc-hash",
  "rustdoc-json-types",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -1975,7 +1965,7 @@ dependencies = [
  "array_tool",
  "env_logger 0.7.1",
  "log",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -2002,8 +1992,10 @@ dependencies = [
 [[package]]
 name = "libc"
 version = "0.2.147"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4668fb0ea861c1df094127ac5f1da3409a82116a4ba74fca2e58ef927159bb3"
+source = "git+https://github.com/fortanix/libc.git?branch=fortanixvme-2023-05-07-alpha#c571b11407e86c463e276a9fb1066d196fd60ba7"
+dependencies = [
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "libffi"
@@ -2147,8 +2139,8 @@ dependencies = [
  "log",
  "phf",
  "phf_codegen",
- "serde 1.0.171",
- "serde_derive",
+ "serde 1.0.188",
+ "serde_derive 1.0.171",
  "serde_json",
  "string_cache",
  "string_cache_codegen",
@@ -2211,7 +2203,7 @@ dependencies = [
  "opener",
  "pulldown-cmark",
  "regex",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "shlex",
  "tempfile",
@@ -2531,7 +2523,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "compiler_builtins",
  "core",
- "libc 0.2.138",
+ "libc 0.2.147",
 ]
 
 [[package]]
@@ -2542,7 +2534,7 @@ dependencies = [
  "cfg-if 1.0.0",
  "compiler_builtins",
  "core",
- "libc 0.2.138",
+ "libc 0.2.147",
  "unwind",
 ]
 
@@ -3093,7 +3085,7 @@ dependencies = [
 name = "rls"
 version = "2.0.0"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -3414,7 +3406,7 @@ dependencies = [
  "rustc_span",
  "rustc_symbol_mangling",
  "rustc_target",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "smallvec",
  "tracing",
@@ -3619,7 +3611,7 @@ dependencies = [
  "rustc_span",
  "rustc_target",
  "rustc_type_ir",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "termcolor",
  "termize",
@@ -3670,7 +3662,7 @@ dependencies = [
  "fluent-syntax",
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
  "unic-langid",
 ]
 
@@ -3910,7 +3902,7 @@ dependencies = [
  "rustc_serialize",
  "rustc_span",
  "rustc_target",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -3938,7 +3930,7 @@ version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
  "synstructure 0.13.0",
 ]
 
@@ -4095,7 +4087,7 @@ dependencies = [
  "rustc_session",
  "rustc_span",
  "rustc_target",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "tracing",
 ]
@@ -4479,7 +4471,7 @@ dependencies = [
  "once_cell",
  "regex",
  "rustdoc-json-types",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "smallvec",
  "tempfile",
@@ -4494,7 +4486,7 @@ name = "rustdoc-json-types"
 version = "0.1.0"
 dependencies = [
  "rustc-hash",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -4517,7 +4509,7 @@ checksum = "ecd2853d9e26988467753bd9912c3a126f642d05d229a4b53f5752ee36c56481"
 dependencies = [
  "anyhow",
  "log",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
 ]
 
@@ -4527,7 +4519,7 @@ version = "0.3.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "serde 1.0.171",
+ "serde 1.0.188",
  "syn 1.0.109",
 ]
 
@@ -4552,7 +4544,7 @@ dependencies = [
  "regex",
  "rustc-workspace-hack",
  "rustfmt-config_proc_macro",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "term",
  "thiserror",
@@ -4644,7 +4636,7 @@ version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b0293b4b29daaf487284529cc2f5675b8e57c61f70167ba415a463651fd6a918"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -4659,11 +4651,13 @@ dependencies = [
 
 [[package]]
 name = "serde"
-version = "1.0.171"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "30e27d1e4fd7659406c492fd6cfaf2066ba8773de45ca75e855590f856dc34a9"
+version = "1.0.188"
+source = "git+https://github.com/fortanix/serde.git?branch=fortanixvme-2023-05-07-alpha#e26ce6a491e4d1cea83172364009561ae2b598e6"
 dependencies = [
- "serde_derive",
+ "compiler_builtins",
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+ "serde_derive 1.0.188",
 ]
 
 [[package]]
@@ -4686,7 +4680,17 @@ checksum = "389894603bd18c46fa56231694f8d827779c0951a667087194cf9de94ed24682"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
+]
+
+[[package]]
+name = "serde_derive"
+version = "1.0.188"
+source = "git+https://github.com/fortanix/serde.git?branch=fortanixvme-2023-05-07-alpha#e26ce6a491e4d1cea83172364009561ae2b598e6"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -4698,7 +4702,7 @@ dependencies = [
  "indexmap 2.0.0",
  "itoa",
  "ryu",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -4797,7 +4801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "53d7ac03c67c572d85049d6db815e20a4a19b41b3d5cca732ac582342021ad77"
 dependencies = [
  "nom",
- "serde 1.0.171",
+ "serde 1.0.188",
  "thiserror",
  "tracing",
 ]
@@ -4811,7 +4815,7 @@ dependencies = [
  "chrono",
  "log",
  "nom",
- "serde 1.0.171",
+ "serde 1.0.188",
  "spdx-expression",
  "strum",
  "strum_macros",
@@ -4858,7 +4862,7 @@ dependencies = [
  "fortanix-vme-abi",
  "hashbrown 0.12.3",
  "hermit-abi 0.3.2",
- "libc 0.2.138",
+ "libc 0.2.147",
  "miniz_oxide 0.6.2",
  "object 0.30.4",
  "panic_abort",
@@ -4867,7 +4871,7 @@ dependencies = [
  "rand 0.8.5",
  "rand_xorshift",
  "rustc-demangle",
- "serde 1.0.130",
+ "serde 1.0.188",
  "serde_cbor",
  "std_detect",
  "unwind",
@@ -4881,7 +4885,7 @@ version = "0.1.5"
 dependencies = [
  "cfg-if 1.0.0",
  "compiler_builtins",
- "libc 0.2.138",
+ "libc 0.2.147",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
 ]
@@ -4896,7 +4900,7 @@ dependencies = [
  "new_debug_unreachable",
  "phf_shared",
  "precomputed-hash",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -4958,9 +4962,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.26"
+version = "2.0.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45c3457aacde3c65315de5031ec191ce46604304d2446e803d71ade03308d970"
+checksum = "c324c494eba9d92503e6f1ef2e6df781e78f6a7705a0202d9801b198807d518a"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4987,7 +4991,7 @@ checksum = "285ba80e733fac80aa4270fbcdf83772a79b80aa35c97075320abfee4a915b06"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
  "unicode-xid",
 ]
 
@@ -5082,7 +5086,6 @@ version = "0.0.0"
 dependencies = [
  "core",
  "getopts",
- "libc 0.2.138",
  "panic_abort",
  "panic_unwind",
  "std",
@@ -5130,7 +5133,7 @@ checksum = "463fe12d7993d3b327787537ce8dd4dfa058de32fc2b195ef3cde03dc4771e8f"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -5226,7 +5229,7 @@ version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75cf45bb0bef80604d001caaec0d09da99611b3c0fd39d3080468875cdb65645"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -5255,7 +5258,7 @@ checksum = "5f4f31f56159e98206da9efd823404b79b6ef3143b4a7ab76e67b1751b25a4ab"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.26",
+ "syn 2.0.29",
 ]
 
 [[package]]
@@ -5380,7 +5383,7 @@ dependencies = [
  "regex",
  "rustc_version",
  "rustfix",
- "serde 1.0.171",
+ "serde 1.0.188",
  "serde_json",
  "tempfile",
 ]
@@ -5592,7 +5595,7 @@ dependencies = [
  "idna",
  "matches",
  "percent-encoding",
- "serde 1.0.171",
+ "serde 1.0.188",
 ]
 
 [[package]]
@@ -5637,11 +5640,11 @@ checksum = "49874b5167b65d7193b8aba1567f5c7d93d001cafc34600cee003eda787e483f"
 [[package]]
 name = "vsock"
 version = "0.2.4"
-source = "git+https://github.com/fortanix/vsock-rs.git?branch=raoul/gh-461-read_write_all#7c08cd19463555a1e9ce9fe2b1eb1b5576257658"
+source = "git+https://github.com/fortanix/vsock-rs.git?branch=fortanixvme-2023-05-07-alpha#df72417cc649465071429824628ee758e9f8f9c1"
 dependencies = [
  "compiler_builtins",
- "getrandom 0.2.3",
- "libc 0.2.138",
+ "getrandom 0.2.10",
+ "libc 0.2.147",
  "rustc-std-workspace-core",
 ]
 
@@ -5661,17 +5664,6 @@ name = "wasi"
 version = "0.9.0+wasi-snapshot-preview1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cccddf32554fecc6acb585f82a32a72e28b48f8c4c1883ddfeeeaa96f7d8e519"
-
-[[package]]
-name = "wasi"
-version = "0.10.2+wasi-snapshot-preview1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd6fbd9a79829dd1ad0cc20627bf1ed606756a7f77edff7b66b7064f9cb327c6"
-dependencies = [
- "compiler_builtins",
- "rustc-std-workspace-alloc",
- "rustc-std-workspace-core",
-]
 
 [[package]]
 name = "wasi"
@@ -5933,7 +5925,7 @@ version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1848075a23a28f9773498ee9a0f2cf58fcbad4f8c0ccf84a210ab33c6ae495de"
 dependencies = [
- "serde 1.0.171",
+ "serde 1.0.188",
  "stable_deref_trait",
  "yoke-derive",
  "zerofrom",
