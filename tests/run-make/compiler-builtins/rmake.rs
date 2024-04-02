@@ -48,6 +48,7 @@ fn main() {
     let path = std::env::var("PATH").unwrap();
     let rustc = std::env::var("RUSTC").unwrap();
     let bootstrap_cargo = std::env::var("BOOTSTRAP_CARGO").unwrap();
+    let library_path = std::env::var("LD_LIBRARY_PATH").unwrap();
     let status = std::process::Command::new(bootstrap_cargo)
         .args([
             "build",
@@ -60,6 +61,7 @@ fn main() {
         .env_clear()
         .env("PATH", path)
         .env("RUSTC", rustc)
+        .env("LD_LIBRARY_PATH", library_path)
         .env("RUSTFLAGS", "-Copt-level=0 -Cdebug-assertions=yes")
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("RUSTC_BOOTSTRAP", "1")
