@@ -37,6 +37,15 @@ path = "lib.rs""#;
 fn main() {
     let target_dir = tmp_dir().join("target");
     let target = std::env::var("TARGET").unwrap();
+    if target.starts_with("wasm") || target.starts_with("nvptx") || target.starts_with("x86_64-fortanix-unknown-sgx") {
+        // wasm and nvptx targets don't produce rlib files that object can parse.
+        // This test won't run on sgx. The first step of compiling to the SGX platform
+        // is to generate an ELF file. At that level you can still link static
+        // libraries in. Finally the actual enclave is build from the resulting
+        // ELF. At that final level, everything is fixed and you can't link in
+        // more stuff
+        return;
+    }
 
     println!("Testing compiler_builtins for {}", target);
 
@@ -48,7 +57,6 @@ fn main() {
     let path = std::env::var("PATH").unwrap();
     let rustc = std::env::var("RUSTC").unwrap();
     let bootstrap_cargo = std::env::var("BOOTSTRAP_CARGO").unwrap();
-    let library_path = std::env::var("LD_LIBRARY_PATH").unwrap();
     let status = std::process::Command::new(bootstrap_cargo)
         .args([
             "build",
@@ -61,7 +69,6 @@ fn main() {
         .env_clear()
         .env("PATH", path)
         .env("RUSTC", rustc)
-        .env("LD_LIBRARY_PATH", library_path)
         .env("RUSTFLAGS", "-Copt-level=0 -Cdebug-assertions=yes")
         .env("CARGO_TARGET_DIR", &target_dir)
         .env("RUSTC_BOOTSTRAP", "1")
