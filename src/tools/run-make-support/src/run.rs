@@ -19,7 +19,10 @@ fn run_common(name: &str) -> (Command, Output) {
     cmd.env(&ld_lib_path_envvar, {
         let mut paths = vec![];
         paths.push(PathBuf::from(env::var("TMPDIR").unwrap()));
-        for p in env::split_paths(&env::var("TARGET_RPATH_ENV").unwrap()) {
+        for p in env::split_paths(&env::var("HOST_RPATH_DIR").unwrap()) {
+            paths.push(p.to_path_buf());
+        }
+        for p in env::split_paths(&env::var("TARGET_RPATH_DIR").unwrap()) {
             paths.push(p.to_path_buf());
         }
         for p in env::split_paths(&env::var(&ld_lib_path_envvar).unwrap()) {
