@@ -7,6 +7,10 @@ use crate::is_windows;
 use super::{bin_name, handle_failed_output};
 
 fn run_common(name: &str) -> (Command, Output) {
+    eprintln!("Environment variables:");
+    for (key, value) in env::vars() {
+        println!(" - {key}: {value}");
+    }
     let mut bin_path = PathBuf::new();
     bin_path.push(env::var("TMPDIR").unwrap());
     bin_path.push(&bin_name(name));
@@ -33,6 +37,10 @@ fn run_common(name: &str) -> (Command, Output) {
         cmd.env("PATH", env::join_paths(paths.iter()).unwrap());
     }
 
+    eprintln!("command:");
+    eprintln!("  - cmd = {:?}", cmd);
+    eprintln!("  - cwd = {:?}", cmd.get_current_dir());
+    eprintln!("  - env = {:?}", cmd.get_envs());
     let output = cmd.output().unwrap();
     (cmd, output)
 }
