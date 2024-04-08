@@ -3767,6 +3767,7 @@ impl<'test> TestCx<'test> {
         debug!(?support_lib_deps);
         debug!(?support_lib_deps_deps);
 
+        let host_rpath_dir = cwd.join(&self.config.compile_lib_path);
         let mut cmd = Command::new(&self.config.rustc_path);
         cmd.arg("-o")
             .arg(&recipe_bin)
@@ -3783,7 +3784,8 @@ impl<'test> TestCx<'test> {
             .env("RUSTC", cwd.join(&self.config.rustc_path))
             .env("TMPDIR", &tmpdir)
             .env("LD_LIB_PATH_ENVVAR", dylib_env_var())
-            .env("HOST_RPATH_DIR", cwd.join(&self.config.compile_lib_path))
+            .env("HOST_RPATH_DIR", host_rpath_dir.clone())
+            .env(dylib_env_var(), host_rpath_dir.clone())
             .env("TARGET_RPATH_DIR", cwd.join(&self.config.run_lib_path))
             .env("LLVM_COMPONENTS", &self.config.llvm_components)
             // We for sure don't want these tests to run in parallel, so make
@@ -3818,6 +3820,8 @@ impl<'test> TestCx<'test> {
         dylib_env_paths.push_str(
             &stage_std_path.join("rustlib").join(&self.config.host).join("lib").to_string_lossy(),
         );
+        dylib_env_paths.push(':');
+        dylib_env_paths.push_str(&host_rpath_dir.to_string_lossy());
 
         let mut target_rpath_env_path = String::new();
         target_rpath_env_path.push_str(&tmpdir.to_string_lossy());
