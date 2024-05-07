@@ -622,6 +622,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "collect-license-metadata"
 version = "0.1.0"
 dependencies = [
@@ -1092,6 +1101,12 @@ dependencies = [
  "serde_derive",
  "serde_json",
 ]
+
+[[package]]
+name = "elf"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "elsa"
@@ -4897,6 +4912,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
+name = "snmalloc-edp"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "cmake",
+ "compiler_builtins",
+ "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4986,6 +5012,46 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "std"
+version = "0.0.0"
+dependencies = [
+ "addr2line",
+ "alloc",
+ "cfg-if",
+ "compiler_builtins",
+ "core",
+ "fortanix-sgx-abi",
+ "hashbrown",
+ "hermit-abi",
+ "libc",
+ "miniz_oxide",
+ "object 0.32.2",
+ "panic_abort",
+ "panic_unwind",
+ "profiler_builtins",
+ "r-efi",
+ "r-efi-alloc",
+ "rand",
+ "rand_xorshift",
+ "rustc-demangle",
+ "snmalloc-edp",
+ "std_detect",
+ "unwind",
+ "wasi",
+]
+
+[[package]]
+name = "std_detect"
+version = "0.1.5"
+dependencies = [
+ "cfg-if",
+ "compiler_builtins",
+ "libc",
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+]
 
 [[package]]
 name = "string_cache"

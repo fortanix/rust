@@ -62,6 +62,14 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
 #[cfg(not(test))]
 #[no_mangle]
 extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64) -> EntryReturn {
+
+    let mut allocator = core::mem::MaybeUninit::<snmalloc_edp::Alloc>::uninit();
+    unsafe {
+        // Initialize thread local allocator
+        snmalloc_edp::sn_thread_init(allocator.as_mut_ptr());
+        crate::sys::alloc::THREAD_ALLOC.set(allocator.as_mut_ptr());
+    }
+
     // FIXME: how to support TLS in library mode?
     let tls = Box::new(tls::Tls::new());
     let tls_guard = unsafe { tls.activate() };
@@ -70,6 +78,8 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
         let join_notifier = super::thread::Thread::entry();
         drop(tls_guard);
         drop(join_notifier);
+
+        alloc_thread_cleanup(allocator.as_mut_ptr());
 
         EntryReturn(0, 0)
     } else {
@@ -88,9 +98,17 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
             // main function, so we pass these in as the standard pointer-sized
             // values in `argc` and `argv`.
             let ret = main(p2 as _, p1 as _);
+            if ret == 0 {
+                alloc_thread_cleanup(allocator.as_mut_ptr());
+            }
             exit_with_code(ret)
         }
     }
+}
+
+pub(super) fn alloc_thread_cleanup(allocator: *mut snmalloc_edp::Alloc) {
+    crate::sys::alloc::THREAD_ALLOC.set(core::ptr::null_mut());
+    unsafe { snmalloc_edp::sn_thread_cleanup(allocator); }
 }
 
 pub(super) fn exit_with_code(code: isize) -> ! {
