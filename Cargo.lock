@@ -659,6 +659,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "collect-license-metadata"
 version = "0.1.0"
 dependencies = [
@@ -1148,19 +1157,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86e3bdc80eee6e16b2b6b0f87fbc98c04bee3455e35174c0de1a125d0688c632"
 
 [[package]]
-name = "dlmalloc"
-version = "0.2.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3264b043b8e977326c1ee9e723da2c1f8d09a99df52cacf00b4dbce5ac54414d"
-dependencies = [
- "cfg-if",
- "compiler_builtins",
- "libc",
- "rustc-std-workspace-core",
- "windows-sys 0.52.0",
-]
-
-[[package]]
 name = "either"
 version = "1.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1177,6 +1173,12 @@ dependencies = [
  "serde_derive",
  "serde_json",
 ]
+
+[[package]]
+name = "elf"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "elsa"
@@ -5142,6 +5144,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 
 [[package]]
+name = "snmalloc-edp"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "cmake",
+ "compiler_builtins",
+ "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.5.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5232,7 +5245,6 @@ dependencies = [
  "cfg-if",
  "compiler_builtins",
  "core",
- "dlmalloc",
  "fortanix-sgx-abi",
  "hashbrown",
  "hermit-abi",
@@ -5247,6 +5259,7 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "rustc-demangle",
+ "snmalloc-edp",
  "std_detect",
  "unwind",
  "wasi",

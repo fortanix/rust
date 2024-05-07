@@ -42,7 +42,7 @@ rand = { version = "0.8.5", default-features = false, features = ["alloc"] }
 rand_xorshift = "0.3.0"
 
 [target.'cfg(any(all(target_family = "wasm", target_os = "unknown"), target_os = "xous", all(target_vendor = "fortanix", target_env = "sgx")))'.dependencies]
-dlmalloc = { version = "0.2.4", features = ['rustc-dep-of-std'] }
+snmalloc-edp = { path = "/home/aditi/work/edp/rust-sgx/snmalloc-edp", features = ['rustc-dep-of-std'], public = true }
 
 [target.x86_64-fortanix-unknown-sgx.dependencies]
 fortanix-sgx-abi = { version = "0.5.0", features = ['rustc-dep-of-std'], public = true }
@@ -95,3 +95,6 @@ heap_size = 0x8000000
 name = "stdbenches"
 path = "benches/lib.rs"
 test = true
+
+[profile.dev]
+panic = "abort"
