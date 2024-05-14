@@ -1,7 +1,7 @@
 #![cfg_attr(test, allow(unused))] // RT initialization logic is not compiled for test
 
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
 
 use crate::io::Write;
 
@@ -25,6 +25,7 @@ struct EntryReturn(u64, u64);
 #[cfg(not(test))]
 #[no_mangle]
 unsafe extern "C" fn tcs_init(secondary: bool) {
+
     // Be very careful when changing this code: it runs before the binary has been
     // relocated. Any indirect accesses to symbols will likely fail.
     const UNINIT: usize = 0;
@@ -42,6 +43,12 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
         // This thread just obtained the lock and other threads will observe BUSY
         Ok(_) => {
             reloc::relocate_elf_rela();
+
+            static INIT: AtomicBool = AtomicBool::new(false);
+            if !INIT.swap(true, Ordering::Relaxed) {
+                unsafe { snmalloc_edp::sn_global_init(); }
+            }
+
             RELOC_STATE.store(DONE, Ordering::Release);
         }
         // We need to wait until the initialization is done.
