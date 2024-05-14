@@ -1,15 +1,10 @@
 use crate::{alloc::{self, GlobalAlloc, System}, cell::Cell, ptr};
 use snmalloc_edp::*;
-use core::sync::atomic::{AtomicBool, Ordering};
 
 #[stable(feature = "alloc_system_type", since = "1.28.0")]
 unsafe impl GlobalAlloc for System {
     #[inline]
     unsafe fn alloc(&self, layout: alloc::Layout) -> *mut u8 {
-        static INIT: AtomicBool = AtomicBool::new(false);
-        if !INIT.swap(true, Ordering::Relaxed) {
-            unsafe { sn_global_init(); }
-        }
         unsafe { sn_rust_alloc(layout.align(), layout.size()) }
     }
 
