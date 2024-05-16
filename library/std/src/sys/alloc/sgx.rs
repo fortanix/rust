@@ -1,4 +1,4 @@
-use crate::{alloc::{self, GlobalAlloc, System}, cell::Cell, ptr};
+use crate::{alloc::{self, GlobalAlloc, System}};
 use snmalloc_edp::*;
 
 #[stable(feature = "alloc_system_type", since = "1.28.0")]
@@ -41,12 +41,8 @@ pub unsafe extern "C" fn __rust_c_dealloc(ptr: *mut u8, size: usize, align: usiz
     unsafe { crate::alloc::dealloc(ptr, crate::alloc::Layout::from_size_align_unchecked(size, align)) }
 }
 
-thread_local! {
-    pub static THREAD_ALLOC: Cell<*mut Alloc> = const { Cell::new(ptr::null_mut()) };
-}
-
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn __rust_get_thread_allocator() -> *mut Alloc {
-    THREAD_ALLOC.get()
+    unsafe{ crate::sys::abi::tls::get_tls_ptr(crate::sys::abi::tls::TlsIndex::AllocPtr) as *mut Alloc }
 }

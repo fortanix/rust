@@ -153,6 +153,3 @@ check-cfg = [
     # #[cfg(bootstrap)] rtems
     'cfg(target_os, values("rtems"))',
 ]
-
-[profile.dev]
-panic = "abort"
