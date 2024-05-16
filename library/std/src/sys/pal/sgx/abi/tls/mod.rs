@@ -23,9 +23,17 @@ macro_rules! dup {
 #[export_name = "_ZN16__rust_internals3std3sys3sgx3abi3tls14TLS_DESTRUCTORE"]
 static TLS_DESTRUCTOR: [AtomicUsize; TLS_KEYS] = dup!((* * * * * * *) (AtomicUsize::new(0)));
 
+// Use TCSLS to store both the thread specific allocator
+// and TLS address at different indices
+#[repr(u8)]
+pub enum TlsIndex {
+    AllocPtr = 0,
+    TlsPtr = 1,
+}
+
 extern "C" {
-    fn get_tls_ptr() -> *const u8;
-    fn set_tls_ptr(tls: *const u8);
+    pub fn get_tls_ptr(index: TlsIndex) -> *const u8;
+    pub fn set_tls_ptr(index: TlsIndex, tls: *const u8);
 }
 
 #[derive(Copy, Clone)]
@@ -88,20 +96,20 @@ impl Tls {
 
     pub unsafe fn activate(&self) -> ActiveTls<'_> {
         // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { set_tls_ptr(self as *const Tls as _) };
+        unsafe { set_tls_ptr(TlsIndex::TlsPtr, self as *const Tls as _) };
         ActiveTls { tls: self }
     }
 
     #[allow(unused)]
     pub unsafe fn activate_persistent(self: Box<Self>) {
         // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { set_tls_ptr(core::ptr::addr_of!(*self) as _) };
+        unsafe { set_tls_ptr(TlsIndex::TlsPtr, core::ptr::addr_of!(*self) as _) };
         mem::forget(self);
     }
 
     unsafe fn current<'a>() -> &'a Tls {
         // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { &*(get_tls_ptr() as *const Tls) }
+        unsafe { &*(get_tls_ptr(TlsIndex::TlsPtr) as *const Tls) }
     }
 
     pub fn create(dtor: Option<unsafe extern "C" fn(*mut u8)>) -> Key {
