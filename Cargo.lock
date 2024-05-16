@@ -5146,7 +5146,7 @@ checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 [[package]]
 name = "snmalloc-edp"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx?branch=aj/update-sgx-alloc#ac0c2a16324f2a74b5c2d9b6dbf204fb3c89b0f7"
+source = "git+https://github.com/fortanix/rust-sgx?branch=aj/update-sgx-alloc#6fc0b33a8c0fe2a36e9511b22c5cbc2df57df19e"
 dependencies = [
  "cc",
  "cmake",
