@@ -3,7 +3,6 @@
 use crate::io::Write;
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
-
 // runtime features
 pub(super) mod panic;
 mod reloc;
@@ -17,6 +16,8 @@ pub mod usercalls;
 
 #[cfg(not(test))]
 global_asm!(include_str!("entry.S"), options(att_syntax));
+
+static INIT: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct EntryReturn(u64, u64);
@@ -42,10 +43,8 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
         // This thread just obtained the lock and other threads will observe BUSY
         Ok(_) => {
             reloc::relocate_elf_rela();
-
-            static INIT: AtomicBool = AtomicBool::new(false);
             if !INIT.swap(true, Ordering::Relaxed) {
-                unsafe { snmalloc_edp::sn_global_init(); }
+                unsafe { snmalloc_edp::sn_global_init(mem::heap_base(), mem::heap_size()); }
             }
 
             RELOC_STATE.store(DONE, Ordering::Release);
@@ -69,12 +68,10 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
 #[no_mangle]
 extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64) -> EntryReturn {
 
+    // Initialize thread local allocator
     let mut allocator = core::mem::MaybeUninit::<snmalloc_edp::Alloc>::uninit();
-    unsafe {
-        // Initialize thread local allocator
-        snmalloc_edp::sn_thread_init(allocator.as_mut_ptr());
-        crate::sys::alloc::THREAD_ALLOC.set(allocator.as_mut_ptr());
-    }
+    unsafe { snmalloc_edp::sn_thread_init(allocator.as_mut_ptr()); }
+    crate::sys::alloc::THREAD_ALLOC.set(allocator.as_mut_ptr());
 
     // FIXME: how to support TLS in library mode?
     let tls = Box::new(tls::Tls::new());
