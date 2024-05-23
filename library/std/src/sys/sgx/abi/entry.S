@@ -97,8 +97,8 @@ IMAGE_BASE:
 .equ tcsls_user_r13,            0x48
 .equ tcsls_user_r14,            0x50
 .equ tcsls_user_r15,            0x58
-.equ tcsls_tls_ptr,             0x60
-.equ tcsls_tcs_addr,            0x68
+.equ tcsls_tcs_addr,            0x60
+.equ tcsls_tls_ptr,             0x68
 
 .macro load_tcsls_flag_secondary_bool reg:req comments:vararg
     .ifne tcsls_flag_secondary /* to convert to a bool, must be the first bit */
@@ -355,14 +355,14 @@ get_tcs_addr:
 
 .global get_tls_ptr
 get_tls_ptr:
-    mov %gs:tcsls_tls_ptr,%rax
+    mov %gs:tcsls_tls_ptr(,%rdi,8),%rax
     pop %r11
     lfence
     jmp *%r11
 
 .global set_tls_ptr
 set_tls_ptr:
-    mov %rdi,%gs:tcsls_tls_ptr
+    mov %rsi,%gs:tcsls_tls_ptr(,%rdi,8)
     pop %r11
     lfence
     jmp *%r11

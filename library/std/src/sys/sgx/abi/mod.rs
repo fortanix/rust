@@ -2,7 +2,8 @@
 
 use crate::io::Write;
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
+use snmalloc_edp::*;
 
 // runtime features
 pub(super) mod panic;
@@ -17,6 +18,9 @@ pub mod usercalls;
 
 #[cfg(not(test))]
 global_asm!(include_str!("entry.S"), options(att_syntax));
+
+// To initialize global allocator once per program
+static INIT: AtomicBool = AtomicBool::new(false);
 
 #[repr(C)]
 struct EntryReturn(u64, u64);
@@ -41,6 +45,10 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
         // This thread just obtained the lock and other threads will observe BUSY
         Ok(_) => {
             reloc::relocate_elf_rela();
+            // Snmalloc global allocator initialization
+            if !INIT.swap(true, Ordering::Relaxed) {
+                unsafe { sn_global_init(mem::heap_base(), mem::heap_size()); }
+            }
             RELOC_STATE.store(DONE, Ordering::Release);
         }
         // We need to wait until the initialization is done.
@@ -61,6 +69,13 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
 #[cfg(not(test))]
 #[no_mangle]
 extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64) -> EntryReturn {
+    // Initialize thread local allocator
+    let mut allocator = core::mem::MaybeUninit::<snmalloc_edp::Alloc>::uninit();
+    unsafe {
+        sn_thread_init(allocator.as_mut_ptr());
+        tls::set_tls_ptr(tls::TlsIndex::AllocPtr, allocator.as_mut_ptr() as *const u8);
+    }
+
     // FIXME: how to support TLS in library mode?
     let tls = Box::new(tls::Tls::new());
     let tls_guard = unsafe { tls.activate() };
@@ -69,7 +84,9 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
         let join_notifier = super::thread::Thread::entry();
         drop(tls_guard);
         drop(join_notifier);
+        drop(tls);
 
+        alloc_thread_cleanup(allocator.as_mut_ptr());
         EntryReturn(0, 0)
     } else {
         extern "C" {
@@ -87,8 +104,20 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
             // main function, so we pass these in as the standard pointer-sized
             // values in `argc` and `argv`.
             let ret = main(p2 as _, p1 as _);
+            if ret == 0 {
+                drop(tls_guard);
+                drop(tls);
+                alloc_thread_cleanup(allocator.as_mut_ptr());
+            }
             exit_with_code(ret)
         }
+    }
+}
+
+pub(super) fn alloc_thread_cleanup(allocator: *mut snmalloc_edp::Alloc) {
+    unsafe {
+        tls::set_tls_ptr(tls::TlsIndex::AllocPtr, core::ptr::null_mut());
+        sn_thread_cleanup(allocator);
     }
 }
 
