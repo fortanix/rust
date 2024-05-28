@@ -402,9 +402,9 @@ version = "0.1.0"
 
 [[package]]
 name = "cc"
-version = "1.0.77"
+version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e9f73505338f7d905b19d18738976aae232eb46b8efc15554ffc56deb5d9ebe4"
+checksum = "41c270e7540d725e65ac7f1b212ac8ce349719624d7bcff99f8e2e488e8cf03f"
 
 [[package]]
 name = "cfg-if"
@@ -649,6 +649,15 @@ dependencies = [
  "if_chain",
  "itertools",
  "rustc-semver",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.50"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31c789563b815f77f4250caee12365734369f942439b7defd71e18a48197130"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -1084,17 +1093,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c97b9233581d84b8e1e689cdd3a47b6f69770084fc246e86a7f78b0d9c1d4a5"
 
 [[package]]
-name = "dlmalloc"
-version = "0.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a6fe28e0bf9357092740362502f5cc7955d8dc125ebda71dec72336c2e15c62e"
-dependencies = [
- "compiler_builtins",
- "libc",
- "rustc-std-workspace-core",
-]
-
-[[package]]
 name = "either"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1111,6 +1109,12 @@ dependencies = [
  "serde_derive",
  "serde_json",
 ]
+
+[[package]]
+name = "elf"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "elsa"
@@ -4533,6 +4537,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e9f0ab6ef7eb7353d9119c170a436d1bf248eea575ac42d19d12f4e34130831"
 
 [[package]]
+name = "snmalloc-edp"
+version = "0.1.0"
+source = "git+https://github.com/fortanix/rust-sgx?branch=aj/update-sgx-alloc#6fc0b33a8c0fe2a36e9511b22c5cbc2df57df19e"
+dependencies = [
+ "cc",
+ "cmake",
+ "compiler_builtins",
+ "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4605,7 +4621,6 @@ dependencies = [
  "cfg-if",
  "compiler_builtins",
  "core",
- "dlmalloc",
  "fortanix-sgx-abi",
  "hashbrown 0.12.3",
  "hermit-abi 0.3.0",
@@ -4618,6 +4633,7 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "rustc-demangle",
+ "snmalloc-edp",
  "std_detect",
  "unwind",
  "wasi",
