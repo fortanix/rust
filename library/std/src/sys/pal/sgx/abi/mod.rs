@@ -49,7 +49,7 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
 
             // Snmalloc global allocator initialization
             if !INIT.swap(true, Ordering::Relaxed) {
-                unsafe { sn_global_init(mem::heap_base(), mem::heap_size()); }
+                unsafe { sn_global_init(); }
             }
 
             RELOC_STATE.store(DONE, Ordering::Release);
