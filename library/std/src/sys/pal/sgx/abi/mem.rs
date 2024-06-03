@@ -19,13 +19,11 @@ extern "C" {
 }
 
 /// Returns the base memory address of the heap
-#[allow(dead_code)]
 pub(crate) fn heap_base() -> *const u8 {
     unsafe { rel_ptr_mut(HEAP_BASE) }
 }
 
 /// Returns the size of the heap
-#[allow(dead_code)]
 pub(crate) fn heap_size() -> usize {
     unsafe { HEAP_SIZE }
 }
