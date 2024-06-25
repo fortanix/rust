@@ -23,17 +23,20 @@ macro_rules! dup {
 #[export_name = "_ZN16__rust_internals3std3sys3sgx3abi3tls14TLS_DESTRUCTORE"]
 static TLS_DESTRUCTOR: [AtomicUsize; TLS_KEYS] = dup!((* * * * * * *) (AtomicUsize::new(0)));
 
-// Use TCSLS to store both the thread specific allocator
-// and TLS address at different indices
+// Use TCS Local Storage to store various thread specific data at
+// indices definied by the TlsIndex enum below
 #[repr(u8)]
 pub enum TlsIndex {
-    AllocPtr = 0,
-    TlsPtr = 1,
+    AllocPtr = 0, /* Thread specific allocator address */
+    TlsPtr = 1,   /* TLS address */
 }
 
+// Functions to access TLS data from the TCSLS. Use TlsIndex
+// enum to reference the desired field.
+// Function definition available in entry.S
 extern "C" {
-    pub fn get_tls_ptr(index: TlsIndex) -> *const u8;
-    pub fn set_tls_ptr(index: TlsIndex, tls: *const u8);
+    pub fn get_tls_data(index: TlsIndex) -> *const u8;
+    pub fn set_tls_data(index: TlsIndex, tls: *const u8);
 }
 
 #[derive(Copy, Clone)]
@@ -95,21 +98,21 @@ impl Tls {
     }
 
     pub unsafe fn activate(&self) -> ActiveTls<'_> {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { set_tls_ptr(TlsIndex::TlsPtr, self as *const Tls as _) };
+        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        unsafe { set_tls_data(TlsIndex::TlsPtr, self as *const Tls as _) };
         ActiveTls { tls: self }
     }
 
     #[allow(unused)]
     pub unsafe fn activate_persistent(self: Box<Self>) {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { set_tls_ptr(TlsIndex::TlsPtr, core::ptr::addr_of!(*self) as _) };
+        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        unsafe { set_tls_data(TlsIndex::TlsPtr, core::ptr::addr_of!(*self) as _) };
         mem::forget(self);
     }
 
     unsafe fn current<'a>() -> &'a Tls {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { &*(get_tls_ptr(TlsIndex::TlsPtr) as *const Tls) }
+        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        unsafe { &*(get_tls_data(TlsIndex::TlsPtr) as *const Tls) }
     }
 
     pub fn create(dtor: Option<unsafe extern "C" fn(*mut u8)>) -> Key {

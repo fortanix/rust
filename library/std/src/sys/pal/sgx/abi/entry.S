@@ -98,7 +98,7 @@ IMAGE_BASE:
 .equ tcsls_user_r14,            0x50
 .equ tcsls_user_r15,            0x58
 .equ tcsls_tcs_addr,            0x60
-.equ tcsls_tls_ptr,             0x68
+.equ tcsls_tls_data,            0x68
 
 .macro load_tcsls_flag_secondary_bool reg:req comments:vararg
     .ifne tcsls_flag_secondary /* to convert to a bool, must be the first bit */
@@ -353,16 +353,20 @@ get_tcs_addr:
     lfence
     jmp *%r11
 
-.global get_tls_ptr
-get_tls_ptr:
-    mov %gs:tcsls_tls_ptr(,%rdi,8),%rax
+/* Fetches the data available at an offset from tcsls_tls_data. Refer to TlsIndex enum */
+/* for details on the offsets that can be used as an input to this function. */
+.global get_tls_data
+get_tls_data:
+    mov %gs:tcsls_tls_data(,%rdi,8),%rax
     pop %r11
     lfence
     jmp *%r11
 
-.global set_tls_ptr
-set_tls_ptr:
-    mov %rsi,%gs:tcsls_tls_ptr(,%rdi,8)
+/* Sets input data at an offset from tcsls_tls_data. Refer to TlsIndex enum for details on */
+/* the offsets that can be used as an input to this function. */
+.global set_tls_data
+set_tls_data:
+    mov %rsi,%gs:tcsls_tls_data(,%rdi,8)
     pop %r11
     lfence
     jmp *%r11

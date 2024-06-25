@@ -2,7 +2,7 @@
 
 use crate::io::Write;
 use core::arch::global_asm;
-use core::sync::atomic::{AtomicUsize, Ordering, AtomicBool};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use snmalloc_edp::*;
 
 // runtime features
@@ -19,16 +19,12 @@ pub mod usercalls;
 #[cfg(not(test))]
 global_asm!(include_str!("entry.S"), options(att_syntax));
 
-// To initialize global allocator once per program
-static INIT: AtomicBool = AtomicBool::new(false);
-
 #[repr(C)]
 struct EntryReturn(u64, u64);
 
 #[cfg(not(test))]
 #[no_mangle]
 unsafe extern "C" fn tcs_init(secondary: bool) {
-
     // Be very careful when changing this code: it runs before the binary has been
     // relocated. Any indirect accesses to symbols will likely fail.
     const UNINIT: usize = 0;
@@ -48,9 +44,7 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
             reloc::relocate_elf_rela();
 
             // Snmalloc global allocator initialization
-            if !INIT.swap(true, Ordering::Relaxed) {
-                unsafe { sn_global_init(mem::heap_base(), mem::heap_size()); }
-            }
+            unsafe { sn_global_init(mem::heap_base(), mem::heap_size()); }
 
             RELOC_STATE.store(DONE, Ordering::Release);
         }
@@ -77,7 +71,7 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
     let mut allocator = core::mem::MaybeUninit::<snmalloc_edp::Alloc>::uninit();
     unsafe {
         sn_thread_init(allocator.as_mut_ptr());
-        tls::set_tls_ptr(tls::TlsIndex::AllocPtr, allocator.as_mut_ptr() as *const u8);
+        tls::set_tls_data(tls::TlsIndex::AllocPtr, allocator.as_mut_ptr() as *const u8);
     }
 
     // FIXME: how to support TLS in library mode?
@@ -90,7 +84,7 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
         drop(join_notifier);
         drop(tls);
 
-        alloc_thread_cleanup(allocator.as_mut_ptr());
+        alloc_thread_cleanup();
 
         EntryReturn(0, 0)
     } else {
@@ -112,16 +106,17 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
             if ret == 0 {
                 drop(tls_guard);
                 drop(tls);
-                alloc_thread_cleanup(allocator.as_mut_ptr());
+                alloc_thread_cleanup();
             }
             exit_with_code(ret)
         }
     }
 }
 
-pub(super) fn alloc_thread_cleanup(allocator: *mut snmalloc_edp::Alloc) {
+pub(super) fn alloc_thread_cleanup() {
     unsafe {
-        tls::set_tls_ptr(tls::TlsIndex::AllocPtr, core::ptr::null_mut());
+        let allocator = tls::get_tls_data(crate::sys::abi::tls::TlsIndex::AllocPtr) as *mut Alloc;
+        tls::set_tls_data(tls::TlsIndex::AllocPtr, core::ptr::null_mut());
         sn_thread_cleanup(allocator);
     }
 }
