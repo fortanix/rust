@@ -44,5 +44,5 @@ pub unsafe extern "C" fn __rust_c_dealloc(ptr: *mut u8, size: usize, align: usiz
 #[cfg(not(test))]
 #[no_mangle]
 pub extern "C" fn __rust_get_thread_allocator() -> *mut Alloc {
-    unsafe{ crate::sys::abi::tls::get_tls_ptr(crate::sys::abi::tls::TlsIndex::AllocPtr) as *mut Alloc }
+    unsafe{ crate::sys::abi::tls::get_tls_data(crate::sys::abi::tls::TlsIndex::AllocPtr) as *mut Alloc }
 }
