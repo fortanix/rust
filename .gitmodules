@@ -55,3 +55,7 @@
 	path = src/gcc
 	url = https://github.com/rust-lang/gcc.git
 	shallow = true
+[submodule "library/snmalloc-edp/snmalloc"]
+	path = library/snmalloc-edp/snmalloc
+	url = https://github.com/microsoft/snmalloc.git
+        shallow = true

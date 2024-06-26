@@ -23,7 +23,7 @@ macro_rules! dup {
 static TLS_DESTRUCTOR: [AtomicUsize; TLS_KEYS] = dup!((* * * * * * *) (AtomicUsize::new(0)));
 
 // Use TCS Local Storage to store various thread specific data at
-// indices definied by the TlsIndex enum below
+// indices definied by the TlsIndex enum below.
 #[repr(u8)]
 pub enum TlsIndex {
     AllocPtr = 0, /* Thread specific allocator address */
@@ -109,7 +109,7 @@ impl Tls {
     }
 
     unsafe fn current<'a>() -> &'a Tls {
-        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        // FIXME: Needs safety information. See entry.S for `get_tls_data` definition.
         unsafe { &*(get_tls_data(TlsIndex::TlsPtr) as *const Tls) }
     }
 

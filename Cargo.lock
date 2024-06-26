@@ -1085,6 +1085,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59f8e79d1fbf76bdfbde321e902714bf6c49df88a7dda6fc682fc2979226962d"
 
 [[package]]
+name = "dlmalloc"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3264b043b8e977326c1ee9e723da2c1f8d09a99df52cacf00b4dbce5ac54414d"
+dependencies = [
+ "cfg-if",
+ "compiler_builtins",
+ "libc",
+ "rustc-std-workspace-core",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "either"
 version = "1.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4914,7 +4927,6 @@ checksum = "1b6b67fb9a61334225b5b790716f609cd58395f895b3fe8b328786812a40bc3b"
 [[package]]
 name = "snmalloc-edp"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx?branch=aj/update-sgx-alloc#6fc0b33a8c0fe2a36e9511b22c5cbc2df57df19e"
 dependencies = [
  "cc",
  "cmake",
@@ -5023,6 +5035,7 @@ dependencies = [
  "cfg-if",
  "compiler_builtins",
  "core",
+ "dlmalloc",
  "fortanix-sgx-abi",
  "hashbrown",
  "hermit-abi",
