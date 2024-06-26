@@ -5,6 +5,7 @@ use snmalloc_edp::*;
 unsafe impl GlobalAlloc for System {
     #[inline]
     unsafe fn alloc(&self, layout: alloc::Layout) -> *mut u8 {
+        // SAFETY: the caller must uphold the safety contract for `malloc`
         unsafe { sn_rust_alloc(layout.align(), layout.size()) }
     }
 

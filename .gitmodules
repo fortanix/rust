@@ -47,3 +47,7 @@
 	path = src/tools/rustc-perf
 	url = https://github.com/rust-lang/rustc-perf.git
 	shallow = true
+[submodule "library/snmalloc-edp/snmalloc"]
+	path = library/snmalloc-edp/snmalloc
+	url = https://github.com/microsoft/snmalloc.git
+        shallow = true
