@@ -247,10 +247,15 @@ pub fn send(event_set: u64, tcs: Option<Tcs>) -> IoResult<()> {
     unsafe { raw::send(event_set, tcs).from_sgx_result() }
 }
 
+#[unstable(feature = "sgx_platform", issue = "56975")]
+use crate::sync::atomic::{AtomicU64, Ordering};
+#[unstable(feature = "sgx_platform", issue = "56975")]
+static TIME_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Usercall `insecure_time`. See the ABI documentation for more information.
 #[unstable(feature = "sgx_platform", issue = "56975")]
 pub fn insecure_time() -> Duration {
-    let t = unsafe { raw::insecure_time() };
+    let t = TIME_COUNTER.fetch_add(1000, Ordering::Relaxed);
     Duration::new(t / 1_000_000_000, (t % 1_000_000_000) as _)
 }
 
