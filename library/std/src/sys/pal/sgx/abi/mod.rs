@@ -2,6 +2,9 @@
 
 use core::arch::global_asm;
 use core::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::io::Write;
+
 use snmalloc_edp::*;
 
 // runtime features

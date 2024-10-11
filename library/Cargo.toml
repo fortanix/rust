@@ -8,7 +8,8 @@ members = [
 exclude = [
   # stdarch has its own Cargo workspace
   "stdarch",
-  "windows_targets"
+  "windows_targets",
+  "snmalloc-edp"
 ]
 
 [profile.release.package.compiler_builtins]

@@ -60,6 +60,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.51"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1e43aa7fd152b1f968787f7dbcdeb306d1867ff373c69955211876c053f91a"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "compiler_builtins"
 version = "0.1.133"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -89,6 +98,12 @@ dependencies = [
  "rustc-std-workspace-core",
  "windows-sys",
 ]
+
+[[package]]
+name = "elf"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "fortanix-sgx-abi"
@@ -322,6 +337,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "snmalloc-edp"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "cmake",
+ "compiler_builtins",
+ "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "std"
 version = "0.0.0"
 dependencies = [
@@ -346,6 +372,7 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "rustc-demangle",
+ "snmalloc-edp",
  "std_detect",
  "unwind",
  "wasi",
