@@ -45,3 +45,4 @@ rustc-demangle.debug = 0
 rustc-std-workspace-core = { path = 'rustc-std-workspace-core' }
 rustc-std-workspace-alloc = { path = 'rustc-std-workspace-alloc' }
 rustc-std-workspace-std = { path = 'rustc-std-workspace-std' }
+fortanix-sgx-abi = { git = "https://github.com/fortanix/rust-sgx.git", branch = "raoul/rte-204-insecure_time_through_rdtscp" }
