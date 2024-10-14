@@ -59,6 +59,8 @@ unsafe impl UserSafeSized for Return {}
 unsafe impl UserSafeSized for Cancel {}
 #[unstable(feature = "sgx_platform", issue = "56975")]
 unsafe impl<T: UserSafeSized> UserSafeSized for [T; 2] {}
+#[unstable(feature = "sgx_platform", issue = "56975")]
+unsafe impl UserSafeSized for InsecureTimeInfo {}
 
 /// A type that can be represented in memory as one or more `UserSafeSized`s.
 #[unstable(feature = "sgx_platform", issue = "56975")]
