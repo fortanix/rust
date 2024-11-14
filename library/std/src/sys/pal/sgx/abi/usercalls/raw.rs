@@ -3,6 +3,9 @@
 #[unstable(feature = "sgx_platform", issue = "56975")]
 pub use fortanix_sgx_abi::*;
 
+use crate::random::RandomSource;
+use crate::io::{Write, IoSlice};
+
 use crate::num::NonZero;
 use crate::ptr::NonNull;
 
@@ -35,6 +38,33 @@ pub unsafe fn do_usercall(
     abort: bool,
 ) -> (u64, u64) {
     let UsercallReturn(a, b) = unsafe { usercall(nr, p1, p2, abort as _, p3, p4) };
+
+    let mut bytes = [0u8; 1];
+    let mut rng = crate::random::DefaultRandomSource;
+    rng.fill_bytes(&mut bytes);
+    if bytes[0] < 2 {
+        if nr == NonZero::new(11).unwrap() {
+            let bt = crate::backtrace::Backtrace::force_capture();
+            //super::write(2, &[IoSlice::new(b"wait\n")]);
+            //writeln!(crate::io::stderr(), "wait:\n{}", bt);
+            super::write(2, &[IoSlice::new(
+                    format!("wait {}\n",
+                        format!("{}", bt).split_whitespace().collect::<Vec<_>>().join(" ")
+                    ).as_bytes()
+            )]);
+        }
+        if nr == NonZero::new(12).unwrap()  {
+            let bt = crate::backtrace::Backtrace::force_capture();
+            //super::write(2, &[IoSlice::new(b"send\n")]);
+            //writeln!(crate::io::stderr(), "send:\n{}", bt);
+            super::write(2, &[IoSlice::new(
+                    format!("send {}\n",
+                        format!("{}", bt).split_whitespace().collect::<Vec<_>>().join(" ")
+                    ).as_bytes()
+            )]);
+        }
+    }
+
     (a, b)
 }
 

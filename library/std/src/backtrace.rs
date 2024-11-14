@@ -94,7 +94,7 @@ use crate::panic::UnwindSafe;
 use crate::sync::LazyLock;
 use crate::sync::atomic::AtomicU8;
 use crate::sync::atomic::Ordering::Relaxed;
-use crate::sys::backtrace::{lock, output_filename, set_image_base};
+use crate::sys::backtrace::{output_filename, set_image_base};
 use crate::{env, fmt};
 
 /// A captured OS thread stack backtrace.
@@ -166,6 +166,7 @@ struct BacktraceSymbol {
     colno: Option<u32>,
 }
 
+#[allow(unused)]
 enum BytesOrWide {
     Bytes(Vec<u8>),
     Wide(Vec<u16>),
@@ -322,10 +323,8 @@ impl Backtrace {
 
     // Capture a backtrace which start just before the function addressed by
     // `ip`
-    fn create(ip: usize) -> Backtrace {
-        let _lock = lock();
+    fn create(_ip: usize) -> Backtrace {
         let mut frames = Vec::new();
-        let mut actual_start = None;
         set_image_base();
         unsafe {
             backtrace_rs::trace_unsynchronized(|frame| {
@@ -333,9 +332,6 @@ impl Backtrace {
                     frame: RawFrame::Actual(frame.clone()),
                     symbols: Vec::new(),
                 });
-                if frame.symbol_address().addr() == ip && actual_start.is_none() {
-                    actual_start = Some(frames.len());
-                }
                 true
             });
         }
@@ -347,7 +343,7 @@ impl Backtrace {
             Inner::Unsupported
         } else {
             Inner::Captured(LazyLock::new(lazy_resolve(Capture {
-                actual_start: actual_start.unwrap_or(0),
+                actual_start: 0,
                 frames,
             })))
         };
@@ -432,34 +428,11 @@ mod helper {
     use super::*;
     pub(super) type LazyResolve = impl (FnOnce() -> Capture) + Send + Sync + UnwindSafe;
 
-    pub(super) fn lazy_resolve(mut capture: Capture) -> LazyResolve {
+    pub(super) fn lazy_resolve(capture: Capture) -> LazyResolve {
         move || {
             // Use the global backtrace lock to synchronize this as it's a
             // requirement of the `backtrace` crate, and then actually resolve
             // everything.
-            let _lock = lock();
-            for frame in capture.frames.iter_mut() {
-                let symbols = &mut frame.symbols;
-                let frame = match &frame.frame {
-                    RawFrame::Actual(frame) => frame,
-                    #[cfg(test)]
-                    RawFrame::Fake => unimplemented!(),
-                };
-                unsafe {
-                    backtrace_rs::resolve_frame_unsynchronized(frame, |symbol| {
-                        symbols.push(BacktraceSymbol {
-                            name: symbol.name().map(|m| m.as_bytes().to_vec()),
-                            filename: symbol.filename_raw().map(|b| match b {
-                                BytesOrWideString::Bytes(b) => BytesOrWide::Bytes(b.to_owned()),
-                                BytesOrWideString::Wide(b) => BytesOrWide::Wide(b.to_owned()),
-                            }),
-                            lineno: symbol.lineno(),
-                            colno: symbol.colno(),
-                        });
-                    });
-                }
-            }
-
             capture
         }
     }
