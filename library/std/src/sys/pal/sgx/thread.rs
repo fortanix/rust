@@ -110,10 +110,7 @@ impl Thread {
         task.run()
     }
 
-    pub fn yield_now() {
-        let wait_error = rtunwrap!(Err, usercalls::wait(0, usercalls::raw::WAIT_NO));
-        rtassert!(wait_error.kind() == io::ErrorKind::WouldBlock);
-    }
+    pub fn yield_now() {}
 
     /// SGX should protect in-enclave data from the outside (attacker),
     /// so there should be no data leakage to the OS,
