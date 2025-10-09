@@ -1,4 +1,4 @@
-// run-rustfix
+//@ run-rustfix
 //
 #![allow(warnings)]
 struct Wrapper<'a, T: ?Sized>(&'a T);
@@ -25,8 +25,8 @@ impl<T> ProjectedMyTrait for T
     where
         T: Project,
         for<'a> T::Projected<'a>: MyTrait,
-        //~^ NOTE due to current limitations in the borrow checker, this implies a `'static` lifetime
-        //~| NOTE due to current limitations in the borrow checker, this implies a `'static` lifetime
+        //~^ NOTE due to a current limitation of the type system, this implies a `'static` lifetime
+        //~| NOTE due to a current limitation of the type system, this implies a `'static` lifetime
 {}
 
 fn require_trait<T: MyTrait>(_: T) {}

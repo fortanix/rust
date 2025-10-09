@@ -1,9 +1,11 @@
 #![warn(clippy::while_let_loop)]
 #![allow(clippy::uninlined_format_args)]
-
+//@no-rustfix
 fn main() {
     let y = Some(true);
     loop {
+        //~^ while_let_loop
+
         if let Some(_x) = y {
             let _v = 1;
         } else {
@@ -21,6 +23,8 @@ fn main() {
     }
 
     loop {
+        //~^ while_let_loop
+
         match y {
             Some(_x) => true,
             None => break,
@@ -28,6 +32,8 @@ fn main() {
     }
 
     loop {
+        //~^ while_let_loop
+
         let x = match y {
             Some(x) => x,
             None => break,
@@ -37,6 +43,8 @@ fn main() {
     }
 
     loop {
+        //~^ while_let_loop
+
         let x = match y {
             Some(x) => x,
             None => break,
@@ -67,6 +75,8 @@ fn main() {
 
     // #675, this used to have a wrong suggestion
     loop {
+        //~^ while_let_loop
+
         let (e, l) = match "".split_whitespace().next() {
             Some(word) => (word.is_empty(), word.len()),
             None => break,
@@ -142,5 +152,91 @@ fn issue_5715(mut m: core::cell::RefCell<Option<u32>>) {
         };
 
         m = core::cell::RefCell::new(Some(x + 1));
+    }
+}
+
+mod issue_362 {
+    pub fn merge_sorted<T>(xs: Vec<T>, ys: Vec<T>) -> Vec<T>
+    where
+        T: PartialOrd,
+    {
+        let total_len = xs.len() + ys.len();
+        let mut res = Vec::with_capacity(total_len);
+        let mut ix = xs.into_iter().peekable();
+        let mut iy = ys.into_iter().peekable();
+        loop {
+            //~^ while_let_loop
+            let lt = match (ix.peek(), iy.peek()) {
+                (Some(x), Some(y)) => x < y,
+                _ => break,
+            };
+            res.push(if lt { &mut ix } else { &mut iy }.next().unwrap());
+        }
+        res.extend(ix);
+        res.extend(iy);
+        res
+    }
+}
+
+fn let_assign() {
+    loop {
+        //~^ while_let_loop
+        let x = if let Some(y) = Some(3) {
+            y
+        } else {
+            break;
+        };
+        if x == 3 {
+            break;
+        }
+    }
+
+    loop {
+        //~^ while_let_loop
+        let x: u32 = if let Some(y) = Some(3) {
+            y
+        } else {
+            break;
+        };
+        if x == 3 {
+            break;
+        }
+    }
+
+    loop {
+        //~^ while_let_loop
+        let x = if let Some(x) = Some(3) {
+            x
+        } else {
+            break;
+        };
+        if x == 3 {
+            break;
+        }
+    }
+
+    loop {
+        //~^ while_let_loop
+        let x: u32 = if let Some(x) = Some(3) {
+            x
+        } else {
+            break;
+        };
+        if x == 3 {
+            break;
+        }
+    }
+
+    loop {
+        //~^ while_let_loop
+        let x = if let Some(x) = Some(2) {
+            let t = 1;
+            t + x
+        } else {
+            break;
+        };
+        if x == 3 {
+            break;
+        }
     }
 }

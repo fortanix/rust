@@ -1,10 +1,11 @@
-// Incorrect handling of uninhabited types could cause us to mark generator
+// Incorrect handling of uninhabited types could cause us to mark coroutine
 // types as entirely uninhabited, when they were in fact constructible. This
 // caused us to hit "unreachable" code (illegal instruction on x86).
 
-// run-pass
+//@ run-pass
 
-// compile-flags: --edition=2018 -Aunused
+//@ compile-flags: -Aunused
+//@ edition: 2018
 
 pub enum Uninhabited { }
 

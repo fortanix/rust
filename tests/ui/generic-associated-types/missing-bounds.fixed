@@ -1,4 +1,6 @@
-// run-rustfix
+//@ run-rustfix
+
+#![allow(dead_code)]
 
 use std::ops::Add;
 

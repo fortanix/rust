@@ -1,8 +1,6 @@
 use std::fs;
 use std::path::Path;
 
-use super::verify_inside_clippy_dir;
-
 const VSCODE_DIR: &str = ".vscode";
 const TASK_SOURCE_FILE: &str = "util/etc/vscode-tasks.json";
 const TASK_TARGET_FILE: &str = ".vscode/tasks.json";
@@ -22,10 +20,6 @@ pub fn install_tasks(force_override: bool) {
 }
 
 fn check_install_precondition(force_override: bool) -> bool {
-    if !verify_inside_clippy_dir() {
-        return false;
-    }
-
     let vs_dir_path = Path::new(VSCODE_DIR);
     if vs_dir_path.exists() {
         // verify the target will be valid
@@ -47,7 +41,7 @@ fn check_install_precondition(force_override: bool) -> bool {
         }
     } else {
         match fs::create_dir(vs_dir_path) {
-            Ok(_) => {
+            Ok(()) => {
                 println!("info: created `{VSCODE_DIR}` directory for clippy");
             },
             Err(err) => {
@@ -84,7 +78,7 @@ fn delete_vs_task_file(path: &Path) -> bool {
 /// It may fail silently.
 fn try_delete_vs_directory_if_empty() {
     let path = Path::new(VSCODE_DIR);
-    if path.read_dir().map_or(false, |mut iter| iter.next().is_none()) {
+    if path.read_dir().is_ok_and(|mut iter| iter.next().is_none()) {
         // The directory is empty. We just try to delete it but allow a silence
         // fail as an empty `.vscode` directory is still valid
         let _silence_result = fs::remove_dir(path);

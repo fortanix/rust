@@ -1,29 +1,28 @@
 //! `TyBuilder`, a helper for building instances of `Ty` and related types.
 
-use std::iter;
-
 use chalk_ir::{
-    cast::{Cast, CastTo, Caster},
-    fold::TypeFoldable,
-    interner::HasInterner,
     AdtId, DebruijnIndex, Scalar,
+    cast::{Cast, CastTo, Caster},
 };
-use hir_def::{
-    builtin_type::BuiltinType, generics::TypeOrConstParamData, ConstParamId, DefWithBodyId,
-    GenericDefId, TraitId, TypeAliasId,
-};
+use hir_def::{GenericDefId, GenericParamId, TraitId, TypeAliasId, builtin_type::BuiltinType};
 use smallvec::SmallVec;
 
 use crate::{
-    consteval::unknown_const_as_generic, db::HirDatabase, infer::unify::InferenceTable, primitive,
-    to_assoc_type_id, to_chalk_trait_id, utils::generics, Binders, BoundVar, CallableSig,
-    GenericArg, Interner, ProjectionTy, Substitution, TraitRef, Ty, TyDefId, TyExt, TyKind,
-    ValueTyDefId,
+    BoundVar, CallableSig, GenericArg, GenericArgData, Interner, ProjectionTy, Substitution,
+    TraitRef, Ty, TyDefId, TyExt, TyKind,
+    consteval::unknown_const_as_generic,
+    db::HirDatabase,
+    error_lifetime,
+    generics::generics,
+    infer::unify::InferenceTable,
+    next_solver::{DbInterner, EarlyBinder, mapping::ChalkToNextSolver},
+    primitive, to_assoc_type_id, to_chalk_trait_id,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamKind {
     Type,
+    Lifetime,
     Const(Ty),
 }
 
@@ -63,15 +62,26 @@ impl<D> TyBuilder<D> {
     }
 
     fn build_internal(self) -> (D, Substitution) {
-        assert_eq!(self.vec.len(), self.param_kinds.len(), "{:?}", &self.param_kinds);
+        assert_eq!(
+            self.vec.len(),
+            self.param_kinds.len(),
+            "{} args received, {} expected ({:?})",
+            self.vec.len(),
+            self.param_kinds.len(),
+            &self.param_kinds
+        );
         for (a, e) in self.vec.iter().zip(self.param_kinds.iter()) {
             self.assert_match_kind(a, e);
         }
         let subst = Substitution::from_iter(
             Interner,
-            self.vec.into_iter().chain(self.parent_subst.iter(Interner).cloned()),
+            self.parent_subst.iter(Interner).cloned().chain(self.vec),
         );
         (self.data, subst)
+    }
+
+    pub fn build_into_subst(self) -> Substitution {
+        self.build_internal().1
     }
 
     pub fn push(mut self, arg: impl CastTo<GenericArg>) -> Self {
@@ -80,9 +90,9 @@ impl<D> TyBuilder<D> {
         let expected_kind = &self.param_kinds[self.vec.len()];
 
         let arg_kind = match arg.data(Interner) {
-            chalk_ir::GenericArgData::Ty(_) => ParamKind::Type,
-            chalk_ir::GenericArgData::Lifetime(_) => panic!("Got lifetime in TyBuilder::push"),
-            chalk_ir::GenericArgData::Const(c) => {
+            GenericArgData::Ty(_) => ParamKind::Type,
+            GenericArgData::Lifetime(_) => panic!("Got lifetime in TyBuilder::push"),
+            GenericArgData::Const(c) => {
                 let c = c.data(Interner);
                 ParamKind::Const(c.ty.clone())
             }
@@ -107,6 +117,9 @@ impl<D> TyBuilder<D> {
             ParamKind::Const(ty) => {
                 BoundVar::new(debruijn, idx).to_const(Interner, ty.clone()).cast(Interner)
             }
+            ParamKind::Lifetime => {
+                BoundVar::new(debruijn, idx).to_lifetime(Interner).cast(Interner)
+            }
         });
         this.vec.extend(filler.take(this.remaining()).casted(Interner));
         assert_eq!(this.remaining(), 0);
@@ -119,16 +132,19 @@ impl<D> TyBuilder<D> {
         let filler = this.param_kinds[this.vec.len()..].iter().map(|x| match x {
             ParamKind::Type => TyKind::Error.intern(Interner).cast(Interner),
             ParamKind::Const(ty) => unknown_const_as_generic(ty.clone()),
+            ParamKind::Lifetime => error_lifetime().cast(Interner),
         });
         this.vec.extend(filler.casted(Interner));
         assert_eq!(this.remaining(), 0);
         this
     }
 
+    #[tracing::instrument(skip_all)]
     pub(crate) fn fill_with_inference_vars(self, table: &mut InferenceTable<'_>) -> Self {
         self.fill(|x| match x {
             ParamKind::Type => table.new_type_var().cast(Interner),
             ParamKind::Const(ty) => table.new_const_var(ty.clone()).cast(Interner),
+            ParamKind::Lifetime => table.new_lifetime_var().cast(Interner),
         })
     }
 
@@ -140,8 +156,9 @@ impl<D> TyBuilder<D> {
 
     fn assert_match_kind(&self, a: &chalk_ir::GenericArg<Interner>, e: &ParamKind) {
         match (a.data(Interner), e) {
-            (chalk_ir::GenericArgData::Ty(_), ParamKind::Type)
-            | (chalk_ir::GenericArgData::Const(_), ParamKind::Const(_)) => (),
+            (GenericArgData::Ty(_), ParamKind::Type)
+            | (GenericArgData::Const(_), ParamKind::Const(_))
+            | (GenericArgData::Lifetime(_), ParamKind::Lifetime) => (),
             _ => panic!("Mismatched kinds: {a:?}, {:?}, {:?}", self.vec, self.param_kinds),
         }
     }
@@ -191,45 +208,40 @@ impl TyBuilder<()> {
     }
 
     pub fn placeholder_subst(db: &dyn HirDatabase, def: impl Into<GenericDefId>) -> Substitution {
-        let params = generics(db.upcast(), def.into());
+        let params = generics(db, def.into());
         params.placeholder_subst(db)
     }
 
+    pub fn unknown_subst(db: &dyn HirDatabase, def: impl Into<GenericDefId>) -> Substitution {
+        let params = generics(db, def.into());
+        Substitution::from_iter(
+            Interner,
+            params.iter_id().map(|id| match id {
+                GenericParamId::TypeParamId(_) => TyKind::Error.intern(Interner).cast(Interner),
+                GenericParamId::ConstParamId(id) => {
+                    unknown_const_as_generic(db.const_param_ty(id)).cast(Interner)
+                }
+                GenericParamId::LifetimeParamId(_) => error_lifetime().cast(Interner),
+            }),
+        )
+    }
+
+    #[tracing::instrument(skip_all)]
     pub fn subst_for_def(
         db: &dyn HirDatabase,
         def: impl Into<GenericDefId>,
         parent_subst: Option<Substitution>,
     ) -> TyBuilder<()> {
-        let generics = generics(db.upcast(), def.into());
+        let generics = generics(db, def.into());
         assert!(generics.parent_generics().is_some() == parent_subst.is_some());
         let params = generics
             .iter_self()
-            .map(|(id, data)| match data {
-                TypeOrConstParamData::TypeParamData(_) => ParamKind::Type,
-                TypeOrConstParamData::ConstParamData(_) => {
-                    ParamKind::Const(db.const_param_ty(ConstParamId::from_unchecked(id)))
-                }
+            .map(|(id, _data)| match id {
+                GenericParamId::TypeParamId(_) => ParamKind::Type,
+                GenericParamId::ConstParamId(id) => ParamKind::Const(db.const_param_ty(id)),
+                GenericParamId::LifetimeParamId(_) => ParamKind::Lifetime,
             })
             .collect();
-        TyBuilder::new((), params, parent_subst)
-    }
-
-    /// Creates a `TyBuilder` to build `Substitution` for a generator defined in `parent`.
-    ///
-    /// A generator's substitution consists of:
-    /// - resume type of generator
-    /// - yield type of generator ([`Generator::Yield`](std::ops::Generator::Yield))
-    /// - return type of generator ([`Generator::Return`](std::ops::Generator::Return))
-    /// - generic parameters in scope on `parent`
-    /// in this order.
-    ///
-    /// This method prepopulates the builder with placeholder substitution of `parent`, so you
-    /// should only push exactly 3 `GenericArg`s before building.
-    pub fn subst_for_generator(db: &dyn HirDatabase, parent: DefWithBodyId) -> TyBuilder<()> {
-        let parent_subst =
-            parent.as_generic_def_id().map(|p| generics(db.upcast(), p).placeholder_subst(db));
-        // These represent resume type, yield type, and return type of generator.
-        let params = std::iter::repeat(ParamKind::Type).take(3).collect();
         TyBuilder::new((), params, parent_subst)
     }
 
@@ -251,27 +263,29 @@ impl TyBuilder<hir_def::AdtId> {
     ) -> Self {
         // Note that we're building ADT, so we never have parent generic parameters.
         let defaults = db.generic_defaults(self.data.into());
-        let dummy_ty = TyKind::Error.intern(Interner).cast(Interner);
-        for default_ty in defaults.iter().skip(self.vec.len()) {
-            // NOTE(skip_binders): we only check if the arg type is error type.
-            if let Some(x) = default_ty.skip_binders().ty(Interner) {
-                if x.is_unknown() {
+
+        if let Some(defaults) = defaults.get(self.vec.len()..) {
+            for default_ty in defaults {
+                // NOTE(skip_binders): we only check if the arg type is error type.
+                if let Some(x) = default_ty.skip_binders().ty(Interner)
+                    && x.is_unknown()
+                {
                     self.vec.push(fallback().cast(Interner));
                     continue;
                 }
+                // Each default can only depend on the previous parameters.
+                self.vec.push(default_ty.clone().substitute(Interner, &*self.vec).cast(Interner));
             }
-            // Each default can only depend on the previous parameters.
-            // FIXME: we don't handle const generics here.
-            let subst_so_far = Substitution::from_iter(
-                Interner,
-                self.vec
-                    .iter()
-                    .cloned()
-                    .chain(iter::repeat(dummy_ty.clone()))
-                    .take(self.param_kinds.len()),
-            );
-            self.vec.push(default_ty.clone().substitute(Interner, &subst_so_far).cast(Interner));
         }
+
+        // The defaults may be missing if no param has default, so fill that.
+        let filler = self.param_kinds[self.vec.len()..].iter().map(|x| match x {
+            ParamKind::Type => fallback().cast(Interner),
+            ParamKind::Const(ty) => unknown_const_as_generic(ty.clone()),
+            ParamKind::Lifetime => error_lifetime().cast(Interner),
+        });
+        self.vec.extend(filler.casted(Interner));
+
         self
     }
 
@@ -284,7 +298,7 @@ impl TyBuilder<hir_def::AdtId> {
 pub struct Tuple(usize);
 impl TyBuilder<Tuple> {
     pub fn tuple(size: usize) -> TyBuilder<Tuple> {
-        TyBuilder::new(Tuple(size), iter::repeat(ParamKind::Type).take(size).collect(), None)
+        TyBuilder::new(Tuple(size), std::iter::repeat_n(ParamKind::Type, size).collect(), None)
     }
 
     pub fn build(self) -> Ty {
@@ -300,7 +314,7 @@ impl TyBuilder<Tuple> {
         let elements = elements.into_iter();
         let len = elements.len();
         let mut b =
-            TyBuilder::new(Tuple(len), iter::repeat(ParamKind::Type).take(len).collect(), None);
+            TyBuilder::new(Tuple(len), std::iter::repeat_n(ParamKind::Type, len).collect(), None);
         for e in elements {
             b = b.push(e);
         }
@@ -334,19 +348,20 @@ impl TyBuilder<TypeAliasId> {
     }
 }
 
-impl<T: HasInterner<Interner = Interner> + TypeFoldable<Interner>> TyBuilder<Binders<T>> {
-    pub fn build(self) -> T {
+impl<'db, T: rustc_type_ir::TypeFoldable<DbInterner<'db>>> TyBuilder<EarlyBinder<'db, T>> {
+    pub fn build(self, interner: DbInterner<'db>) -> T {
         let (b, subst) = self.build_internal();
-        b.substitute(Interner, &subst)
+        let args: crate::next_solver::GenericArgs<'db> = subst.to_nextsolver(interner);
+        b.instantiate(interner, args)
     }
 }
 
-impl TyBuilder<Binders<Ty>> {
+impl<'db> TyBuilder<EarlyBinder<'db, crate::next_solver::Ty<'db>>> {
     pub fn def_ty(
-        db: &dyn HirDatabase,
+        db: &'db dyn HirDatabase,
         def: TyDefId,
         parent_subst: Option<Substitution>,
-    ) -> TyBuilder<Binders<Ty>> {
+    ) -> TyBuilder<EarlyBinder<'db, crate::next_solver::Ty<'db>>> {
         let poly_ty = db.ty(def);
         let id: GenericDefId = match def {
             TyDefId::BuiltinType(_) => {
@@ -359,24 +374,10 @@ impl TyBuilder<Binders<Ty>> {
         TyBuilder::subst_for_def(db, id, parent_subst).with_data(poly_ty)
     }
 
-    pub fn impl_self_ty(db: &dyn HirDatabase, def: hir_def::ImplId) -> TyBuilder<Binders<Ty>> {
+    pub fn impl_self_ty(
+        db: &'db dyn HirDatabase,
+        def: hir_def::ImplId,
+    ) -> TyBuilder<EarlyBinder<'db, crate::next_solver::Ty<'db>>> {
         TyBuilder::subst_for_def(db, def, None).with_data(db.impl_self_ty(def))
-    }
-
-    pub fn value_ty(
-        db: &dyn HirDatabase,
-        def: ValueTyDefId,
-        parent_subst: Option<Substitution>,
-    ) -> TyBuilder<Binders<Ty>> {
-        let poly_value_ty = db.value_ty(def);
-        let id = match def.to_generic_def_id() {
-            Some(id) => id,
-            None => {
-                // static items
-                assert!(parent_subst.is_none());
-                return TyBuilder::new_empty(poly_value_ty);
-            }
-        };
-        TyBuilder::subst_for_def(db, id, parent_subst).with_data(poly_value_ty)
     }
 }

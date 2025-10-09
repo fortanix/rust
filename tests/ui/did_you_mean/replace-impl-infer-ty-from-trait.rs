@@ -1,4 +1,4 @@
-// run-rustfix
+//@ run-rustfix
 #![allow(unused)]
 
 trait Foo<T>: Sized {
@@ -7,7 +7,8 @@ trait Foo<T>: Sized {
 
 impl Foo<usize> for () {
     fn bar(i: _, t: _, s: _) -> _ {
-        //~^ ERROR the placeholder `_` is not allowed within types on item signatures for functions
+        //~^ ERROR the placeholder `_` is not allowed within types on item signatures for associated functions
+        //~| ERROR type annotations needed
         (1, 2)
     }
 }

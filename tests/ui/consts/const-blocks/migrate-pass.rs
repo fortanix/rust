@@ -1,11 +1,11 @@
-// check-pass
+//@ check-pass
 #![allow(warnings)]
 
 // Some type that is not copyable.
 struct Bar;
 
 mod constants {
-    use Bar;
+    use crate::Bar;
 
     fn no_impl_copy_empty_value_no_elements() {
         const FOO: Option<Bar> = None;
@@ -69,7 +69,7 @@ mod constants {
 }
 
 mod non_constants {
-    use Bar;
+    use crate::Bar;
 
     fn no_impl_copy_empty_value_no_elements() {
         let x = None;

@@ -81,29 +81,34 @@
 //!
 //! [mm]: https://github.com/rust-lang/measureme/
 
-use crate::cold_path;
-use crate::fx::FxHashMap;
-
 use std::borrow::Borrow;
 use std::collections::hash_map::Entry;
 use std::error::Error;
 use std::fmt::Display;
-use std::fs;
 use std::intrinsics::unlikely;
 use std::path::Path;
-use std::process;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
+use std::{fs, process};
 
 pub use measureme::EventId;
 use measureme::{EventIdBuilder, Profiler, SerializableString, StringId};
 use parking_lot::RwLock;
 use smallvec::SmallVec;
+use tracing::warn;
+
+use crate::fx::FxHashMap;
+use crate::outline;
+use crate::sync::AtomicU64;
 
 bitflags::bitflags! {
-    struct EventFilter: u32 {
+    #[derive(Clone, Copy)]
+    struct EventFilter: u16 {
         const GENERIC_ACTIVITIES  = 1 << 0;
         const QUERY_PROVIDERS     = 1 << 1;
+        /// Store detailed instant events, including timestamp and thread ID,
+        /// per each query cache hit. Note that this is quite expensive.
         const QUERY_CACHE_HITS    = 1 << 2;
         const QUERY_BLOCKED       = 1 << 3;
         const INCR_CACHE_LOADS    = 1 << 4;
@@ -112,16 +117,20 @@ bitflags::bitflags! {
         const FUNCTION_ARGS       = 1 << 6;
         const LLVM                = 1 << 7;
         const INCR_RESULT_HASHING = 1 << 8;
-        const ARTIFACT_SIZES = 1 << 9;
+        const ARTIFACT_SIZES      = 1 << 9;
+        /// Store aggregated counts of cache hits per query invocation.
+        const QUERY_CACHE_HIT_COUNTS  = 1 << 10;
 
-        const DEFAULT = Self::GENERIC_ACTIVITIES.bits |
-                        Self::QUERY_PROVIDERS.bits |
-                        Self::QUERY_BLOCKED.bits |
-                        Self::INCR_CACHE_LOADS.bits |
-                        Self::INCR_RESULT_HASHING.bits |
-                        Self::ARTIFACT_SIZES.bits;
+        const DEFAULT = Self::GENERIC_ACTIVITIES.bits() |
+                        Self::QUERY_PROVIDERS.bits() |
+                        Self::QUERY_BLOCKED.bits() |
+                        Self::INCR_CACHE_LOADS.bits() |
+                        Self::INCR_RESULT_HASHING.bits() |
+                        Self::ARTIFACT_SIZES.bits() |
+                        Self::QUERY_CACHE_HIT_COUNTS.bits();
 
-        const ARGS = Self::QUERY_KEYS.bits | Self::FUNCTION_ARGS.bits;
+        const ARGS = Self::QUERY_KEYS.bits() | Self::FUNCTION_ARGS.bits();
+        const QUERY_CACHE_HIT_COMBINED = Self::QUERY_CACHE_HITS.bits() | Self::QUERY_CACHE_HIT_COUNTS.bits();
     }
 }
 
@@ -133,6 +142,7 @@ const EVENT_FILTERS_BY_NAME: &[(&str, EventFilter)] = &[
     ("generic-activity", EventFilter::GENERIC_ACTIVITIES),
     ("query-provider", EventFilter::QUERY_PROVIDERS),
     ("query-cache-hit", EventFilter::QUERY_CACHE_HITS),
+    ("query-cache-hit-count", EventFilter::QUERY_CACHE_HIT_COUNTS),
     ("query-blocked", EventFilter::QUERY_BLOCKED),
     ("incr-cache-load", EventFilter::INCR_CACHE_LOADS),
     ("query-keys", EventFilter::QUERY_KEYS),
@@ -410,13 +420,24 @@ impl SelfProfilerRef {
         #[inline(never)]
         #[cold]
         fn cold_call(profiler_ref: &SelfProfilerRef, query_invocation_id: QueryInvocationId) {
-            profiler_ref.instant_query_event(
-                |profiler| profiler.query_cache_hit_event_kind,
-                query_invocation_id,
-            );
+            if profiler_ref.event_filter_mask.contains(EventFilter::QUERY_CACHE_HIT_COUNTS) {
+                profiler_ref
+                    .profiler
+                    .as_ref()
+                    .unwrap()
+                    .increment_query_cache_hit_counters(QueryInvocationId(query_invocation_id.0));
+            }
+            if unlikely(profiler_ref.event_filter_mask.contains(EventFilter::QUERY_CACHE_HITS)) {
+                profiler_ref.instant_query_event(
+                    |profiler| profiler.query_cache_hit_event_kind,
+                    query_invocation_id,
+                );
+            }
         }
 
-        if unlikely(self.event_filter_mask.contains(EventFilter::QUERY_CACHE_HITS)) {
+        // We check both kinds of query cache hit events at once, to reduce overhead in the
+        // common case (with self-profile disabled).
+        if unlikely(self.event_filter_mask.intersects(EventFilter::QUERY_CACHE_HIT_COMBINED)) {
             cold_call(self, query_invocation_id);
         }
     }
@@ -488,6 +509,35 @@ impl SelfProfilerRef {
         self.profiler.as_ref().map(|p| p.get_or_alloc_cached_string(s))
     }
 
+    /// Store query cache hits to the self-profile log.
+    /// Should be called once at the end of the compilation session.
+    ///
+    /// The cache hits are stored per **query invocation**, not **per query kind/type**.
+    /// `analyzeme` can later deduplicate individual query labels from the QueryInvocationId event
+    /// IDs.
+    pub fn store_query_cache_hits(&self) {
+        if self.event_filter_mask.contains(EventFilter::QUERY_CACHE_HIT_COUNTS) {
+            let profiler = self.profiler.as_ref().unwrap();
+            let query_hits = profiler.query_hits.read();
+            let builder = EventIdBuilder::new(&profiler.profiler);
+            let thread_id = get_thread_id();
+            for (query_invocation, hit_count) in query_hits.iter().enumerate() {
+                let hit_count = hit_count.load(Ordering::Relaxed);
+                // No need to record empty cache hit counts
+                if hit_count > 0 {
+                    let event_id =
+                        builder.from_label(StringId::new_virtual(query_invocation as u64));
+                    profiler.profiler.record_integer_event(
+                        profiler.query_cache_hit_count_event_kind,
+                        event_id,
+                        thread_id,
+                        hit_count,
+                    );
+                }
+            }
+        }
+    }
+
     #[inline]
     pub fn enabled(&self) -> bool {
         self.profiler.is_some()
@@ -500,6 +550,11 @@ impl SelfProfilerRef {
     #[inline]
     pub fn get_self_profiler(&self) -> Option<Arc<SelfProfiler>> {
         self.profiler.clone()
+    }
+
+    /// Is expensive recording of query keys and/or function arguments enabled?
+    pub fn is_args_recording_enabled(&self) -> bool {
+        self.enabled() && self.event_filter_mask.intersects(EventFilter::ARGS)
     }
 }
 
@@ -536,6 +591,19 @@ pub struct SelfProfiler {
 
     string_cache: RwLock<FxHashMap<String, StringId>>,
 
+    /// Recording individual query cache hits as "instant" measureme events
+    /// is incredibly expensive. Instead of doing that, we simply aggregate
+    /// cache hit *counts* per query invocation, and then store the final count
+    /// of cache hits per invocation at the end of the compilation session.
+    ///
+    /// With this approach, we don't know the individual thread IDs and timestamps
+    /// of cache hits, but it has very little overhead on top of `-Zself-profile`.
+    /// Recording the cache hits as individual events made compilation 3-5x slower.
+    ///
+    /// Query invocation IDs should be monotonic integers, so we can store them in a vec,
+    /// rather than using a hashmap.
+    query_hits: RwLock<Vec<AtomicU64>>,
+
     query_event_kind: StringId,
     generic_activity_event_kind: StringId,
     incremental_load_result_event_kind: StringId,
@@ -543,6 +611,8 @@ pub struct SelfProfiler {
     query_blocked_event_kind: StringId,
     query_cache_hit_event_kind: StringId,
     artifact_size_event_kind: StringId,
+    /// Total cache hits per query invocation
+    query_cache_hit_count_event_kind: StringId,
 }
 
 impl SelfProfiler {
@@ -560,7 +630,7 @@ impl SelfProfiler {
         // ASLR is disabled and the heap is otherwise deterministic.
         let pid: u32 = process::id();
         let filename = format!("{crate_name}-{pid:07}.rustc_profile");
-        let path = output_directory.join(&filename);
+        let path = output_directory.join(filename);
         let profiler =
             Profiler::with_counter(&path, measureme::counters::Counter::by_name(counter_name)?)?;
 
@@ -572,6 +642,7 @@ impl SelfProfiler {
         let query_blocked_event_kind = profiler.alloc_string("QueryBlocked");
         let query_cache_hit_event_kind = profiler.alloc_string("QueryCacheHit");
         let artifact_size_event_kind = profiler.alloc_string("ArtifactSize");
+        let query_cache_hit_count_event_kind = profiler.alloc_string("QueryCacheHitCount");
 
         let mut event_filter_mask = EventFilter::empty();
 
@@ -617,6 +688,8 @@ impl SelfProfiler {
             query_blocked_event_kind,
             query_cache_hit_event_kind,
             artifact_size_event_kind,
+            query_cache_hit_count_event_kind,
+            query_hits: Default::default(),
         })
     }
 
@@ -624,6 +697,25 @@ impl SelfProfiler {
     /// or deduplication.
     pub fn alloc_string<STR: SerializableString + ?Sized>(&self, s: &STR) -> StringId {
         self.profiler.alloc_string(s)
+    }
+
+    /// Store a cache hit of a query invocation
+    pub fn increment_query_cache_hit_counters(&self, id: QueryInvocationId) {
+        // Fast path: assume that the query was already encountered before, and just record
+        // a cache hit.
+        let mut guard = self.query_hits.upgradable_read();
+        let query_hits = &guard;
+        let index = id.0 as usize;
+        if index < query_hits.len() {
+            // We only want to increment the count, no other synchronization is required
+            query_hits[index].fetch_add(1, Ordering::Relaxed);
+        } else {
+            // If not, we need to extend the query hit map to the highest observed ID
+            guard.with_upgraded(|vec| {
+                vec.resize_with(index + 1, || AtomicU64::new(0));
+                vec[index] = AtomicU64::from(1);
+            });
+        }
     }
 
     /// Gets a `StringId` for the given string. This method makes sure that
@@ -697,7 +789,7 @@ impl<'a> TimingGuard<'a> {
     #[inline]
     pub fn finish_with_query_invocation_id(self, query_invocation_id: QueryInvocationId) {
         if let Some(guard) = self.0 {
-            cold_path(|| {
+            outline(|| {
                 let event_id = StringId::new_virtual(query_invocation_id.0);
                 let event_id = EventId::from_virtual(event_id);
                 guard.finish_with_override_event_id(event_id);
@@ -859,18 +951,16 @@ fn get_thread_id() -> u32 {
 }
 
 // Memory reporting
-cfg_if! {
-    if #[cfg(windows)] {
+cfg_select! {
+    windows => {
         pub fn get_resident_set_size() -> Option<usize> {
-            use std::mem;
-
             use windows::{
                 Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
                 Win32::System::Threading::GetCurrentProcess,
             };
 
             let mut pmc = PROCESS_MEMORY_COUNTERS::default();
-            let pmc_size = mem::size_of_val(&pmc);
+            let pmc_size = size_of_val(&pmc);
             unsafe {
                 K32GetProcessMemoryInfo(
                     GetCurrentProcess(),
@@ -883,11 +973,12 @@ cfg_if! {
 
             Some(pmc.WorkingSetSize)
         }
-    } else if #[cfg(target_os = "macos")] {
+    }
+    target_os = "macos" => {
         pub fn get_resident_set_size() -> Option<usize> {
             use libc::{c_int, c_void, getpid, proc_pidinfo, proc_taskinfo, PROC_PIDTASKINFO};
             use std::mem;
-            const PROC_TASKINFO_SIZE: c_int = mem::size_of::<proc_taskinfo>() as c_int;
+            const PROC_TASKINFO_SIZE: c_int = size_of::<proc_taskinfo>() as c_int;
 
             unsafe {
                 let mut info: proc_taskinfo = mem::zeroed();
@@ -901,7 +992,8 @@ cfg_if! {
                 }
             }
         }
-    } else if #[cfg(unix)] {
+    }
+    unix => {
         pub fn get_resident_set_size() -> Option<usize> {
             let field = 1;
             let contents = fs::read("/proc/self/statm").ok()?;
@@ -910,7 +1002,8 @@ cfg_if! {
             let npages = s.parse::<usize>().ok()?;
             Some(npages * 4096)
         }
-    } else {
+    }
+    _ => {
         pub fn get_resident_set_size() -> Option<usize> {
             None
         }

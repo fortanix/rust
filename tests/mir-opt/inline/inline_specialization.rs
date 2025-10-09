@@ -1,9 +1,11 @@
-// ignore-wasm32 compiled with panic=abort by default
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
 #![feature(specialization)]
 
 // EMIT_MIR inline_specialization.main.Inline.diff
 fn main() {
-    let x = <Vec::<()> as Foo>::bar();
+    // CHECK-LABEL: fn main(
+    // CHECK: (inlined <Vec<()> as Foo>::bar)
+    let x = <Vec<()> as Foo>::bar();
 }
 
 trait Foo {
@@ -12,5 +14,7 @@ trait Foo {
 
 impl<T> Foo for Vec<T> {
     #[inline(always)]
-    default fn bar() -> u32 { 123 }
+    default fn bar() -> u32 {
+        123
+    }
 }

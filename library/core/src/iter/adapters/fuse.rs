@@ -1,8 +1,8 @@
 use crate::intrinsics;
+use crate::iter::adapters::SourceIter;
 use crate::iter::adapters::zip::try_get_unchecked;
 use crate::iter::{
-    DoubleEndedIterator, ExactSizeIterator, FusedIterator, TrustedLen, TrustedRandomAccess,
-    TrustedRandomAccessNoCoerce,
+    FusedIterator, TrustedFused, TrustedLen, TrustedRandomAccess, TrustedRandomAccessNoCoerce,
 };
 use crate::ops::Try;
 
@@ -24,10 +24,17 @@ impl<I> Fuse<I> {
     pub(in crate::iter) fn new(iter: I) -> Fuse<I> {
         Fuse { iter: Some(iter) }
     }
+
+    pub(crate) fn into_inner(self) -> Option<I> {
+        self.iter
+    }
 }
 
 #[stable(feature = "fused", since = "1.26.0")]
 impl<I> FusedIterator for Fuse<I> where I: Iterator {}
+
+#[unstable(issue = "none", feature = "trusted_fused")]
+unsafe impl<I> TrustedFused for Fuse<I> where I: TrustedFused {}
 
 // Any specialized implementation here is made internal
 // to avoid exposing default fns outside this trait.
@@ -191,8 +198,30 @@ impl<I: Default> Default for Fuse<I> {
     /// let iter: Fuse<slice::Iter<'_, u8>> = Default::default();
     /// assert_eq!(iter.len(), 0);
     /// ```
+    ///
+    /// This is equivalent to `I::default().fuse()`[^fuse_note]; e.g. if
+    /// `I::default()` is not an empty iterator, then this will not be
+    /// an empty iterator.
+    ///
+    /// ```
+    /// # use std::iter::Fuse;
+    /// #[derive(Default)]
+    /// struct Fourever;
+    ///
+    /// impl Iterator for Fourever {
+    ///     type Item = u32;
+    ///     fn next(&mut self) -> Option<u32> {
+    ///         Some(4)
+    ///     }
+    /// }
+    ///
+    /// let mut iter: Fuse<Fourever> = Default::default();
+    /// assert_eq!(iter.next(), Some(4));
+    /// ```
+    ///
+    /// [^fuse_note]: if `I` does not override `Iterator::fuse`'s default implementation
     fn default() -> Self {
-        Fuse { iter: Default::default() }
+        Fuse { iter: Some(I::default()) }
     }
 }
 
@@ -415,6 +444,23 @@ where
         I: DoubleEndedIterator,
     {
         self.iter.as_mut()?.rfind(predicate)
+    }
+}
+
+// This is used by Flatten's SourceIter impl
+#[unstable(issue = "none", feature = "inplace_iteration")]
+unsafe impl<I> SourceIter for Fuse<I>
+where
+    I: SourceIter + TrustedFused,
+{
+    type Source = I::Source;
+
+    #[inline]
+    unsafe fn as_inner(&mut self) -> &mut I::Source {
+        // SAFETY: unsafe function forwarding to unsafe function with the same requirements.
+        // TrustedFused guarantees that we'll never encounter a case where `self.iter` would
+        // be set to None.
+        unsafe { SourceIter::as_inner(self.iter.as_mut().unwrap_unchecked()) }
     }
 }
 

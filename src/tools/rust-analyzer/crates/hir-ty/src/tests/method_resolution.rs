@@ -389,6 +389,24 @@ mod bar_test {
 }
 
 #[test]
+fn infer_trait_method_multiple_mutable_reference() {
+    check_types(
+        r#"
+trait Trait {
+    fn method(&mut self) -> i32 { 5 }
+}
+struct S;
+impl Trait for &mut &mut S {}
+fn test() {
+    let s = &mut &mut &mut S;
+    s.method();
+  //^^^^^^^^^^ i32
+}
+        "#,
+    );
+}
+
+#[test]
 fn infer_trait_method_generic_1() {
     // the trait implementation is intentionally incomplete -- it shouldn't matter
     check_types(
@@ -560,17 +578,17 @@ fn infer_trait_assoc_method_generics_3() {
         trait Trait<T> {
             fn make() -> (Self, T);
         }
-        struct S<T>;
+        struct S<T>(T);
         impl Trait<i64> for S<i32> {}
         fn test() {
             let a = S::make();
         }
         "#,
         expect![[r#"
-            100..126 '{     ...e(); }': ()
-            110..111 'a': (S<i32>, i64)
-            114..121 'S::make': fn make<S<i32>, i64>() -> (S<i32>, i64)
-            114..123 'S::make()': (S<i32>, i64)
+            103..129 '{     ...e(); }': ()
+            113..114 'a': (S<i32>, i64)
+            117..124 'S::make': fn make<S<i32>, i64>() -> (S<i32>, i64)
+            117..126 'S::make()': (S<i32>, i64)
         "#]],
     );
 }
@@ -582,7 +600,7 @@ fn infer_trait_assoc_method_generics_4() {
         trait Trait<T> {
             fn make() -> (Self, T);
         }
-        struct S<T>;
+        struct S<T>(T);
         impl Trait<i64> for S<u64> {}
         impl Trait<i32> for S<u32> {}
         fn test() {
@@ -591,13 +609,13 @@ fn infer_trait_assoc_method_generics_4() {
         }
         "#,
         expect![[r#"
-            130..202 '{     ...e(); }': ()
-            140..141 'a': (S<u64>, i64)
-            157..164 'S::make': fn make<S<u64>, i64>() -> (S<u64>, i64)
-            157..166 'S::make()': (S<u64>, i64)
-            176..177 'b': (S<u32>, i32)
-            190..197 'S::make': fn make<S<u32>, i32>() -> (S<u32>, i32)
-            190..199 'S::make()': (S<u32>, i32)
+            133..205 '{     ...e(); }': ()
+            143..144 'a': (S<u64>, i64)
+            160..167 'S::make': fn make<S<u64>, i64>() -> (S<u64>, i64)
+            160..169 'S::make()': (S<u64>, i64)
+            179..180 'b': (S<u32>, i32)
+            193..200 'S::make': fn make<S<u32>, i32>() -> (S<u32>, i32)
+            193..202 'S::make()': (S<u32>, i32)
         "#]],
     );
 }
@@ -609,7 +627,7 @@ fn infer_trait_assoc_method_generics_5() {
         trait Trait<T> {
             fn make<U>() -> (Self, T, U);
         }
-        struct S<T>;
+        struct S<T>(T);
         impl Trait<i64> for S<u64> {}
         fn test() {
             let a = <S as Trait<i64>>::make::<u8>();
@@ -617,13 +635,13 @@ fn infer_trait_assoc_method_generics_5() {
         }
         "#,
         expect![[r#"
-            106..210 '{     ...>(); }': ()
-            116..117 'a': (S<u64>, i64, u8)
-            120..149 '<S as ...::<u8>': fn make<S<u64>, i64, u8>() -> (S<u64>, i64, u8)
-            120..151 '<S as ...<u8>()': (S<u64>, i64, u8)
-            161..162 'b': (S<u64>, i64, u8)
-            181..205 'Trait:...::<u8>': fn make<S<u64>, i64, u8>() -> (S<u64>, i64, u8)
-            181..207 'Trait:...<u8>()': (S<u64>, i64, u8)
+            109..213 '{     ...>(); }': ()
+            119..120 'a': (S<u64>, i64, u8)
+            123..152 '<S as ...::<u8>': fn make<S<u64>, i64, u8>() -> (S<u64>, i64, u8)
+            123..154 '<S as ...<u8>()': (S<u64>, i64, u8)
+            164..165 'b': (S<u64>, i64, u8)
+            184..208 'Trait:...::<u8>': fn make<S<u64>, i64, u8>() -> (S<u64>, i64, u8)
+            184..210 'Trait:...<u8>()': (S<u64>, i64, u8)
         "#]],
     );
 }
@@ -640,7 +658,7 @@ fn infer_call_trait_method_on_generic_param_1() {
         }
         "#,
         expect![[r#"
-            29..33 'self': &Self
+            29..33 'self': &'? Self
             63..64 't': T
             69..88 '{     ...d(); }': ()
             75..76 't': T
@@ -661,7 +679,7 @@ fn infer_call_trait_method_on_generic_param_2() {
         }
         "#,
         expect![[r#"
-            32..36 'self': &Self
+            32..36 'self': &'? Self
             70..71 't': T
             76..95 '{     ...d(); }': ()
             82..83 't': T
@@ -739,7 +757,7 @@ struct S;
 impl Clone for S {}
 impl Clone for &S {}
 fn test() { (S.clone(), (&S).clone(), (&&S).clone()); }
-          //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ (S, S, &S)
+          //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ (S, S, &'? S)
 "#,
     );
 }
@@ -1089,6 +1107,9 @@ fn method_resolution_slow() {
     // this can get quite slow if we set the solver size limit too high
     check_types(
         r#"
+//- minicore: phantom_data
+use core::marker::PhantomData;
+
 trait SendX {}
 
 struct S1; impl SendX for S1 {}
@@ -1097,17 +1118,17 @@ struct U1;
 
 trait Trait { fn method(self); }
 
-struct X1<A, B> {}
+struct X1<A, B>(PhantomData<(A, B)>);
 impl<A, B> SendX for X1<A, B> where A: SendX, B: SendX {}
 
-struct S<B, C> {}
+struct S<B, C>(PhantomData<(B, C)>);
 
 trait FnX {}
 
 impl<B, C> Trait for S<B, C> where C: FnX, B: SendX {}
 
-fn test() { (S {}).method(); }
-          //^^^^^^^^^^^^^^^ ()
+fn test() { (S(PhantomData)).method(); }
+          //^^^^^^^^^^^^^^^^^^^^^^^^^ ()
 "#,
     );
 }
@@ -1116,6 +1137,7 @@ fn test() { (S {}).method(); }
 fn dyn_trait_super_trait_not_in_scope() {
     check_infer(
         r#"
+        //- minicore: dispatch_from_dyn
         mod m {
             pub trait SuperTrait {
                 fn foo(&self) -> u32 { 0 }
@@ -1132,12 +1154,12 @@ fn dyn_trait_super_trait_not_in_scope() {
         }
         "#,
         expect![[r#"
-            51..55 'self': &Self
+            51..55 'self': &'? Self
             64..69 '{ 0 }': u32
             66..67 '0': u32
-            176..177 'd': &dyn Trait
+            176..177 'd': &'? (dyn Trait + '?)
             191..207 '{     ...o(); }': ()
-            197..198 'd': &dyn Trait
+            197..198 'd': &'? (dyn Trait + '?)
             197..204 'd.foo()': u32
         "#]],
     );
@@ -1164,15 +1186,15 @@ fn test() {
 }
 "#,
         expect![[r#"
-            75..79 'self': &S
+            75..79 'self': &'? S
             89..109 '{     ...     }': bool
             99..103 'true': bool
             123..167 '{     ...o(); }': ()
-            133..134 's': &S
-            137..151 'unsafe { f() }': &S
-            146..147 'f': fn f() -> &S
-            146..149 'f()': &S
-            157..158 's': &S
+            133..134 's': &'? S
+            137..151 'unsafe { f() }': &'? S
+            146..147 'f': fn f() -> &'static S
+            146..149 'f()': &'static S
+            157..158 's': &'? S
             157..164 's.foo()': bool
         "#]],
     );
@@ -1192,7 +1214,74 @@ impl<T> Slice<T> {
 fn main() {
     let foo: Slice<u32>;
     foo.into_vec(); // we shouldn't crash on this at least
-} //^^^^^^^^^^^^^^ {unknown}
+} //^^^^^^^^^^^^^^ ()
+"#,
+    );
+}
+
+#[test]
+fn inherent_method_deref_raw() {
+    check_types(
+        r#"
+struct Val;
+
+impl Val {
+    pub fn method(self: *const Val) -> u32 {
+        0
+    }
+}
+
+fn main() {
+    let foo: *const Val;
+    foo.method();
+ // ^^^^^^^^^^^^ u32
+}
+"#,
+    );
+}
+
+#[test]
+fn inherent_method_ref_self_deref_raw() {
+    check_types(
+        r#"
+struct Val;
+
+impl Val {
+    pub fn method(&self) -> u32 {
+        0
+    }
+}
+
+fn main() {
+    let foo: *const Val;
+    foo.method();
+ // ^^^^^^^^^^^^ {unknown}
+}
+"#,
+    );
+}
+
+#[test]
+fn trait_method_deref_raw() {
+    check_types(
+        r#"
+trait Trait {
+    fn method(self: *const Self) -> u32;
+}
+
+struct Val;
+
+impl Trait for Val {
+    fn method(self: *const Self) -> u32 {
+        0
+    }
+}
+
+fn main() {
+    let foo: *const Val;
+    foo.method();
+ // ^^^^^^^^^^^^ u32
+}
 "#,
     );
 }
@@ -1201,6 +1290,7 @@ fn main() {
 fn method_on_dyn_impl() {
     check_types(
         r#"
+//- minicore: coerce_unsized
 trait Foo {}
 
 impl Foo for u32 {}
@@ -1223,7 +1313,7 @@ fn main() {
 fn dyn_trait_method_priority() {
     check_types(
         r#"
-//- minicore: from
+//- minicore: from, dispatch_from_dyn
 trait Trait {
     fn into(&self) -> usize { 0 }
 }
@@ -1255,10 +1345,9 @@ fn foo<T: Trait>(a: &T) {
 
 #[test]
 fn autoderef_visibility_field() {
-    // FIXME: We should know mutability in overloaded deref
     check(
         r#"
-//- minicore: deref
+//- minicore: receiver
 mod a {
     pub struct Foo(pub char);
     pub struct Bar(i32);
@@ -1277,7 +1366,7 @@ mod a {
 mod b {
     fn foo() {
         let x = super::a::Bar::new().0;
-             // ^^^^^^^^^^^^^^^^^^^^ adjustments: Deref(Some(OverloadedDeref(None)))
+             // ^^^^^^^^^^^^^^^^^^^^ adjustments: Deref(Some(OverloadedDeref(Some(Not))))
              // ^^^^^^^^^^^^^^^^^^^^^^ type: char
     }
 }
@@ -1290,7 +1379,7 @@ fn autoderef_visibility_method() {
     cov_mark::check!(autoderef_candidate_not_visible);
     check(
         r#"
-//- minicore: deref
+//- minicore: receiver
 mod a {
     pub struct Foo(pub char);
     impl Foo {
@@ -1366,28 +1455,6 @@ trait Tr {
 }
 
 const _: () = {
-    impl Tr for S {}
-};
-
-fn f() {
-    S.method();
-  //^^^^^^^^^^ u16
-}
-    "#,
-    );
-}
-
-#[test]
-fn trait_impl_in_synstructure_const() {
-    check_types(
-        r#"
-struct S;
-
-trait Tr {
-    fn method(&self) -> u16;
-}
-
-const _DERIVE_Tr_: () = {
     impl Tr for S {}
 };
 
@@ -1539,11 +1606,11 @@ use core::IntoIterator;
 fn f() {
     let v = [4].into_iter();
     v;
-  //^ &i32
+  //^ &'? i32
 
     let a = [0, 1].into_iter();
     a;
-  //^ &i32
+  //^ &'? i32
 }
 
 //- /main2021.rs crate:main2021 deps:core edition:2021
@@ -1556,11 +1623,60 @@ fn f() {
 
     let a = [0, 1].into_iter();
     a;
-  //^ &i32
+  //^ &'? i32
 }
 
 //- /core.rs crate:core
 #[rustc_skip_array_during_method_dispatch]
+pub trait IntoIterator {
+    type Out;
+    fn into_iter(self) -> Self::Out;
+}
+
+impl<T> IntoIterator for [T; 1] {
+    type Out = T;
+    fn into_iter(self) -> Self::Out { loop {} }
+}
+impl<'a, T> IntoIterator for &'a [T] {
+    type Out = &'a T;
+    fn into_iter(self) -> Self::Out { loop {} }
+}
+    "#,
+    );
+}
+
+#[test]
+fn skip_during_method_dispatch() {
+    check_types(
+        r#"
+//- /main2018.rs crate:main2018 deps:core edition:2018
+use core::IntoIterator;
+
+fn f() {
+    let v = [4].into_iter();
+    v;
+  //^ &'? i32
+
+    let a = [0, 1].into_iter();
+    a;
+  //^ &'? i32
+}
+
+//- /main2021.rs crate:main2021 deps:core edition:2021
+use core::IntoIterator;
+
+fn f() {
+    let v = [4].into_iter();
+    v;
+  //^ i32
+
+    let a = [0, 1].into_iter();
+    a;
+  //^ &'? i32
+}
+
+//- /core.rs crate:core
+#[rustc_skip_during_method_dispatch(array, boxed_slice)]
 pub trait IntoIterator {
     type Out;
     fn into_iter(self) -> Self::Out;
@@ -1629,7 +1745,7 @@ fn main() {
 fn deref_fun_1() {
     check_types(
         r#"
-//- minicore: deref
+//- minicore: receiver
 
 struct A<T, U>(T, U);
 struct B<T>(T);
@@ -1670,7 +1786,7 @@ fn test() {
 fn deref_fun_2() {
     check_types(
         r#"
-//- minicore: deref
+//- minicore: receiver
 
 struct A<T, U>(T, U);
 struct B<T>(T);
@@ -1705,12 +1821,54 @@ fn test() {
     let a2 = A(make(), 1i32);
     let _: &str = a2.thing();
     a2;
-  //^^ A<C<&str>, i32>
+  //^^ A<C<&'? str>, i32>
 }
 "#,
     );
 }
 
+#[test]
+fn deref_fun_3() {
+    check_types(
+        r#"
+//- minicore: receiver
+
+struct A<T, U>(T, U);
+struct B<T>(T);
+struct C<T>(T);
+
+impl<T> core::ops::Deref for A<B<T>, u32> {
+    type Target = B<T>;
+    fn deref(&self) -> &B<T> { &self.0 }
+}
+
+fn make<T>() -> T { loop {} }
+
+fn test() {
+    let a1 = A(make(), make());
+    let _: usize = (*a1).0;
+    a1;
+  //^^ A<B<usize>, u32>
+}
+"#,
+    );
+}
+
+#[test]
+fn deref_into_inference_var() {
+    check_types(
+        r#"
+//- minicore:deref
+struct A<T>(T);
+impl core::ops::Deref for A<u32> {}
+impl A<i32> { fn foo(&self) {} }
+fn main() {
+    A(0).foo();
+  //^^^^^^^^^^ ()
+}
+"#,
+    );
+}
 #[test]
 fn receiver_adjustment_autoref() {
     check(
@@ -1721,9 +1879,9 @@ impl Foo {
 }
 fn test() {
     Foo.foo();
-  //^^^ adjustments: Borrow(Ref(Not))
+  //^^^ adjustments: Borrow(Ref('?0, Not))
     (&Foo).foo();
-  // ^^^^ adjustments: ,
+  // ^^^^ adjustments: Deref(None), Borrow(Ref('?2, Not))
 }
 "#,
     );
@@ -1737,7 +1895,7 @@ fn receiver_adjustment_unsize_array() {
 fn test() {
     let a = [1, 2, 3];
     a.len();
-} //^ adjustments: Borrow(Ref(Not)), Pointer(Unsize)
+} //^ adjustments: Borrow(Ref('?0, Not)), Pointer(Unsize)
 "#,
     );
 }
@@ -1776,7 +1934,7 @@ pub fn test(generic_args: impl Into<Foo>) {
 fn bad_inferred_reference_2() {
     check_no_mismatches(
         r#"
-//- minicore: deref
+//- minicore: receiver
 trait ExactSizeIterator {
     fn len(&self) -> usize;
 }
@@ -1892,10 +2050,10 @@ impl dyn Error + Send {
     /// Attempts to downcast the box to a concrete type.
     pub fn downcast<T: Error + 'static>(self: Box<Self>) -> Result<Box<T>, Box<dyn Error + Send>> {
         let err: Box<dyn Error> = self;
-                               // ^^^^ expected Box<dyn Error>, got Box<dyn Error + Send>
+                               // ^^^^ expected Box<dyn Error + '?>, got Box<dyn Error + Send + 'static>
                                // FIXME, type mismatch should not occur
         <dyn Error>::downcast(err).map_err(|_| loop {})
-      //^^^^^^^^^^^^^^^^^^^^^ type: fn downcast<{unknown}>(Box<dyn Error>) -> Result<Box<{unknown}>, Box<dyn Error>>
+      //^^^^^^^^^^^^^^^^^^^^^ type: fn downcast<{unknown}>(Box<dyn Error + 'static>) -> Result<Box<{unknown}>, Box<dyn Error + 'static>>
     }
 }
 "#,
@@ -1918,6 +2076,150 @@ fn foo() {
     let s = module::Struct;
     s.func();
   //^^^^^^^^ type: ()
+}
+"#,
+    );
+}
+
+#[test]
+fn box_deref_is_builtin() {
+    check(
+        r#"
+//- minicore: receiver
+use core::ops::Deref;
+
+#[lang = "owned_box"]
+struct Box<T>(*mut T);
+
+impl<T> Box<T> {
+    fn new(t: T) -> Self {
+        loop {}
+    }
+}
+
+impl<T> Deref for Box<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target;
+}
+
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+fn test() {
+    Box::new(Foo).foo();
+  //^^^^^^^^^^^^^ adjustments: Deref(None), Borrow(Ref('?0, Not))
+}
+"#,
+    );
+}
+
+#[test]
+fn manually_drop_deref_is_not_builtin() {
+    check(
+        r#"
+//- minicore: manually_drop, receiver
+struct Foo;
+impl Foo {
+    fn foo(&self) {}
+}
+use core::mem::ManuallyDrop;
+fn test() {
+    ManuallyDrop::new(Foo).foo();
+  //^^^^^^^^^^^^^^^^^^^^^^ adjustments: Deref(Some(OverloadedDeref(Some(Not)))), Borrow(Ref('?0, Not))
+}
+"#,
+    );
+}
+
+#[test]
+fn mismatched_args_due_to_supertraits_with_deref() {
+    check_no_mismatches(
+        r#"
+//- minicore: receiver
+use core::ops::Deref;
+
+trait Trait1 {
+    type Assoc: Deref<Target = String>;
+}
+
+trait Trait2: Trait1 {
+}
+
+trait Trait3 {
+    type T1: Trait1;
+    type T2: Trait2;
+    fn bar(&self, x: bool, y: bool);
+}
+
+struct Foo;
+
+impl Foo {
+    fn bar(&mut self, _: &'static str) {}
+}
+
+impl Deref for Foo {
+    type Target = u32;
+    fn deref(&self) -> &Self::Target { &0 }
+}
+
+fn problem_method<T: Trait3>() {
+    let mut foo = Foo;
+    foo.bar("hello"); // Rustc ok, RA errors (mismatched args)
+}
+"#,
+    );
+}
+
+#[test]
+fn receiver_without_deref_impl() {
+    check(
+        r#"
+//- minicore: receiver
+use core::ops::Receiver;
+
+struct Foo;
+
+impl Foo {
+    fn foo1(self: &Bar) -> i32 { 42 }
+    fn foo2(self: Bar) -> bool { true }
+}
+
+struct Bar;
+
+impl Receiver for Bar {
+    type Target = Foo;
+}
+
+fn main() {
+    let bar = Bar;
+    let _v1 = bar.foo1();
+      //^^^ type: i32
+    let _v2 = bar.foo2();
+      //^^^ type: bool
+}
+"#,
+    );
+}
+
+#[test]
+fn mut_to_const_pointer() {
+    check(
+        r#"
+pub trait X {
+    fn perform(self) -> u64;
+}
+
+impl X for *const u8 {
+    fn perform(self) -> u64 {
+        42
+    }
+}
+
+fn test(x: *mut u8) {
+    let _v = x.perform();
+     //      ^ adjustments: Pointer(MutToConstPointer)
+     //      ^^^^^^^^^^^ type: u64
 }
 "#,
     );

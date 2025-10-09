@@ -1,4 +1,4 @@
-// ignore-wasm32 FIXME: ignoring wasm as it suggests slightly different impls
+//@ ignore-wasm32 FIXME: ignoring wasm as it suggests slightly different impls
 
 // Regression test for #72616, it used to emit incorrect diagnostics, like:
 // error[E0283]: type annotations needed for `String`
@@ -21,7 +21,6 @@ pub fn main() {
     {
         if String::from("a") == "a".try_into().unwrap() {}
         //~^ ERROR type annotations needed
-        //~| ERROR type annotations needed
     }
     {
         let _: String = match "_".try_into() {

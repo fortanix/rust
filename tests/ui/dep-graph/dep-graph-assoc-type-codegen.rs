@@ -1,8 +1,8 @@
 // Test that when a trait impl changes, fns whose body uses that trait
 // must also be recompiled.
 
-// incremental
-// compile-flags: -Z query-dep-graph
+//@ incremental
+//@ compile-flags: -Z query-dep-graph
 
 #![feature(rustc_attrs)]
 #![allow(warnings)]
@@ -15,7 +15,7 @@ pub trait Foo: Sized {
 }
 
 mod x {
-    use Foo;
+    use crate::Foo;
 
     #[rustc_if_this_changed]
     impl Foo for char { type T = char; }
@@ -24,7 +24,7 @@ mod x {
 }
 
 mod y {
-    use Foo;
+    use crate::Foo;
 
     #[rustc_then_this_would_need(typeck)] //~ ERROR OK
     pub fn use_char_assoc() {

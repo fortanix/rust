@@ -9,7 +9,7 @@ trait MyTrait {
 
 impl MyTrait for &i32 {
     type Output = &i32;
-    //~^ ERROR `&` without an explicit lifetime name cannot be used here
+    //~^ ERROR in the trait associated type is declared without lifetime parameters, so using a borrowed type for them requires that lifetime to come from the implemented type
 }
 
 impl MyTrait for &u32 {

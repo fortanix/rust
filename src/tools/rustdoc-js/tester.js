@@ -1,5 +1,15 @@
+/* global globalThis */
+
 const fs = require("fs");
 const path = require("path");
+const { isGeneratorObject } = require("util/types");
+
+function arrayToCode(array) {
+    return array.map((value, index) => {
+        value = value.split("&nbsp;").join(" ");
+        return (index % 2 === 1) ? ("`" + value + "`") : value;
+    }).join("");
+}
 
 function loadContent(content) {
     const Module = module.constructor;
@@ -19,50 +29,70 @@ function readFile(filePath) {
 }
 
 function contentToDiffLine(key, value) {
-    return `"${key}": "${value}",`;
+    if (typeof value === "object" && !Array.isArray(value) && value !== null) {
+        const out = Object.entries(value)
+            .filter(([subKey, _]) => ["path", "name"].includes(subKey))
+            .map(([subKey, subValue]) => `"${subKey}": ${JSON.stringify(subValue)}`)
+            .join(", ");
+        return `"${key}": ${out},`;
+    }
+    return `"${key}": ${JSON.stringify(value)},`;
+}
+
+function shouldIgnoreField(fieldName) {
+    return fieldName === "query" || fieldName === "correction" ||
+        fieldName === "proposeCorrectionFrom" ||
+        fieldName === "proposeCorrectionTo";
+}
+
+function valueMapper(key, testOutput) {
+    let value = testOutput[key];
+    // To make our life easier, if there is a "parent" type, we add it to the path.
+    if (key === "path") {
+        if (testOutput["parent"]) {
+            if (value.length > 0) {
+                value += "::" + testOutput["parent"]["name"];
+            } else {
+                value = testOutput["parent"]["name"];
+            }
+        }
+    }
+    return value;
 }
 
 // This function is only called when no matching result was found and therefore will only display
 // the diff between the two items.
-function betterLookingDiff(entry, data) {
+function betterLookingDiff(expected, testOutput) {
     let output = " {\n";
-    const spaces = "     ";
-    for (const key in entry) {
-        if (!Object.prototype.hasOwnProperty.call(entry, key)) {
+    const spaces = "    ";
+    for (const key in expected) {
+        if (!Object.prototype.hasOwnProperty.call(expected, key)) {
             continue;
         }
-        if (!data || !Object.prototype.hasOwnProperty.call(data, key)) {
-            output += "-" + spaces + contentToDiffLine(key, entry[key]) + "\n";
+        if (!testOutput || !Object.prototype.hasOwnProperty.call(testOutput, key)) {
+            output += "-" + spaces + contentToDiffLine(key, expected[key]) + "\n";
             continue;
         }
-        const value = data[key];
-        if (value !== entry[key]) {
-            output += "-" + spaces + contentToDiffLine(key, entry[key]) + "\n";
+        const value = valueMapper(key, testOutput);
+        if (value !== expected[key]) {
+            output += "-" + spaces + contentToDiffLine(key, expected[key]) + "\n";
             output += "+" + spaces + contentToDiffLine(key, value) + "\n";
         } else {
-            output += spaces + contentToDiffLine(key, value) + "\n";
+            output += spaces + " " + contentToDiffLine(key, value) + "\n";
         }
     }
     return output + " }";
 }
 
-function lookForEntry(entry, data) {
-    return data.findIndex(data_entry => {
+function lookForEntry(expected, testOutput) {
+    return testOutput.findIndex(testOutputEntry => {
         let allGood = true;
-        for (const key in entry) {
-            if (!Object.prototype.hasOwnProperty.call(entry, key)) {
+        for (const key in expected) {
+            if (!Object.prototype.hasOwnProperty.call(expected, key)) {
                 continue;
             }
-            let value = data_entry[key];
-            // To make our life easier, if there is a "parent" type, we add it to the path.
-            if (key === "path" && data_entry["parent"] !== undefined) {
-                if (value.length > 0) {
-                    value += "::" + data_entry["parent"]["name"];
-                } else {
-                    value = data_entry["parent"]["name"];
-                }
-            }
-            if (value !== entry[key]) {
+            const value = valueMapper(key, testOutputEntry);
+            if (value !== expected[key]) {
                 allGood = false;
                 break;
             }
@@ -77,7 +107,6 @@ function checkNeededFields(fullPath, expected, error_text, queryName, position) 
     if (fullPath.length === 0) {
         fieldsToCheck = [
             "foundElems",
-            "original",
             "returned",
             "userQuery",
             "error",
@@ -116,7 +145,31 @@ function checkNeededFields(fullPath, expected, error_text, queryName, position) 
 }
 
 function valueCheck(fullPath, expected, result, error_text, queryName) {
-    if (Array.isArray(expected)) {
+    if (Array.isArray(expected) && result instanceof Map) {
+        const expected_set = new Set();
+        for (const [key, expected_value] of expected) {
+            expected_set.add(key);
+            checkNeededFields(fullPath, expected_value, error_text, queryName, key);
+            if (result.has(key)) {
+                valueCheck(
+                    fullPath + "[" + key + "]",
+                    expected_value,
+                    result.get(key),
+                    error_text,
+                    queryName,
+                );
+            } else {
+                error_text.push(`${queryName}==> EXPECTED has extra key in map from field ` +
+                    `\`${fullPath}\` (key ${key}): \`${JSON.stringify(expected_value)}\``);
+            }
+        }
+        for (const [key, result_value] of result.entries()) {
+            if (!expected_set.has(key)) {
+                error_text.push(`${queryName}==> EXPECTED missing key in map from field ` +
+                    `\`${fullPath}\` (key ${key}): \`${JSON.stringify(result_value)}\``);
+            }
+        }
+    } else if (Array.isArray(expected)) {
         let i;
         for (i = 0; i < expected.length; ++i) {
             checkNeededFields(fullPath, expected[i], error_text, queryName, i);
@@ -135,6 +188,9 @@ function valueCheck(fullPath, expected, result, error_text, queryName) {
     } else if (expected !== null && typeof expected !== "undefined" &&
                expected.constructor == Object) { // eslint-disable-line eqeqeq
         for (const key in expected) {
+            if (shouldIgnoreField(key)) {
+                continue;
+            }
             if (!Object.prototype.hasOwnProperty.call(expected, key)) {
                 continue;
             }
@@ -144,15 +200,10 @@ function valueCheck(fullPath, expected, result, error_text, queryName) {
             }
             let result_v = result[key];
             if (result_v !== null && key === "error") {
-                result_v.forEach((value, index) => {
-                    value = value.split("&nbsp;").join(" ");
-                    if (index % 2 === 1) {
-                        result_v[index] = "`" + value + "`";
-                    } else {
-                        result_v[index] = value;
-                    }
-                });
-                result_v = result_v.join("");
+                if (!result_v.forEach) {
+                    throw result_v;
+                }
+                result_v = arrayToCode(result_v);
             }
             const obj_path = fullPath + (fullPath.length > 0 ? "." : "") + key;
             valueCheck(obj_path, expected[key], result_v, error_text, queryName);
@@ -176,69 +227,74 @@ function runParser(query, expected, parseQuery, queryName) {
     return error_text;
 }
 
-function runSearch(query, expected, doSearch, loadedFile, queryName) {
+async function runSearch(query, expected, doSearch, loadedFile, queryName) {
     const ignore_order = loadedFile.ignore_order;
     const exact_check = loadedFile.exact_check;
 
-    const results = doSearch(query, loadedFile.FILTER_CRATE);
+    const { resultsTable } = await doSearch(query, loadedFile.FILTER_CRATE);
     const error_text = [];
 
     for (const key in expected) {
+        if (shouldIgnoreField(key)) {
+            continue;
+        }
         if (!Object.prototype.hasOwnProperty.call(expected, key)) {
             continue;
         }
-        if (!Object.prototype.hasOwnProperty.call(results, key)) {
+        if (!Object.prototype.hasOwnProperty.call(resultsTable, key)) {
             error_text.push("==> Unknown key \"" + key + "\"");
             break;
         }
         const entry = expected[key];
 
-        if (exact_check && entry.length !== results[key].length) {
+        if (exact_check && entry.length !== resultsTable[key].length) {
             error_text.push(queryName + "==> Expected exactly " + entry.length +
-                            " results but found " + results[key].length + " in '" + key + "'");
+                            " results but found " + resultsTable[key].length + " in '" + key + "'");
         }
 
         let prev_pos = -1;
-        entry.forEach((elem, index) => {
-            const entry_pos = lookForEntry(elem, results[key]);
+        for (const [index, elem] of entry.entries()) {
+            const entry_pos = lookForEntry(elem, resultsTable[key]);
             if (entry_pos === -1) {
                 error_text.push(queryName + "==> Result not found in '" + key + "': '" +
                                 JSON.stringify(elem) + "'");
                 // By default, we just compare the two first items.
                 let item_to_diff = 0;
-                if ((!ignore_order || exact_check) && index < results[key].length) {
+                if ((!ignore_order || exact_check) && index < resultsTable[key].length) {
                     item_to_diff = index;
                 }
                 error_text.push("Diff of first error:\n" +
-                    betterLookingDiff(elem, results[key][item_to_diff]));
+                    betterLookingDiff(elem, resultsTable[key][item_to_diff]));
             } else if (exact_check === true && prev_pos + 1 !== entry_pos) {
                 error_text.push(queryName + "==> Exact check failed at position " + (prev_pos + 1) +
                                 ": expected '" + JSON.stringify(elem) + "' but found '" +
-                                JSON.stringify(results[key][index]) + "'");
+                                JSON.stringify(resultsTable[key][index]) + "'");
             } else if (ignore_order === false && entry_pos < prev_pos) {
-                error_text.push(queryName + "==> '" + JSON.stringify(elem) + "' was supposed " +
-                                "to be before '" + JSON.stringify(results[key][entry_pos]) + "'");
+                error_text.push(queryName + "==> '" +
+                                JSON.stringify(elem) + "' was supposed to be before '" +
+                                JSON.stringify(resultsTable[key][prev_pos]) + "'");
             } else {
                 prev_pos = entry_pos;
             }
-        });
+        }
     }
     return error_text;
 }
 
-function runCorrections(query, corrections, getCorrections, loadedFile) {
-    const qc = getCorrections(query, loadedFile.FILTER_CRATE);
+async function runCorrections(query, corrections, doSearch, loadedFile) {
+    const { parsedQuery } = await doSearch(query, loadedFile.FILTER_CRATE);
+    const qc = parsedQuery.correction;
     const error_text = [];
 
     if (corrections === null) {
         if (qc !== null) {
-            error_text.push(`==> expected = null, found = ${qc}`);
+            error_text.push(`==> [correction] expected = null, found = ${qc}`);
         }
         return error_text;
     }
 
-    if (qc !== corrections.toLowerCase()) {
-        error_text.push(`==> expected = ${corrections}, found = ${qc}`);
+    if (qc.toLowerCase() !== corrections.toLowerCase()) {
+        error_text.push(`==> [correction] expected = ${corrections}, found = ${qc}`);
     }
 
     return error_text;
@@ -260,41 +316,58 @@ function checkResult(error_text, loadedFile, displaySuccess) {
     return 1;
 }
 
-function runCheck(loadedFile, key, callback) {
-    const expected = loadedFile[key];
-    const query = loadedFile.QUERY;
-
-    if (Array.isArray(query)) {
-        if (!Array.isArray(expected)) {
-            console.log("FAILED");
-            console.log(`==> If QUERY variable is an array, ${key} should be an array too`);
-            return 1;
-        } else if (query.length !== expected.length) {
-            console.log("FAILED");
-            console.log(`==> QUERY variable should have the same length as ${key}`);
-            return 1;
+async function runCheckInner(callback, loadedFile, entry, extra, doSearch) {
+    if (typeof entry.query !== "string") {
+        console.log("FAILED");
+        console.log("==> Missing `query` field");
+        return false;
+    }
+    let error_text = await callback(
+        entry.query,
+        entry,
+        extra ? "[ query `" + entry.query + "`]" : "",
+    );
+    if (checkResult(error_text, loadedFile, false) !== 0) {
+        return false;
+    }
+    if (entry.correction !== undefined) {
+        error_text = await runCorrections(
+            entry.query,
+            entry.correction,
+            doSearch,
+            loadedFile,
+        );
+        if (checkResult(error_text, loadedFile, false) !== 0) {
+            return false;
         }
-        for (let i = 0; i < query.length; ++i) {
-            const error_text = callback(query[i], expected[i], "[ query `" + query[i] + "`]");
-            if (checkResult(error_text, loadedFile, false) !== 0) {
+    }
+    return true;
+}
+
+async function runCheck(loadedFile, key, doSearch, callback) {
+    const expected = loadedFile[key];
+
+    if (Array.isArray(expected)) {
+        for (const entry of expected) {
+            if (!await runCheckInner(callback, loadedFile, entry, true, doSearch)) {
                 return 1;
             }
         }
-        console.log("OK");
-    } else {
-        const error_text = callback(query, expected, "");
-        if (checkResult(error_text, loadedFile, true) !== 0) {
-            return 1;
-        }
+    } else if (!await runCheckInner(callback, loadedFile, expected, false, doSearch)) {
+        return 1;
     }
+    console.log("OK");
     return 0;
 }
 
-function runChecks(testFile, doSearch, parseQuery, getCorrections) {
+function hasCheck(content, checkName) {
+    return content.startsWith(`const ${checkName}`) || content.includes(`\nconst ${checkName}`);
+}
+
+async function runChecks(testFile, doSearch, parseQuery) {
     let checkExpected = false;
     let checkParsed = false;
-    let checkCorrections = false;
-    let testFileContent = readFile(testFile) + "exports.QUERY = QUERY;";
+    let testFileContent = readFile(testFile);
 
     if (testFileContent.indexOf("FILTER_CRATE") !== -1) {
         testFileContent += "exports.FILTER_CRATE = FILTER_CRATE;";
@@ -302,21 +375,17 @@ function runChecks(testFile, doSearch, parseQuery, getCorrections) {
         testFileContent += "exports.FILTER_CRATE = null;";
     }
 
-    if (testFileContent.indexOf("\nconst EXPECTED") !== -1) {
+    if (hasCheck(testFileContent, "EXPECTED")) {
         testFileContent += "exports.EXPECTED = EXPECTED;";
         checkExpected = true;
     }
-    if (testFileContent.indexOf("\nconst PARSED") !== -1) {
+    if (hasCheck(testFileContent, "PARSED")) {
         testFileContent += "exports.PARSED = PARSED;";
         checkParsed = true;
     }
-    if (testFileContent.indexOf("\nconst CORRECTIONS") !== -1) {
-        testFileContent += "exports.CORRECTIONS = CORRECTIONS;";
-        checkCorrections = true;
-    }
-    if (!checkParsed && !checkExpected && !checkCorrections) {
+    if (!checkParsed && !checkExpected) {
         console.log("FAILED");
-        console.log("==> At least `PARSED`, `EXPECTED`, or `CORRECTIONS` is needed!");
+        console.log("==> At least `PARSED` or `EXPECTED` is needed!");
         return 1;
     }
 
@@ -324,21 +393,34 @@ function runChecks(testFile, doSearch, parseQuery, getCorrections) {
     let res = 0;
 
     if (checkExpected) {
-        res += runCheck(loadedFile, "EXPECTED", (query, expected, text) => {
+        res += await runCheck(loadedFile, "EXPECTED", doSearch, (query, expected, text) => {
             return runSearch(query, expected, doSearch, loadedFile, text);
         });
     }
     if (checkParsed) {
-        res += runCheck(loadedFile, "PARSED", (query, expected, text) => {
+        res += await runCheck(loadedFile, "PARSED", doSearch, (query, expected, text) => {
             return runParser(query, expected, parseQuery, text);
         });
     }
-    if (checkCorrections) {
-        res += runCheck(loadedFile, "CORRECTIONS", (query, expected) => {
-            return runCorrections(query, expected, getCorrections, loadedFile);
-        });
-    }
     return res;
+}
+
+function mostRecentMatch(staticFiles, regex) {
+    const matchingEntries = fs.readdirSync(staticFiles)
+        .filter(f => f.match(regex))
+        .map(f => {
+            const stats = fs.statSync(path.join(staticFiles, f));
+            return {
+                path: f,
+                time: stats.mtimeMs,
+            };
+        });
+    if (matchingEntries.length === 0) {
+        throw "No static file matching regex";
+    }
+    // We sort entries in descending order.
+    matchingEntries.sort((a, b) => b.time - a.time);
+    return matchingEntries[0].path;
 }
 
 /**
@@ -348,30 +430,103 @@ function runChecks(testFile, doSearch, parseQuery, getCorrections) {
  * @param {string} resource_suffix - Version number between filename and .js, e.g. "1.59.0"
  * @returns {Object}               - Object containing keys: `doSearch`, which runs a search
  *   with the loaded index and returns a table of results; `parseQuery`, which is the
- *   `parseQuery` function exported from the search module; and `getCorrections`, which runs
+ *   `parseQuery` function exported from the search module, which runs
  *   a search but returns type name corrections instead of results.
  */
-function loadSearchJS(doc_folder, resource_suffix) {
-    const searchIndexJs = path.join(doc_folder, "search-index" + resource_suffix + ".js");
-    const searchIndex = require(searchIndexJs);
-
+async function loadSearchJS(doc_folder, resource_suffix) {
     const staticFiles = path.join(doc_folder, "static.files");
-    const searchJs = fs.readdirSync(staticFiles).find(f => f.match(/search.*\.js$/));
+    const stringdexJs = mostRecentMatch(staticFiles, /stringdex.*\.js$/);
+    const stringdexModule = require(path.join(staticFiles, stringdexJs));
+    const searchJs = mostRecentMatch(staticFiles, /search-[0-9a-f]{8}.*\.js$/);
     const searchModule = require(path.join(staticFiles, searchJs));
-    const searchWords = searchModule.initSearch(searchIndex.searchIndex);
-
+    globalThis.nonnull = (x, msg) => {
+        if (x === null) {
+            throw (msg || "unexpected null value!");
+        } else {
+            return x;
+        }
+    };
+    const { docSearch, DocSearch } = await searchModule.initSearch(
+        stringdexModule.Stringdex,
+        stringdexModule.RoaringBitmap,
+        {
+            loadRoot: callbacks => {
+                for (const key in callbacks) {
+                    if (Object.hasOwn(callbacks, key)) {
+                        globalThis[key] = callbacks[key];
+                    }
+                }
+                const rootJs = readFile(path.join(doc_folder, "search.index/root" +
+                    resource_suffix + ".js"));
+                eval(rootJs);
+            },
+            loadTreeByHash: hashHex => {
+                const shardJs = readFile(path.join(doc_folder, "search.index/" + hashHex + ".js"));
+                eval(shardJs);
+            },
+            loadDataByNameAndHash: (name, hashHex) => {
+                const shardJs = readFile(path.join(doc_folder, "search.index/" + name + "/" +
+                    hashHex + ".js"));
+                eval(shardJs);
+            },
+        },
+    );
     return {
-        doSearch: function(queryStr, filterCrate, currentCrate) {
-            return searchModule.execQuery(searchModule.parseQuery(queryStr), searchWords,
-                filterCrate, currentCrate);
+        doSearch: async function(queryStr, filterCrate, currentCrate) {
+            const parsedQuery = DocSearch.parseQuery(queryStr);
+            const result = await docSearch.execQuery(parsedQuery, filterCrate, currentCrate);
+            const resultsTable = {};
+            for (const tab in result) {
+                if (!Object.prototype.hasOwnProperty.call(result, tab)) {
+                    continue;
+                }
+                if (!isGeneratorObject(result[tab])) {
+                    continue;
+                }
+                resultsTable[tab] = [];
+                for await (const entry of result[tab]) {
+                    const flatEntry = Object.assign({
+                        crate: entry.item.crate,
+                        name: entry.item.name,
+                        path: entry.item.modulePath,
+                        exactPath: entry.item.exactModulePath,
+                        ty: entry.item.ty,
+                    }, entry);
+                    for (const key in entry) {
+                        if (!Object.prototype.hasOwnProperty.call(entry, key)) {
+                            continue;
+                        }
+                        if (key === "desc" && entry.desc !== null) {
+                            flatEntry.desc = await entry.desc;
+                        } else if (key === "displayTypeSignature" &&
+                            entry.displayTypeSignature !== null
+                        ) {
+                            flatEntry.displayTypeSignature = await entry.displayTypeSignature;
+                            const {
+                                type,
+                                mappedNames,
+                                whereClause,
+                            } = flatEntry.displayTypeSignature;
+                            flatEntry.displayType = arrayToCode(type);
+                            flatEntry.displayMappedNames = [...mappedNames.entries()]
+                                .map(([name, qname]) => {
+                                    return `${name} = ${qname}`;
+                                }).join(", ");
+                            flatEntry.displayWhereClause = [...whereClause.entries()]
+                                .flatMap(([name, value]) => {
+                                    if (value.length === 0) {
+                                        return [];
+                                    }
+                                    return [`${name}: ${arrayToCode(value)}`];
+                                }).join(", ");
+                        }
+                    }
+                    resultsTable[tab].push(flatEntry);
+                }
+            }
+            return { resultsTable, parsedQuery };
         },
-        getCorrections: function(queryStr, filterCrate, currentCrate) {
-            const parsedQuery = searchModule.parseQuery(queryStr);
-            searchModule.execQuery(parsedQuery, searchWords,
-                filterCrate, currentCrate);
-            return parsedQuery.correction;
-        },
-        parseQuery: searchModule.parseQuery,
+        parseQuery: DocSearch.parseQuery,
     };
 }
 
@@ -437,41 +592,46 @@ function parseOptions(args) {
     return null;
 }
 
-function main(argv) {
+async function main(argv) {
     const opts = parseOptions(argv.slice(2));
     if (opts === null) {
         return 1;
     }
 
-    const parseAndSearch = loadSearchJS(
+    const parseAndSearch = await loadSearchJS(
         opts["doc_folder"],
-        opts["resource_suffix"]
+        opts["resource_suffix"],
     );
     let errors = 0;
 
     const doSearch = function(queryStr, filterCrate) {
         return parseAndSearch.doSearch(queryStr, filterCrate, opts["crate_name"]);
     };
-    const getCorrections = function(queryStr, filterCrate) {
-        return parseAndSearch.getCorrections(queryStr, filterCrate, opts["crate_name"]);
-    };
 
     if (opts["test_file"].length !== 0) {
-        opts["test_file"].forEach(file => {
+        for (const file of opts["test_file"]) {
             process.stdout.write(`Testing ${file} ... `);
-            errors += runChecks(file, doSearch, parseAndSearch.parseQuery, getCorrections);
-        });
+            errors += await runChecks(file, doSearch, parseAndSearch.parseQuery);
+        }
     } else if (opts["test_folder"].length !== 0) {
-        fs.readdirSync(opts["test_folder"]).forEach(file => {
+        for (const file of fs.readdirSync(opts["test_folder"])) {
             if (!file.endsWith(".js")) {
-                return;
+                continue;
             }
             process.stdout.write(`Testing ${file} ... `);
-            errors += runChecks(path.join(opts["test_folder"], file), doSearch,
-                    parseAndSearch.parseQuery, getCorrections);
-        });
+            errors += await runChecks(path.join(opts["test_folder"], file), doSearch,
+                    parseAndSearch.parseQuery);
+        }
     }
     return errors > 0 ? 1 : 0;
 }
 
-process.exit(main(process.argv));
+main(process.argv).catch(e => {
+    console.log(e);
+    process.exit(1);
+}).then(x => process.exit(x));
+
+process.on("beforeExit", () => {
+    console.log("process did not complete");
+    process.exit(1);
+});

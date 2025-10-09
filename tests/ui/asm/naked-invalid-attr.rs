@@ -1,52 +1,62 @@
-// Checks that #[naked] attribute can be placed on function definitions only.
+// Checks that the #[unsafe(naked)] attribute can be placed on function definitions only.
 //
-// needs-asm-support
-#![feature(naked_functions)]
-#![naked] //~ ERROR should be applied to a function definition
+//@ needs-asm-support
+#![unsafe(naked)] //~ ERROR attribute cannot be used on
 
-use std::arch::asm;
+use std::arch::naked_asm;
 
 extern "C" {
-    #[naked] //~ ERROR should be applied to a function definition
+    #[unsafe(naked)] //~ ERROR attribute cannot be used on
     fn f();
 }
 
-#[naked] //~ ERROR should be applied to a function definition
+#[unsafe(naked)] //~ ERROR attribute cannot be used on
 #[repr(C)]
 struct S {
+    #[unsafe(naked)] //~ ERROR attribute cannot be used on
     a: u32,
     b: u32,
 }
 
 trait Invoke {
-    #[naked] //~ ERROR should be applied to a function definition
+    #[unsafe(naked)] //~ ERROR attribute cannot be used on
     extern "C" fn invoke(&self);
 }
 
 impl Invoke for S {
-    #[naked]
+    #[unsafe(naked)]
     extern "C" fn invoke(&self) {
-        unsafe { asm!("", options(noreturn)) }
+        naked_asm!("")
     }
 }
 
-#[naked]
+#[unsafe(naked)]
 extern "C" fn ok() {
-    unsafe { asm!("", options(noreturn)) }
+    naked_asm!("")
 }
 
 impl S {
-    #[naked]
+    #[unsafe(naked)]
     extern "C" fn g() {
-        unsafe { asm!("", options(noreturn)) }
+        naked_asm!("")
     }
 
-    #[naked]
+    #[unsafe(naked)]
     extern "C" fn h(&self) {
-        unsafe { asm!("", options(noreturn)) }
+        naked_asm!("")
     }
 }
 
 fn main() {
-    #[naked] || {}; //~ ERROR should be applied to a function definition
+    #[unsafe(naked)] //~ ERROR attribute cannot be used on
+    || {};
+}
+
+// Check that the path of an attribute without a name is printed correctly (issue #140082)
+#[::a]
+//~^ ERROR attribute incompatible with `#[unsafe(naked)]`
+//~| ERROR failed to resolve: use of unresolved module or unlinked crate `a`
+#[unsafe(naked)]
+extern "C" fn issue_140082() {
+    naked_asm!("")
 }

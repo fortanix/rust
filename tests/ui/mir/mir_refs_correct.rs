@@ -1,9 +1,11 @@
-// run-pass
-// aux-build:mir_external_refs.rs
+//@ run-pass
+//@ aux-build:mir_external_refs.rs
+
+#![allow(unpredictable_function_pointer_comparisons)]
 
 extern crate mir_external_refs as ext;
 
-struct S(#[allow(unused_tuple_struct_fields)] u8);
+struct S(#[allow(dead_code)] u8);
 #[derive(Debug, PartialEq, Eq)]
 struct Unit;
 
@@ -46,7 +48,7 @@ impl<I, O> T<I, O> for O {}
 impl X for S {}
 
 enum E {
-    U(#[allow(unused_tuple_struct_fields)] u8)
+    U(#[allow(dead_code)] u8)
 }
 
 #[derive(PartialEq, Debug, Eq)]

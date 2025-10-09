@@ -1,33 +1,29 @@
 mod builtin_type_shadow;
-mod double_neg;
 mod literal_suffix;
 mod mixed_case_hex_literals;
+mod redundant_at_rest_pattern;
 mod redundant_pattern;
 mod unneeded_field_pattern;
 mod unneeded_wildcard_pattern;
 mod zero_prefixed_literal;
 
-use clippy_utils::diagnostics::span_lint;
 use clippy_utils::source::snippet_opt;
-use rustc_ast::ast::{Expr, ExprKind, Generics, LitFloatType, LitIntType, LitKind, NodeId, Pat, PatKind};
+use rustc_ast::ast::{Expr, ExprKind, Generics, LitFloatType, LitIntType, LitKind, Pat};
 use rustc_ast::token;
-use rustc_ast::visit::FnKind;
-use rustc_data_structures::fx::FxHashMap;
 use rustc_lint::{EarlyContext, EarlyLintPass, LintContext};
-use rustc_middle::lint::in_external_macro;
-use rustc_session::{declare_lint_pass, declare_tool_lint};
-use rustc_span::source_map::Span;
+use rustc_session::declare_lint_pass;
+use rustc_span::Span;
 
 declare_clippy_lint! {
     /// ### What it does
     /// Checks for structure field patterns bound to wildcards.
     ///
-    /// ### Why is this bad?
+    /// ### Why restrict this?
     /// Using `..` instead is shorter and leaves the focus on
     /// the fields that are actually bound.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # struct Foo {
     /// #     a: i32,
     /// #     b: i32,
@@ -42,7 +38,7 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # struct Foo {
     /// #     a: i32,
     /// #     b: i32,
@@ -63,48 +59,6 @@ declare_clippy_lint! {
 
 declare_clippy_lint! {
     /// ### What it does
-    /// Checks for function arguments having the similar names
-    /// differing by an underscore.
-    ///
-    /// ### Why is this bad?
-    /// It affects code readability.
-    ///
-    /// ### Example
-    /// ```rust
-    /// fn foo(a: i32, _a: i32) {}
-    /// ```
-    ///
-    /// Use instead:
-    /// ```rust
-    /// fn bar(a: i32, _b: i32) {}
-    /// ```
-    #[clippy::version = "pre 1.29.0"]
-    pub DUPLICATE_UNDERSCORE_ARGUMENT,
-    style,
-    "function arguments having names which only differ by an underscore"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
-    /// Detects expressions of the form `--x`.
-    ///
-    /// ### Why is this bad?
-    /// It can mislead C/C++ programmers to think `x` was
-    /// decremented.
-    ///
-    /// ### Example
-    /// ```rust
-    /// let mut x = 3;
-    /// --x;
-    /// ```
-    #[clippy::version = "pre 1.29.0"]
-    pub DOUBLE_NEG,
-    style,
-    "`--x`, which is a double negation of `x` and not a pre-decrement as in C/C++"
-}
-
-declare_clippy_lint! {
-    /// ### What it does
     /// Warns on hexadecimal literals with mixed-case letter
     /// digits.
     ///
@@ -112,14 +66,14 @@ declare_clippy_lint! {
     /// It looks confusing.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 0x1a9BAcD
     /// # ;
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 0x1A9BACD
     /// # ;
@@ -137,18 +91,18 @@ declare_clippy_lint! {
     /// To enforce unseparated literal suffix style,
     /// see the `separated_literal_suffix` lint.
     ///
-    /// ### Why is this bad?
+    /// ### Why restrict this?
     /// Suffix style should be consistent.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 123832i32
     /// # ;
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 123832_i32
     /// # ;
@@ -165,18 +119,18 @@ declare_clippy_lint! {
     /// To enforce separated literal suffix style,
     /// see the `unseparated_literal_suffix` lint.
     ///
-    /// ### Why is this bad?
+    /// ### Why restrict this?
     /// Suffix style should be consistent.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 123832_i32
     /// # ;
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # let _ =
     /// 123832i32
     /// # ;
@@ -201,7 +155,7 @@ declare_clippy_lint! {
     /// ### Example
     ///
     /// In Rust:
-    /// ```rust
+    /// ```no_run
     /// fn main() {
     ///     let a = 0123;
     ///     println!("{}", a);
@@ -257,7 +211,7 @@ declare_clippy_lint! {
     /// bindings.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # let v = Some("abc");
     /// match v {
     ///     Some(x) => (),
@@ -266,7 +220,7 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # let v = Some("abc");
     /// match v {
     ///     Some(x) => (),
@@ -294,7 +248,7 @@ declare_clippy_lint! {
     /// can match that element as well.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// # struct TupleStruct(u32, u32, u32);
     /// # let t = TupleStruct(1, 2, 3);
     /// match t {
@@ -304,7 +258,7 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// # struct TupleStruct(u32, u32, u32);
     /// # let t = TupleStruct(1, 2, 3);
     /// match t {
@@ -318,10 +272,38 @@ declare_clippy_lint! {
     "tuple patterns with a wildcard pattern (`_`) is next to a rest pattern (`..`)"
 }
 
+declare_clippy_lint! {
+    /// ### What it does
+    /// Checks for `[all @ ..]` patterns.
+    ///
+    /// ### Why is this bad?
+    /// In all cases, `all` works fine and can often make code simpler, as you possibly won't need
+    /// to convert from say a `Vec` to a slice by dereferencing.
+    ///
+    /// ### Example
+    /// ```rust,ignore
+    /// if let [all @ ..] = &*v {
+    ///     // NOTE: Type is a slice here
+    ///     println!("all elements: {all:#?}");
+    /// }
+    /// ```
+    /// Use instead:
+    /// ```rust,ignore
+    /// if let all = v {
+    ///     // NOTE: Type is a `Vec` here
+    ///     println!("all elements: {all:#?}");
+    /// }
+    /// // or
+    /// println!("all elements: {v:#?}");
+    /// ```
+    #[clippy::version = "1.72.0"]
+    pub REDUNDANT_AT_REST_PATTERN,
+    complexity,
+    "checks for `[all @ ..]` where `all` would suffice"
+}
+
 declare_lint_pass!(MiscEarlyLints => [
     UNNEEDED_FIELD_PATTERN,
-    DUPLICATE_UNDERSCORE_ARGUMENT,
-    DOUBLE_NEG,
     MIXED_CASE_HEX_LITERALS,
     UNSEPARATED_LITERAL_SUFFIX,
     SEPARATED_LITERAL_SUFFIX,
@@ -329,56 +311,35 @@ declare_lint_pass!(MiscEarlyLints => [
     BUILTIN_TYPE_SHADOW,
     REDUNDANT_PATTERN,
     UNNEEDED_WILDCARD_PATTERN,
+    REDUNDANT_AT_REST_PATTERN,
 ]);
 
 impl EarlyLintPass for MiscEarlyLints {
-    fn check_generics(&mut self, cx: &EarlyContext<'_>, gen: &Generics) {
-        for param in &gen.params {
+    fn check_generics(&mut self, cx: &EarlyContext<'_>, generics: &Generics) {
+        for param in &generics.params {
             builtin_type_shadow::check(cx, param);
         }
     }
 
     fn check_pat(&mut self, cx: &EarlyContext<'_>, pat: &Pat) {
+        if pat.span.in_external_macro(cx.sess().source_map()) {
+            return;
+        }
+
         unneeded_field_pattern::check(cx, pat);
         redundant_pattern::check(cx, pat);
+        redundant_at_rest_pattern::check(cx, pat);
         unneeded_wildcard_pattern::check(cx, pat);
     }
 
-    fn check_fn(&mut self, cx: &EarlyContext<'_>, fn_kind: FnKind<'_>, _: Span, _: NodeId) {
-        let mut registered_names: FxHashMap<String, Span> = FxHashMap::default();
-
-        for arg in &fn_kind.decl().inputs {
-            if let PatKind::Ident(_, ident, None) = arg.pat.kind {
-                let arg_name = ident.to_string();
-
-                if let Some(arg_name) = arg_name.strip_prefix('_') {
-                    if let Some(correspondence) = registered_names.get(arg_name) {
-                        span_lint(
-                            cx,
-                            DUPLICATE_UNDERSCORE_ARGUMENT,
-                            *correspondence,
-                            &format!(
-                                "`{arg_name}` already exists, having another argument having almost the same \
-                                 name makes code comprehension and documentation more difficult"
-                            ),
-                        );
-                    }
-                } else {
-                    registered_names.insert(arg_name, arg.pat.span);
-                }
-            }
-        }
-    }
-
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
-        if in_external_macro(cx.sess(), expr.span) {
+        if expr.span.in_external_macro(cx.sess().source_map()) {
             return;
         }
 
         if let ExprKind::Lit(lit) = expr.kind {
             MiscEarlyLints::check_lit(cx, lit, expr.span);
         }
-        double_neg::check(cx, expr);
     }
 }
 
@@ -390,7 +351,7 @@ impl MiscEarlyLints {
         // See <https://github.com/rust-lang/rust-clippy/issues/4507> for a regression.
         // FIXME: Find a better way to detect those cases.
         let lit_snip = match snippet_opt(cx, span) {
-            Some(snip) if snip.chars().next().map_or(false, |c| c.is_ascii_digit()) => snip,
+            Some(snip) if snip.starts_with(|c: char| c.is_ascii_digit()) => snip,
             _ => return,
         };
 

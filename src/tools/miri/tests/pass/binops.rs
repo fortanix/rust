@@ -2,23 +2,23 @@
 
 fn test_nil() {
     assert_eq!((), ());
-    assert!((!(() != ())));
-    assert!((!(() < ())));
-    assert!((() <= ()));
-    assert!((!(() > ())));
-    assert!((() >= ()));
+    assert!(!(() != ()));
+    assert!(!(() < ()));
+    assert!(() <= ());
+    assert!(!(() > ()));
+    assert!(() >= ());
 }
 
 fn test_bool() {
-    assert!((!(true < false)));
-    assert!((!(true <= false)));
-    assert!((true > false));
-    assert!((true >= false));
+    assert!(!(true < false));
+    assert!(!(true <= false));
+    assert!(true > false);
+    assert!(true >= false);
 
-    assert!((false < true));
-    assert!((false <= true));
-    assert!((!(false > true)));
-    assert!((!(false >= true)));
+    assert!(false < true);
+    assert!(false <= true);
+    assert!(!(false > true));
+    assert!(!(false >= true));
 
     // Bools support bitwise binops
     assert_eq!(false & false, false);
@@ -32,6 +32,7 @@ fn test_bool() {
     assert_eq!(true ^ true, false);
 }
 
+#[allow(integer_to_ptr_transmutes)]
 fn test_ptr() {
     unsafe {
         let p1: *const u8 = ::std::mem::transmute(0_usize);
@@ -65,9 +66,9 @@ fn test_class() {
 
     assert_eq!(q, r);
     r.y = 17;
-    assert!((r.y != q.y));
+    assert!(r.y != q.y);
     assert_eq!(r.y, 17);
-    assert!((q != r));
+    assert!(q != r);
 }
 
 pub fn main() {

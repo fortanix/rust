@@ -1,6 +1,6 @@
 // test that ordinary fat pointer operations work.
 
-struct Wrapper<T: ?Sized>(u32, T);
+struct Wrapper<T: ?Sized>(#[allow(dead_code)] u32, T);
 
 struct FatPtrContainer<'a> {
     ptr: &'a [u8],
@@ -19,11 +19,11 @@ fn fat_ptr_via_local(a: &[u8]) -> &[u8] {
     x
 }
 
-fn fat_ptr_from_struct(s: FatPtrContainer) -> &[u8] {
+fn fat_ptr_from_struct(s: FatPtrContainer<'_>) -> &[u8] {
     s.ptr
 }
 
-fn fat_ptr_to_struct(a: &[u8]) -> FatPtrContainer {
+fn fat_ptr_to_struct(a: &[u8]) -> FatPtrContainer<'_> {
     FatPtrContainer { ptr: a }
 }
 

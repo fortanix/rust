@@ -1,17 +1,7 @@
 //! Completion tests for visibility modifiers.
-use expect_test::{expect, Expect};
+use expect_test::expect;
 
-use crate::tests::{completion_list, completion_list_with_trigger_character};
-
-fn check(ra_fixture: &str, expect: Expect) {
-    let actual = completion_list(ra_fixture);
-    expect.assert_eq(&actual)
-}
-
-fn check_with_trigger_character(ra_fixture: &str, trigger_character: char, expect: Expect) {
-    let actual = completion_list_with_trigger_character(ra_fixture, Some(trigger_character));
-    expect.assert_eq(&actual)
-}
+use crate::tests::{check, check_with_private_editable, check_with_trigger_character};
 
 #[test]
 fn empty_pub() {
@@ -20,7 +10,7 @@ fn empty_pub() {
         r#"
 pub($0)
 "#,
-        '(',
+        Some('('),
         expect![[r#"
             kw crate
             kw in
@@ -85,6 +75,93 @@ mod bar {}
 "#,
         expect![[r#"
             md foo
+        "#]],
+    );
+}
+
+#[test]
+fn use_inner_public_function() {
+    check(
+        r#"
+//- /inner.rs crate:inner
+pub fn inner_public() {}
+fn inner_private() {}
+//- /foo.rs crate:foo deps:inner
+use inner::inner_public;
+pub fn outer_public() {}
+//- /lib.rs crate:lib deps:foo
+fn x() {
+    foo::$0
+}
+        "#,
+        expect![[r#"
+            fn outer_public() fn()
+        "#]],
+    );
+}
+
+#[test]
+fn pub_use_inner_public_function() {
+    check(
+        r#"
+//- /inner.rs crate:inner
+pub fn inner_public() {}
+fn inner_private() {}
+//- /foo.rs crate:foo deps:inner
+pub use inner::inner_public;
+pub fn outer_public() {}
+//- /lib.rs crate:lib deps:foo
+fn x() {
+    foo::$0
+}
+        "#,
+        expect![[r#"
+            fn inner_public() fn()
+            fn outer_public() fn()
+        "#]],
+    );
+}
+
+#[test]
+fn use_inner_public_function_private_editable() {
+    check_with_private_editable(
+        r#"
+//- /inner.rs crate:inner
+pub fn inner_public() {}
+fn inner_private() {}
+//- /foo.rs crate:foo deps:inner
+use inner::inner_public;
+pub fn outer_public() {}
+//- /lib.rs crate:lib deps:foo
+fn x() {
+    foo::$0
+}
+        "#,
+        expect![[r#"
+            fn inner_public() fn()
+            fn outer_public() fn()
+        "#]],
+    );
+}
+
+#[test]
+fn pub_use_inner_public_function_private_editable() {
+    check_with_private_editable(
+        r#"
+//- /inner.rs crate:inner
+pub fn inner_public() {}
+fn inner_private() {}
+//- /foo.rs crate:foo deps:inner
+pub use inner::inner_public;
+pub fn outer_public() {}
+//- /lib.rs crate:lib deps:foo
+fn x() {
+    foo::$0
+}
+        "#,
+        expect![[r#"
+            fn inner_public() fn()
+            fn outer_public() fn()
         "#]],
     );
 }

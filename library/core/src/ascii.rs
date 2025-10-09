@@ -9,12 +9,13 @@
 
 #![stable(feature = "core_ascii", since = "1.26.0")]
 
-use crate::escape;
+use crate::escape::{AlwaysEscaped, EscapeIterInner};
 use crate::fmt;
 use crate::iter::FusedIterator;
-use crate::num::NonZeroUsize;
+use crate::num::NonZero;
 
 mod ascii_char;
+#[doc(alias("AsciiChar"))]
 #[unstable(feature = "ascii_char", issue = "110998")]
 pub use ascii_char::AsciiChar as Char;
 
@@ -25,7 +26,7 @@ pub use ascii_char::AsciiChar as Char;
 #[must_use = "iterators are lazy and do nothing unless consumed"]
 #[stable(feature = "rust1", since = "1.0.0")]
 #[derive(Clone)]
-pub struct EscapeDefault(escape::EscapeIterInner<4>);
+pub struct EscapeDefault(EscapeIterInner<4, AlwaysEscaped>);
 
 /// Returns an iterator that produces an escaped version of a `u8`.
 ///
@@ -91,9 +92,19 @@ pub struct EscapeDefault(escape::EscapeIterInner<4>);
 /// ```
 #[stable(feature = "rust1", since = "1.0.0")]
 pub fn escape_default(c: u8) -> EscapeDefault {
-    let mut data = [0; 4];
-    let range = escape::escape_ascii_into(&mut data, c);
-    EscapeDefault(escape::EscapeIterInner::new(data, range))
+    EscapeDefault::new(c)
+}
+
+impl EscapeDefault {
+    #[inline]
+    pub(crate) const fn new(c: u8) -> Self {
+        Self(EscapeIterInner::ascii(c))
+    }
+
+    #[inline]
+    pub(crate) fn empty() -> Self {
+        Self(EscapeIterInner::empty())
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -122,7 +133,7 @@ impl Iterator for EscapeDefault {
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         self.0.advance_by(n)
     }
 }
@@ -135,7 +146,7 @@ impl DoubleEndedIterator for EscapeDefault {
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         self.0.advance_back_by(n)
     }
 }
@@ -154,7 +165,7 @@ impl FusedIterator for EscapeDefault {}
 #[stable(feature = "ascii_escape_display", since = "1.39.0")]
 impl fmt::Display for EscapeDefault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0.as_str())
+        fmt::Display::fmt(&self.0, f)
     }
 }
 

@@ -1,11 +1,11 @@
-// check-pass
+//@ check-pass
 
 // Make sure we don't have any false positives about the "struct is never constructed" lint.
 
 #![deny(dead_code)]
 
+#[allow(dead_code)]
 struct Foo {
-    #[allow(dead_code)]
     inner: u32,
 }
 

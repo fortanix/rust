@@ -1,7 +1,7 @@
-// run-pass
-// needs-unwind
-// ignore-emscripten no processes
-// ignore-sgx no processes
+//@ run-pass
+//@ needs-unwind
+//@ needs-subprocess
+//@ ignore-backends: gcc
 
 use std::env;
 use std::process::Command;
@@ -28,6 +28,6 @@ fn main() {
             // by QEMU in the stderr whenever a core dump happens. Remove it before the check.
             v.strip_suffix("qemu: uncaught target signal 6 (Aborted) - core dumped\n").unwrap_or(v)
         })
-        .map(|v| { v.ends_with("fatal runtime error: drop of the panic payload panicked\n") })
+        .map(|v| v.ends_with("fatal runtime error: drop of the panic payload panicked, aborting\n"))
         .unwrap_or(false));
 }

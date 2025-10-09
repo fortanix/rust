@@ -8,7 +8,6 @@ fn a() {
         //~^ NOTE `vec[_]` is borrowed here
             vec[0] = Box::new(4); //~ ERROR cannot assign
             //~^ NOTE `vec[_]` is assigned to here
-            //~| NOTE in this expansion of desugaring of drop and replace
             _a.use_ref();
             //~^ NOTE borrow later used here
         }
@@ -20,10 +19,9 @@ fn b() {
     let vec: &mut [Box<isize>] = &mut vec;
     match vec {
         &mut [ref _b @ ..] => {
-        //~^ `vec[_]` is borrowed here
+        //~^ NOTE `vec[_]` is borrowed here
             vec[0] = Box::new(4); //~ ERROR cannot assign
             //~^ NOTE `vec[_]` is assigned to here
-            //~| NOTE in this expansion of desugaring of drop and replace
             _b.use_ref();
             //~^ NOTE borrow later used here
         }
@@ -49,6 +47,7 @@ fn c() {
     //~| NOTE cannot move out of here
     //~| NOTE move occurs because
     //~| HELP consider borrowing here
+    //~| HELP consider cloning
 }
 
 fn d() {
@@ -68,6 +67,7 @@ fn d() {
     //~| NOTE cannot move out of here
     //~| NOTE move occurs because
     //~| HELP consider borrowing here
+    //~| HELP consider cloning
 }
 
 fn e() {
@@ -88,6 +88,7 @@ fn e() {
     //~| NOTE cannot move out of here
     //~| NOTE move occurs because
     //~| HELP consider borrowing here
+    //~| HELP consider cloning
 }
 
 fn main() {}

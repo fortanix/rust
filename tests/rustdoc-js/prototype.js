@@ -1,15 +1,17 @@
 // exact-check
 
-const QUERY = ['constructor', '__proto__'];
-
 const EXPECTED = [
     {
+        'query': 'constructor',
         'others': [],
         'returned': [],
         'in_args': [],
     },
     {
-        'others': [],
+        'query': '__proto__',
+        'others': [
+            {"path": "", "name": "prototype"},
+        ],
         'returned': [],
         'in_args': [],
     },

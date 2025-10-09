@@ -1,8 +1,8 @@
 use ide_db::SymbolKind;
 use syntax::{
+    AstNode, AstToken, NodeOrToken, SourceFile, SyntaxNode, SyntaxToken, TextRange, WalkEvent,
     ast::{self, HasAttrs, HasGenericParams, HasName},
-    match_ast, AstNode, AstToken, NodeOrToken, SourceFile, SyntaxNode, SyntaxToken, TextRange,
-    WalkEvent,
+    match_ast,
 };
 
 #[derive(Debug, Clone)]
@@ -19,7 +19,13 @@ pub struct StructureNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum StructureNodeKind {
     SymbolKind(SymbolKind),
+    ExternBlock,
     Region,
+}
+
+#[derive(Debug, Clone)]
+pub struct FileStructureConfig {
+    pub exclude_locals: bool,
 }
 
 // Feature: File Structure
@@ -30,29 +36,29 @@ pub enum StructureNodeKind {
 // * draw breadcrumbs to describe the context around the cursor
 // * draw outline of the file
 //
-// |===
-// | Editor  | Shortcut
+// | Editor  | Shortcut |
+// |---------|----------|
+// | VS Code | <kbd>Ctrl+Shift+O</kbd> |
 //
-// | VS Code | kbd:[Ctrl+Shift+O]
-// |===
-//
-// image::https://user-images.githubusercontent.com/48062697/113020654-b42fc800-917a-11eb-8388-e7dc4d92b02e.gif[]
-
-pub(crate) fn file_structure(file: &SourceFile) -> Vec<StructureNode> {
+// ![File Structure](https://user-images.githubusercontent.com/48062697/113020654-b42fc800-917a-11eb-8388-e7dc4d92b02e.gif)
+pub(crate) fn file_structure(
+    file: &SourceFile,
+    config: &FileStructureConfig,
+) -> Vec<StructureNode> {
     let mut res = Vec::new();
     let mut stack = Vec::new();
 
     for event in file.syntax().preorder_with_tokens() {
         match event {
             WalkEvent::Enter(NodeOrToken::Node(node)) => {
-                if let Some(mut symbol) = structure_node(&node) {
+                if let Some(mut symbol) = structure_node(&node, config) {
                     symbol.parent = stack.last().copied();
                     stack.push(res.len());
                     res.push(symbol);
                 }
             }
             WalkEvent::Leave(NodeOrToken::Node(node)) => {
-                if structure_node(&node).is_some() {
+                if structure_node(&node, config).is_some() {
                     stack.pop().unwrap();
                 }
             }
@@ -73,7 +79,7 @@ pub(crate) fn file_structure(file: &SourceFile) -> Vec<StructureNode> {
     res
 }
 
-fn structure_node(node: &SyntaxNode) -> Option<StructureNode> {
+fn structure_node(node: &SyntaxNode, config: &FileStructureConfig) -> Option<StructureNode> {
     fn decl<N: HasName + HasAttrs>(node: N, kind: StructureNodeKind) -> Option<StructureNode> {
         decl_with_detail(&node, None, kind)
     }
@@ -134,23 +140,30 @@ fn structure_node(node: &SyntaxNode) -> Option<StructureNode> {
                 if let Some(type_param_list) = it.generic_param_list() {
                     collapse_ws(type_param_list.syntax(), &mut detail);
                 }
-                if let Some(param_list) = it.param_list() {
+                let has_self_param = if let Some(param_list) = it.param_list() {
                     collapse_ws(param_list.syntax(), &mut detail);
-                }
+                    param_list.self_param().is_some()
+                } else {
+                    false
+                };
                 if let Some(ret_type) = it.ret_type() {
                     detail.push(' ');
                     collapse_ws(ret_type.syntax(), &mut detail);
                 }
 
-                decl_with_detail(&it, Some(detail), StructureNodeKind::SymbolKind(SymbolKind::Function))
+                decl_with_detail(&it, Some(detail), StructureNodeKind::SymbolKind(if has_self_param {
+                    SymbolKind::Method
+                } else {
+                    SymbolKind::Function
+                }))
             },
             ast::Struct(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Struct)),
             ast::Union(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Union)),
             ast::Enum(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Enum)),
             ast::Variant(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Variant)),
             ast::Trait(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Trait)),
-            ast::TraitAlias(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::TraitAlias)),
             ast::Module(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Module)),
+            ast::Macro(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Macro)),
             ast::TypeAlias(it) => decl_with_type_ref(&it, it.ty(), StructureNodeKind::SymbolKind(SymbolKind::TypeAlias)),
             ast::RecordField(it) => decl_with_type_ref(&it, it.ty(), StructureNodeKind::SymbolKind(SymbolKind::Field)),
             ast::Const(it) => decl_with_type_ref(&it, it.ty(), StructureNodeKind::SymbolKind(SymbolKind::Const)),
@@ -180,7 +193,44 @@ fn structure_node(node: &SyntaxNode) -> Option<StructureNode> {
                 };
                 Some(node)
             },
-            ast::Macro(it) => decl(it, StructureNodeKind::SymbolKind(SymbolKind::Macro)),
+            ast::LetStmt(it) => {
+                if config.exclude_locals {
+                    return None;
+                }
+
+                let pat = it.pat()?;
+
+                let mut label = String::new();
+                collapse_ws(pat.syntax(), &mut label);
+
+                let node = StructureNode {
+                    parent: None,
+                    label,
+                    navigation_range: pat.syntax().text_range(),
+                    node_range: it.syntax().text_range(),
+                    kind: StructureNodeKind::SymbolKind(SymbolKind::Local),
+                    detail: it.ty().map(|ty| ty.to_string()),
+                    deprecated: false,
+                };
+                Some(node)
+            },
+            ast::ExternBlock(it) => {
+                let mut label = "extern".to_owned();
+                let abi = it.abi()?;
+                if let Some(abi) = abi.string_token() {
+                    label.push(' ');
+                    label.push_str(abi.text());
+                }
+                Some(StructureNode {
+                    parent: None,
+                    label,
+                    navigation_range: abi.syntax().text_range(),
+                    node_range: it.syntax().text_range(),
+                    kind: StructureNodeKind::ExternBlock,
+                    detail: None,
+                    deprecated: false,
+                })
+            },
             _ => None,
         }
     }
@@ -190,10 +240,12 @@ fn structure_token(token: SyntaxToken) -> Option<StructureNode> {
     if let Some(comment) = ast::Comment::cast(token) {
         let text = comment.text().trim();
 
-        if let Some(region_name) = text.strip_prefix("// region:").map(str::trim) {
+        if let Some(region_name) =
+            text.strip_prefix("// region:").map(str::trim).filter(|it| !it.is_empty())
+        {
             return Some(StructureNode {
                 parent: None,
-                label: region_name.to_string(),
+                label: region_name.to_owned(),
                 navigation_range: comment.syntax().text_range(),
                 node_range: comment.syntax().text_range(),
                 kind: StructureNodeKind::Region,
@@ -208,18 +260,28 @@ fn structure_token(token: SyntaxToken) -> Option<StructureNode> {
 
 #[cfg(test)]
 mod tests {
-    use expect_test::{expect, Expect};
+    use expect_test::{Expect, expect};
 
     use super::*;
 
-    fn check(ra_fixture: &str, expect: Expect) {
-        let file = SourceFile::parse(ra_fixture).ok().unwrap();
-        let structure = file_structure(&file);
+    const DEFAULT_CONFIG: FileStructureConfig = FileStructureConfig { exclude_locals: true };
+
+    fn check(#[rust_analyzer::rust_fixture] ra_fixture: &str, expect: Expect) {
+        check_with_config(ra_fixture, &DEFAULT_CONFIG, expect);
+    }
+
+    fn check_with_config(
+        #[rust_analyzer::rust_fixture] ra_fixture: &str,
+        config: &FileStructureConfig,
+        expect: Expect,
+    ) {
+        let file = SourceFile::parse(ra_fixture, span::Edition::CURRENT).ok().unwrap();
+        let structure = file_structure(&file, config);
         expect.assert_debug_eq(&structure)
     }
 
     #[test]
-    fn test_nagative_trait_bound() {
+    fn test_negative_trait_bound() {
         let txt = r#"impl !Unpin for Test {}"#;
         check(
             txt,
@@ -287,7 +349,7 @@ macro_rules! mcexp {
 #[deprecated]
 fn obsolete() {}
 
-#[deprecated(note = "for awhile")]
+#[deprecated(note = "for a while")]
 fn very_obsolete() {}
 
 // region: Some region name
@@ -298,6 +360,19 @@ mod m {
 fn f() {}
 // endregion
 fn g() {}
+}
+
+extern "C" {}
+
+fn let_statements() {
+    let x = 42;
+    let mut y = x;
+    let Foo {
+        ..
+    } = Foo { x };
+    if let None = Some(x) {}
+    _ = ();
+    let _ = g();
 }
 "#,
             expect![[r#"
@@ -477,7 +552,7 @@ fn g() {}
                         navigation_range: 251..256,
                         node_range: 245..262,
                         kind: SymbolKind(
-                            TraitAlias,
+                            Trait,
                         ),
                         detail: None,
                         deprecated: false,
@@ -553,8 +628,8 @@ fn g() {}
                     StructureNode {
                         parent: None,
                         label: "very_obsolete",
-                        navigation_range: 511..524,
-                        node_range: 473..529,
+                        navigation_range: 512..525,
+                        node_range: 473..530,
                         kind: SymbolKind(
                             Function,
                         ),
@@ -566,8 +641,8 @@ fn g() {}
                     StructureNode {
                         parent: None,
                         label: "Some region name",
-                        navigation_range: 531..558,
-                        node_range: 531..558,
+                        navigation_range: 532..559,
+                        node_range: 532..559,
                         kind: Region,
                         detail: None,
                         deprecated: false,
@@ -575,8 +650,8 @@ fn g() {}
                     StructureNode {
                         parent: None,
                         label: "m",
-                        navigation_range: 598..599,
-                        node_range: 573..636,
+                        navigation_range: 599..600,
+                        node_range: 574..637,
                         kind: SymbolKind(
                             Module,
                         ),
@@ -588,8 +663,8 @@ fn g() {}
                             22,
                         ),
                         label: "dontpanic",
-                        navigation_range: 573..593,
-                        node_range: 573..593,
+                        navigation_range: 574..594,
+                        node_range: 574..594,
                         kind: Region,
                         detail: None,
                         deprecated: false,
@@ -599,8 +674,8 @@ fn g() {}
                             22,
                         ),
                         label: "f",
-                        navigation_range: 605..606,
-                        node_range: 602..611,
+                        navigation_range: 606..607,
+                        node_range: 603..612,
                         kind: SymbolKind(
                             Function,
                         ),
@@ -614,14 +689,339 @@ fn g() {}
                             22,
                         ),
                         label: "g",
-                        navigation_range: 628..629,
-                        node_range: 612..634,
+                        navigation_range: 629..630,
+                        node_range: 613..635,
                         kind: SymbolKind(
                             Function,
                         ),
                         detail: Some(
                             "fn()",
                         ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "extern \"C\"",
+                        navigation_range: 639..649,
+                        node_range: 639..652,
+                        kind: ExternBlock,
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "let_statements",
+                        navigation_range: 657..671,
+                        node_range: 654..814,
+                        kind: SymbolKind(
+                            Function,
+                        ),
+                        detail: Some(
+                            "fn()",
+                        ),
+                        deprecated: false,
+                    },
+                ]
+            "#]],
+        );
+    }
+
+    #[test]
+    fn test_file_structure_include_locals() {
+        check_with_config(
+            r#"
+struct Foo {
+    x: i32
+}
+
+mod m {
+    fn bar1() {}
+    fn bar2<T>(t: T) -> T {}
+    fn bar3<A,
+        B>(a: A,
+        b: B) -> Vec<
+        u32
+    > {}
+}
+
+enum E { X, Y(i32) }
+type T = ();
+static S: i32 = 42;
+const C: i32 = 42;
+trait Tr {}
+trait Alias = Tr;
+
+macro_rules! mc {
+    () => {}
+}
+
+fn let_statements() {
+    let x = 42;
+    let mut y = x;
+    let Foo {
+        ..
+    } = Foo { x };
+    _ = ();
+    let _ = g();
+}
+"#,
+            &FileStructureConfig { exclude_locals: false },
+            expect![[r#"
+                [
+                    StructureNode {
+                        parent: None,
+                        label: "Foo",
+                        navigation_range: 8..11,
+                        node_range: 1..26,
+                        kind: SymbolKind(
+                            Struct,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            0,
+                        ),
+                        label: "x",
+                        navigation_range: 18..19,
+                        node_range: 18..24,
+                        kind: SymbolKind(
+                            Field,
+                        ),
+                        detail: Some(
+                            "i32",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "m",
+                        navigation_range: 32..33,
+                        node_range: 28..158,
+                        kind: SymbolKind(
+                            Module,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            2,
+                        ),
+                        label: "bar1",
+                        navigation_range: 43..47,
+                        node_range: 40..52,
+                        kind: SymbolKind(
+                            Function,
+                        ),
+                        detail: Some(
+                            "fn()",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            2,
+                        ),
+                        label: "bar2",
+                        navigation_range: 60..64,
+                        node_range: 57..81,
+                        kind: SymbolKind(
+                            Function,
+                        ),
+                        detail: Some(
+                            "fn<T>(t: T) -> T",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            2,
+                        ),
+                        label: "bar3",
+                        navigation_range: 89..93,
+                        node_range: 86..156,
+                        kind: SymbolKind(
+                            Function,
+                        ),
+                        detail: Some(
+                            "fn<A, B>(a: A, b: B) -> Vec< u32 >",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "E",
+                        navigation_range: 165..166,
+                        node_range: 160..180,
+                        kind: SymbolKind(
+                            Enum,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            6,
+                        ),
+                        label: "X",
+                        navigation_range: 169..170,
+                        node_range: 169..170,
+                        kind: SymbolKind(
+                            Variant,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            6,
+                        ),
+                        label: "Y",
+                        navigation_range: 172..173,
+                        node_range: 172..178,
+                        kind: SymbolKind(
+                            Variant,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "T",
+                        navigation_range: 186..187,
+                        node_range: 181..193,
+                        kind: SymbolKind(
+                            TypeAlias,
+                        ),
+                        detail: Some(
+                            "()",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "S",
+                        navigation_range: 201..202,
+                        node_range: 194..213,
+                        kind: SymbolKind(
+                            Static,
+                        ),
+                        detail: Some(
+                            "i32",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "C",
+                        navigation_range: 220..221,
+                        node_range: 214..232,
+                        kind: SymbolKind(
+                            Const,
+                        ),
+                        detail: Some(
+                            "i32",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "Tr",
+                        navigation_range: 239..241,
+                        node_range: 233..244,
+                        kind: SymbolKind(
+                            Trait,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "Alias",
+                        navigation_range: 251..256,
+                        node_range: 245..262,
+                        kind: SymbolKind(
+                            Trait,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "mc",
+                        navigation_range: 277..279,
+                        node_range: 264..296,
+                        kind: SymbolKind(
+                            Macro,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: None,
+                        label: "let_statements",
+                        navigation_range: 301..315,
+                        node_range: 298..429,
+                        kind: SymbolKind(
+                            Function,
+                        ),
+                        detail: Some(
+                            "fn()",
+                        ),
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            15,
+                        ),
+                        label: "x",
+                        navigation_range: 328..329,
+                        node_range: 324..335,
+                        kind: SymbolKind(
+                            Local,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            15,
+                        ),
+                        label: "mut y",
+                        navigation_range: 344..349,
+                        node_range: 340..354,
+                        kind: SymbolKind(
+                            Local,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            15,
+                        ),
+                        label: "Foo { .. }",
+                        navigation_range: 363..385,
+                        node_range: 359..398,
+                        kind: SymbolKind(
+                            Local,
+                        ),
+                        detail: None,
+                        deprecated: false,
+                    },
+                    StructureNode {
+                        parent: Some(
+                            15,
+                        ),
+                        label: "_",
+                        navigation_range: 419..420,
+                        node_range: 415..427,
+                        kind: SymbolKind(
+                            Local,
+                        ),
+                        detail: None,
                         deprecated: false,
                     },
                 ]

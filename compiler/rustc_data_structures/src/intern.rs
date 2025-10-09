@@ -1,8 +1,10 @@
-use crate::stable_hasher::{HashStable, StableHasher};
 use std::cmp::Ordering;
+use std::fmt::{self, Debug};
 use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::ptr;
+
+use crate::stable_hasher::{HashStable, StableHasher};
 
 mod private {
     #[derive(Clone, Copy, Debug)]
@@ -20,7 +22,6 @@ mod private {
 /// The `PrivateZst` field means you can pattern match with `Interned(v, _)`
 /// but you can only construct a `Interned` with `new_unchecked`, and not
 /// directly.
-#[derive(Debug)]
 #[rustc_pass_by_value]
 pub struct Interned<'a, T>(pub &'a T, pub private::PrivateZst);
 
@@ -91,7 +92,10 @@ impl<'a, T: Ord> Ord for Interned<'a, T> {
     }
 }
 
-impl<'a, T> Hash for Interned<'a, T> {
+impl<'a, T> Hash for Interned<'a, T>
+where
+    T: Hash,
+{
     #[inline]
     fn hash<H: Hasher>(&self, s: &mut H) {
         // Pointer hashing is sufficient, due to the uniqueness constraint.
@@ -105,6 +109,12 @@ where
 {
     fn hash_stable(&self, hcx: &mut CTX, hasher: &mut StableHasher) {
         self.0.hash_stable(hcx, hasher);
+    }
+}
+
+impl<T: Debug> Debug for Interned<'_, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
     }
 }
 

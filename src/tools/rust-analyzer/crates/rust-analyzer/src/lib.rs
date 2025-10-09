@@ -9,72 +9,74 @@
 //! The `cli` submodule implements some batch-processing analysis, primarily as
 //! a debugging aid.
 
-#![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
+/// Any toolchain less than this version will likely not work with rust-analyzer built from this revision.
+pub const MINIMUM_SUPPORTED_TOOLCHAIN_VERSION: semver::Version = semver::Version {
+    major: 1,
+    minor: 78,
+    patch: 0,
+    pre: semver::Prerelease::EMPTY,
+    build: semver::BuildMetadata::EMPTY,
+};
 
 pub mod cli;
 
-#[allow(unused)]
-macro_rules! eprintln {
-    ($($tt:tt)*) => { stdx::eprintln!($($tt)*) };
-}
-
-mod caps;
-mod cargo_target_spec;
+mod command;
 mod diagnostics;
-mod diff;
-mod dispatch;
-mod from_proto;
-mod global_state;
-mod handlers;
+mod discover;
+mod flycheck;
 mod line_index;
-mod lsp_utils;
 mod main_loop;
-mod markdown;
 mod mem_docs;
 mod op_queue;
 mod reload;
-mod semantic_tokens;
+mod target_spec;
 mod task_pool;
-mod to_proto;
+mod test_runner;
 mod version;
 
+mod handlers {
+    pub(crate) mod dispatch;
+    pub(crate) mod notification;
+    pub(crate) mod request;
+}
+
+pub mod tracing {
+    pub mod config;
+    pub mod json;
+    pub use config::Config;
+    pub mod hprof;
+}
+
 pub mod config;
-pub mod lsp_ext;
+mod global_state;
+pub mod lsp;
+use self::lsp::ext as lsp_ext;
 
 #[cfg(test)]
 mod integrated_benchmarks;
 
-use std::fmt;
-
 use serde::de::DeserializeOwned;
 
-pub use crate::{caps::server_capabilities, main_loop::main_loop, version::version};
+pub use crate::{
+    lsp::capabilities::server_capabilities, main_loop::main_loop, reload::ws_to_crate_graph,
+    version::version,
+};
 
-pub type Error = Box<dyn std::error::Error + Send + Sync>;
-pub type Result<T, E = Error> = std::result::Result<T, E>;
-
-pub fn from_json<T: DeserializeOwned>(what: &'static str, json: &serde_json::Value) -> Result<T> {
-    let res = serde_json::from_value(json.clone())
-        .map_err(|e| format!("Failed to deserialize {what}: {e}; {json}"))?;
-    Ok(res)
+pub fn from_json<T: DeserializeOwned>(
+    what: &'static str,
+    json: &serde_json::Value,
+) -> anyhow::Result<T> {
+    serde_json::from_value(json.clone())
+        .map_err(|e| anyhow::format_err!("Failed to deserialize {what}: {e}; {json}"))
 }
 
-#[derive(Debug)]
-struct LspError {
-    code: i32,
-    message: String,
+#[doc(hidden)]
+macro_rules! try_default_ {
+    ($it:expr $(,)?) => {
+        match $it {
+            Some(it) => it,
+            None => return Ok(Default::default()),
+        }
+    };
 }
-
-impl LspError {
-    fn new(code: i32, message: String) -> LspError {
-        LspError { code, message }
-    }
-}
-
-impl fmt::Display for LspError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Language Server request failed with {}. ({})", self.code, self.message)
-    }
-}
-
-impl std::error::Error for LspError {}
+pub(crate) use try_default_ as try_default;

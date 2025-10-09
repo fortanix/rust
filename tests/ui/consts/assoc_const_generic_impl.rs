@@ -1,4 +1,4 @@
-// build-fail
+//@ build-fail
 
 trait ZeroSized: Sized {
     const I_AM_ZERO_SIZED: ();
@@ -6,9 +6,9 @@ trait ZeroSized: Sized {
 }
 
 impl<T: Sized> ZeroSized for T {
-    const I_AM_ZERO_SIZED: ()  = [()][std::mem::size_of::<Self>()]; //~ ERROR evaluation of `<u32 as ZeroSized>::I_AM_ZERO_SIZED` failed
+    const I_AM_ZERO_SIZED: () = [()][std::mem::size_of::<Self>()]; //~ ERROR index out of bounds: the length is 1 but the index is 4
     fn requires_zero_size(self) {
-        let () = Self::I_AM_ZERO_SIZED;
+        Self::I_AM_ZERO_SIZED;
         println!("requires_zero_size called");
     }
 }

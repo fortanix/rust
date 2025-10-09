@@ -1,15 +1,15 @@
-use hir::{db::HirDatabase, HasSource, HasVisibility, ModuleDef, PathResolution, ScopeDef};
-use ide_db::base_db::FileId;
+use hir::{HasSource, HasVisibility, ModuleDef, PathResolution, ScopeDef, db::HirDatabase};
+use ide_db::FileId;
 use syntax::{
-    ast::{self, HasVisibility as _},
-    AstNode, TextRange, TextSize,
+    AstNode, TextRange,
+    ast::{self, HasVisibility as _, edit_in_place::HasVisibilityEdit, make},
 };
 
-use crate::{utils::vis_offset, AssistContext, AssistId, AssistKind, Assists};
-
-// FIXME: this really should be a fix for diagnostic, rather than an assist.
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: fix_visibility
+//
+// Note that there is some duplication between this and the no_such_field diagnostic.
 //
 // Makes inaccessible item public.
 //
@@ -32,7 +32,6 @@ use crate::{utils::vis_offset, AssistContext, AssistId, AssistKind, Assists};
 // ```
 pub(crate) fn fix_visibility(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     add_vis_to_referenced_module_def(acc, ctx)
-        .or_else(|| add_vis_to_referenced_record_field(acc, ctx))
 }
 
 fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
@@ -40,12 +39,16 @@ fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) 
     let qualifier = path.qualifier()?;
     let name_ref = path.segment()?.name_ref()?;
     let qualifier_res = ctx.sema.resolve_path(&qualifier)?;
-    let PathResolution::Def(ModuleDef::Module(module)) = qualifier_res else { return None; };
+    let PathResolution::Def(ModuleDef::Module(module)) = qualifier_res else {
+        return None;
+    };
     let (_, def) = module
         .scope(ctx.db(), None)
         .into_iter()
-        .find(|(name, _)| name.to_smol_str() == name_ref.text().as_str())?;
-    let ScopeDef::ModuleDef(def) = def else { return None; };
+        .find(|(name, _)| name.as_str() == name_ref.text().trim_start_matches("r#"))?;
+    let ScopeDef::ModuleDef(def) = def else {
+        return None;
+    };
 
     let current_module = ctx.sema.scope(path.syntax())?.module();
     let target_module = def.module(ctx.db())?;
@@ -54,89 +57,32 @@ fn add_vis_to_referenced_module_def(acc: &mut Assists, ctx: &AssistContext<'_>) 
         return None;
     };
 
-    let (offset, current_visibility, target, target_file, target_name) =
-        target_data_for_def(ctx.db(), def)?;
+    let (vis_owner, target, target_file, target_name) = target_data_for_def(ctx.db(), def)?;
 
-    let missing_visibility =
-        if current_module.krate() == target_module.krate() { "pub(crate)" } else { "pub" };
+    let missing_visibility = if current_module.krate() == target_module.krate() {
+        make::visibility_pub_crate()
+    } else {
+        make::visibility_pub()
+    };
 
     let assist_label = match target_name {
         None => format!("Change visibility to {missing_visibility}"),
-        Some(name) => format!("Change visibility of {name} to {missing_visibility}"),
-    };
-
-    acc.add(AssistId("fix_visibility", AssistKind::QuickFix), assist_label, target, |builder| {
-        builder.edit_file(target_file);
-        match ctx.config.snippet_cap {
-            Some(cap) => match current_visibility {
-                Some(current_visibility) => builder.replace_snippet(
-                    cap,
-                    current_visibility.syntax().text_range(),
-                    format!("$0{missing_visibility}"),
-                ),
-                None => builder.insert_snippet(cap, offset, format!("$0{missing_visibility} ")),
-            },
-            None => match current_visibility {
-                Some(current_visibility) => {
-                    builder.replace(current_visibility.syntax().text_range(), missing_visibility)
-                }
-                None => builder.insert(offset, format!("{missing_visibility} ")),
-            },
-        }
-    })
-}
-
-fn add_vis_to_referenced_record_field(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
-    let record_field: ast::RecordExprField = ctx.find_node_at_offset()?;
-    let (record_field_def, _, _) = ctx.sema.resolve_record_field(&record_field)?;
-
-    let current_module = ctx.sema.scope(record_field.syntax())?.module();
-    let visibility = record_field_def.visibility(ctx.db());
-    if visibility.is_visible_from(ctx.db(), current_module.into()) {
-        return None;
-    }
-
-    let parent = record_field_def.parent_def(ctx.db());
-    let parent_name = parent.name(ctx.db());
-    let target_module = parent.module(ctx.db());
-
-    let in_file_source = record_field_def.source(ctx.db())?;
-    let (offset, current_visibility, target) = match in_file_source.value {
-        hir::FieldSource::Named(it) => {
-            let s = it.syntax();
-            (vis_offset(s), it.visibility(), s.text_range())
-        }
-        hir::FieldSource::Pos(it) => {
-            let s = it.syntax();
-            (vis_offset(s), it.visibility(), s.text_range())
+        Some(name) => {
+            format!(
+                "Change visibility of {} to {missing_visibility}",
+                name.display(ctx.db(), current_module.krate().edition(ctx.db()))
+            )
         }
     };
 
-    let missing_visibility =
-        if current_module.krate() == target_module.krate() { "pub(crate)" } else { "pub" };
-    let target_file = in_file_source.file_id.original_file(ctx.db());
+    acc.add(AssistId::quick_fix("fix_visibility"), assist_label, target, |edit| {
+        edit.edit_file(target_file);
 
-    let target_name = record_field_def.name(ctx.db());
-    let assist_label =
-        format!("Change visibility of {parent_name}.{target_name} to {missing_visibility}");
+        let vis_owner = edit.make_mut(vis_owner);
+        vis_owner.set_visibility(Some(missing_visibility.clone_for_update()));
 
-    acc.add(AssistId("fix_visibility", AssistKind::QuickFix), assist_label, target, |builder| {
-        builder.edit_file(target_file);
-        match ctx.config.snippet_cap {
-            Some(cap) => match current_visibility {
-                Some(current_visibility) => builder.replace_snippet(
-                    cap,
-                    current_visibility.syntax().text_range(),
-                    format!("$0{missing_visibility}"),
-                ),
-                None => builder.insert_snippet(cap, offset, format!("$0{missing_visibility} ")),
-            },
-            None => match current_visibility {
-                Some(current_visibility) => {
-                    builder.replace(current_visibility.syntax().text_range(), missing_visibility)
-                }
-                None => builder.insert(offset, format!("{missing_visibility} ")),
-            },
+        if let Some((cap, vis)) = ctx.config.snippet_cap.zip(vis_owner.visibility()) {
+            edit.add_tabstop_before(cap, vis);
         }
     })
 }
@@ -144,11 +90,11 @@ fn add_vis_to_referenced_record_field(acc: &mut Assists, ctx: &AssistContext<'_>
 fn target_data_for_def(
     db: &dyn HirDatabase,
     def: hir::ModuleDef,
-) -> Option<(TextSize, Option<ast::Visibility>, TextRange, FileId, Option<hir::Name>)> {
+) -> Option<(ast::AnyHasVisibility, TextRange, FileId, Option<hir::Name>)> {
     fn offset_target_and_file_id<S, Ast>(
         db: &dyn HirDatabase,
         x: S,
-    ) -> Option<(TextSize, Option<ast::Visibility>, TextRange, FileId)>
+    ) -> Option<(ast::AnyHasVisibility, TextRange, FileId)>
     where
         S: HasSource<Ast = Ast>,
         Ast: AstNode + ast::HasVisibility,
@@ -156,18 +102,16 @@ fn target_data_for_def(
         let source = x.source(db)?;
         let in_file_syntax = source.syntax();
         let file_id = in_file_syntax.file_id;
-        let syntax = in_file_syntax.value;
-        let current_visibility = source.value.visibility();
+        let range = in_file_syntax.value.text_range();
         Some((
-            vis_offset(syntax),
-            current_visibility,
-            syntax.text_range(),
-            file_id.original_file(db.upcast()),
+            ast::AnyHasVisibility::new(source.value),
+            range,
+            file_id.original_file(db).file_id(db),
         ))
     }
 
     let target_name;
-    let (offset, current_visibility, target, target_file) = match def {
+    let (offset, target, target_file) = match def {
         hir::ModuleDef::Function(f) => {
             target_name = Some(f.name(db));
             offset_target_and_file_id(db, f)?
@@ -192,10 +136,6 @@ fn target_data_for_def(
             target_name = Some(t.name(db));
             offset_target_and_file_id(db, t)?
         }
-        hir::ModuleDef::TraitAlias(t) => {
-            target_name = Some(t.name(db));
-            offset_target_and_file_id(db, t)?
-        }
         hir::ModuleDef::TypeAlias(t) => {
             target_name = Some(t.name(db));
             offset_target_and_file_id(db, t)?
@@ -203,9 +143,9 @@ fn target_data_for_def(
         hir::ModuleDef::Module(m) => {
             target_name = m.name(db);
             let in_file_source = m.declaration_source(db)?;
-            let file_id = in_file_source.file_id.original_file(db.upcast());
-            let syntax = in_file_source.value.syntax();
-            (vis_offset(syntax), in_file_source.value.visibility(), syntax.text_range(), file_id)
+            let file_id = in_file_source.file_id.original_file(db);
+            let range = in_file_source.value.syntax().text_range();
+            (ast::AnyHasVisibility::new(in_file_source.value), range, file_id.file_id(db))
         }
         // FIXME
         hir::ModuleDef::Macro(_) => return None,
@@ -213,7 +153,7 @@ fn target_data_for_def(
         hir::ModuleDef::Variant(_) | hir::ModuleDef::BuiltinType(_) => return None,
     };
 
-    Some((offset, current_visibility, target, target_file, target_name))
+    Some((offset, target, target_file, target_name))
 }
 
 #[cfg(test)]
@@ -296,44 +236,6 @@ struct Foo;
     }
 
     #[test]
-    fn fix_visibility_of_struct_field() {
-        check_assist(
-            fix_visibility,
-            r"mod foo { pub struct Foo { bar: (), } }
-              fn main() { foo::Foo { $0bar: () }; } ",
-            r"mod foo { pub struct Foo { $0pub(crate) bar: (), } }
-              fn main() { foo::Foo { bar: () }; } ",
-        );
-        check_assist(
-            fix_visibility,
-            r"
-//- /lib.rs
-mod foo;
-fn main() { foo::Foo { $0bar: () }; }
-//- /foo.rs
-pub struct Foo { bar: () }
-",
-            r"pub struct Foo { $0pub(crate) bar: () }
-",
-        );
-        check_assist_not_applicable(
-            fix_visibility,
-            r"mod foo { pub struct Foo { pub bar: (), } }
-              fn main() { foo::Foo { $0bar: () }; } ",
-        );
-        check_assist_not_applicable(
-            fix_visibility,
-            r"
-//- /lib.rs
-mod foo;
-fn main() { foo::Foo { $0bar: () }; }
-//- /foo.rs
-pub struct Foo { pub bar: () }
-",
-        );
-    }
-
-    #[test]
     fn fix_visibility_of_enum_variant_field() {
         // Enum variants, as well as their fields, always get the enum's visibility. In fact, rustc
         // rejects any visibility specifiers on them, so this assist should never fire on them.
@@ -365,44 +267,6 @@ mod foo;
 fn main() { foo::Foo { $0bar: () }; }
 //- /foo.rs
 pub struct Foo { pub bar: () }
-",
-        );
-    }
-
-    #[test]
-    fn fix_visibility_of_union_field() {
-        check_assist(
-            fix_visibility,
-            r"mod foo { pub union Foo { bar: (), } }
-              fn main() { foo::Foo { $0bar: () }; } ",
-            r"mod foo { pub union Foo { $0pub(crate) bar: (), } }
-              fn main() { foo::Foo { bar: () }; } ",
-        );
-        check_assist(
-            fix_visibility,
-            r"
-//- /lib.rs
-mod foo;
-fn main() { foo::Foo { $0bar: () }; }
-//- /foo.rs
-pub union Foo { bar: () }
-",
-            r"pub union Foo { $0pub(crate) bar: () }
-",
-        );
-        check_assist_not_applicable(
-            fix_visibility,
-            r"mod foo { pub union Foo { pub bar: (), } }
-              fn main() { foo::Foo { $0bar: () }; } ",
-        );
-        check_assist_not_applicable(
-            fix_visibility,
-            r"
-//- /lib.rs
-mod foo;
-fn main() { foo::Foo { $0bar: () }; }
-//- /foo.rs
-pub union Foo { pub bar: () }
 ",
         );
     }
@@ -572,19 +436,6 @@ foo::Bar$0
 pub(crate) struct Bar;
 ",
             r"$0pub struct Bar;
-",
-        );
-        check_assist(
-            fix_visibility,
-            r"
-//- /main.rs crate:a deps:foo
-fn main() {
-    foo::Foo { $0bar: () };
-}
-//- /lib.rs crate:foo
-pub struct Foo { pub(crate) bar: () }
-",
-            r"pub struct Foo { $0pub bar: () }
 ",
         );
     }

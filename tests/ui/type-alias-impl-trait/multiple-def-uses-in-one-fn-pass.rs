@@ -1,25 +1,19 @@
-// check-pass
+//@ check-pass
 #![feature(type_alias_impl_trait)]
 
 type X<A: ToString + Clone, B: ToString + Clone> = impl ToString;
 
+#[define_opaque(X)]
 fn f<A: ToString + Clone, B: ToString + Clone>(a: A, b: B) -> (X<A, B>, X<A, B>) {
     (a.clone(), a)
 }
 
-pub trait Captures<'a> {}
-
-impl<'a, T: ?Sized> Captures<'a> for T {}
-
-type Foo<'a, 'b> = impl std::fmt::Debug + Captures<'a> + Captures<'b>;
-
-fn foo<'x, 'y>(i: &'x i32, j: &'y i32) -> (Foo<'x, 'y>, Foo<'y, 'x>) {
-    (i, j)
+type Tait<'x> = impl Sized;
+#[define_opaque(Tait)]
+fn define<'a: 'b, 'b: 'a>(x: &'a u8, y: &'b u8) -> (Tait<'a>, Tait<'b>) {
+    ((), ())
 }
 
 fn main() {
     println!("{}", <X<_, _> as ToString>::to_string(&f(42_i32, String::new()).1));
-    let meh = 42;
-    let muh = 69;
-    println!("{:?}", foo(&meh, &muh));
 }

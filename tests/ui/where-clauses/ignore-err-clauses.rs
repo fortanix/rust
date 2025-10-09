@@ -7,6 +7,7 @@ where
     //~^ ERROR cannot find type `UUU` in this scope
 {
     x + x
+    //~^ ERROR use of moved value: `x`
 }
 
 fn main() {

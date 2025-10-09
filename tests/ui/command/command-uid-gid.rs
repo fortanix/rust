@@ -1,8 +1,9 @@
-// run-pass
-// ignore-android
-// ignore-emscripten
-// ignore-sgx
-// ignore-fuchsia no '/bin/sh', '/bin/ls'
+//@ run-pass
+//@ ignore-android
+//@ ignore-fuchsia no '/bin/sh', '/bin/ls'
+//@ ignore-tvos `Command::uid/gid` requires fork, which is prohibited
+//@ ignore-watchos `Command::uid/gid` requires fork, which is prohibited
+//@ needs-subprocess
 
 #![feature(rustc_private)]
 

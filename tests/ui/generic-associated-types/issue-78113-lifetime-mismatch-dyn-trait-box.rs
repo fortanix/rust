@@ -1,6 +1,6 @@
 // Test for diagnostics when we have mismatched lifetime due to implicit 'static lifetime in GATs
 
-// check-fail
+//@ check-fail
 
 pub trait A {}
 impl A for &dyn A {}
@@ -12,7 +12,7 @@ pub trait B {
 
 impl B for () {
     // `'a` doesn't match implicit `'static`: suggest `'_`
-    type T<'a> = Box<dyn A + 'a>; //~ incompatible lifetime on type
+    type T<'a> = Box<dyn A + 'a>; //~ ERROR incompatible lifetime on type
 }
 
 trait C {}
@@ -22,7 +22,7 @@ pub trait D {
 }
 impl D for () {
     // `'a` doesn't match explicit `'static`: we *should* suggest removing `'static`
-    type T<'a> = Box<dyn A + 'a>; //~ incompatible lifetime on type
+    type T<'a> = Box<dyn A + 'a>; //~ ERROR incompatible lifetime on type
 }
 
 trait E {}
@@ -32,7 +32,7 @@ pub trait F {
 }
 impl F for () {
     // `'a` doesn't match explicit `'static`: suggest `'_`
-    type T<'a> = (Box<dyn A + 'a>, Box<dyn A + 'a>); //~ incompatible lifetime on type
+    type T<'a> = (Box<dyn A + 'a>, Box<dyn A + 'a>); //~ ERROR incompatible lifetime on type
 }
 
 fn main() {}

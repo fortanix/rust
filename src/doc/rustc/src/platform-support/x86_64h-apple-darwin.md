@@ -8,7 +8,7 @@ Target for macOS on late-generation `x86_64` Apple chips, usable as the
 
 ## Target maintainers
 
-- Thom Chiovoloni `thom@shift.click` <https://github.com/thomcc>
+[@thomcc](https://github.com/thomcc)
 
 ## Requirements
 
@@ -20,17 +20,16 @@ will fail to load on machines that do not support this.
 
 It should support the full standard library (`std` and `alloc` either with
 default or user-defined allocators). This target is probably most useful when
-targetted via cross-compilation (including from `x86_64-apple-darwin`), but if
+targeted via cross-compilation (including from `x86_64-apple-darwin`), but if
 built manually, the host tools work.
 
-It is similar to `x86_64-apple-darwin` in nearly all respects, although the
-minimum supported OS version is slightly higher (it requires 10.8 rather than
-`x86_64-apple-darwin`'s 10.7).
+It is similar to [`x86_64-apple-darwin`](apple-darwin.md) in nearly all
+respects.
 
 ## Building the target
 
 Users on Apple targets can build this by adding it to the `target` list in
-`config.toml`, or with `-Zbuild-std`.
+`bootstrap.toml`, or with `-Zbuild-std`.
 
 ## Building Rust programs
 
@@ -49,7 +48,7 @@ suite seems to work.
 
 Cross-compilation to this target from Apple hosts should generally work without
 much configuration, so long as XCode and the CommandLineTools are installed.
-Targetting it from non-Apple hosts is difficult, but no moreso than targetting
+Targeting it from non-Apple hosts is difficult, but no more so than targeting
 `x86_64-apple-darwin`.
 
 When compiling C code for this target, either the "`x86_64h-apple-macosx*`" LLVM

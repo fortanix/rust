@@ -4,28 +4,31 @@ mod macros;
 mod mod_resolution;
 mod primitives;
 
-use std::sync::Arc;
+use base_db::RootQueryDb;
+use expect_test::{Expect, expect};
+use test_fixture::WithFixture;
 
-use base_db::{fixture::WithFixture, SourceDatabase};
-use expect_test::{expect, Expect};
+use crate::{
+    nameres::{DefMap, crate_def_map},
+    test_db::TestDB,
+};
 
-use crate::{db::DefDatabase, test_db::TestDB};
-
-use super::DefMap;
-
-fn compute_crate_def_map(ra_fixture: &str) -> Arc<DefMap> {
+fn compute_crate_def_map(
+    #[rust_analyzer::rust_fixture] ra_fixture: &str,
+    cb: impl FnOnce(&DefMap),
+) {
     let db = TestDB::with_files(ra_fixture);
-    let krate = db.crate_graph().iter().next().unwrap();
-    db.crate_def_map(krate)
+    let krate = db.fetch_test_crate();
+    cb(crate_def_map(&db, krate));
 }
 
-fn render_crate_def_map(ra_fixture: &str) -> String {
+fn render_crate_def_map(#[rust_analyzer::rust_fixture] ra_fixture: &str) -> String {
     let db = TestDB::with_files(ra_fixture);
-    let krate = db.crate_graph().iter().next().unwrap();
-    db.crate_def_map(krate).dump(&db)
+    let krate = db.fetch_test_crate();
+    crate_def_map(&db, krate).dump(&db)
 }
 
-fn check(ra_fixture: &str, expect: Expect) {
+fn check(#[rust_analyzer::rust_fixture] ra_fixture: &str, expect: Expect) {
     let actual = render_crate_def_map(ra_fixture);
     expect.assert_eq(&actual);
 }
@@ -105,8 +108,8 @@ mod a {
             c: t
 
             crate::a::b::c
-            A: v
-            b: t
+            A: vg
+            b: tg
         "#]],
     );
 }
@@ -169,7 +172,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Foo: t v
+            Foo: ti vi
             foo: t
 
             crate::foo
@@ -195,8 +198,8 @@ pub enum Quux {};
 "#,
         expect![[r#"
             crate
-            Baz: t v
-            Quux: t
+            Baz: ti vi
+            Quux: ti
             foo: t
 
             crate::foo
@@ -226,11 +229,11 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t v
+            Baz: ti vi
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -258,8 +261,8 @@ pub enum Foo { Bar, Baz }
 "#,
         expect![[r#"
             crate
-            Bar: t v
-            Baz: t v
+            Bar: tg vg
+            Baz: tg vg
         "#]],
     );
 }
@@ -275,7 +278,7 @@ use self::E::V;
         expect![[r#"
             crate
             E: t
-            V: t v
+            V: ti vi
         "#]],
     );
 }
@@ -308,7 +311,7 @@ pub struct FromLib;
 
             crate::foo
             Bar: _
-            FromLib: t v
+            FromLib: ti vi
         "#]],
     );
 }
@@ -329,7 +332,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t
+            Baz: ti
             foo: t
 
             crate::foo
@@ -353,7 +356,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t v
+            Baz: ti vi
         "#]],
     );
 }
@@ -376,13 +379,59 @@ pub struct Arc;
         expect![[r#"
             crate
             alloc: t
-            alloc_crate: t
+            alloc_crate: te
             sync: t
 
             crate::alloc
 
             crate::sync
-            Arc: t v
+            Arc: ti vi
+        "#]],
+    );
+}
+
+#[test]
+fn extern_crate_reexport() {
+    check(
+        r#"
+//- /main.rs crate:main deps:importer
+use importer::*;
+use importer::extern_crate1::exported::*;
+use importer::allowed_reexport::*;
+use importer::extern_crate2::*;
+use importer::not_allowed_reexport1;
+use importer::not_allowed_reexport2;
+
+//- /importer.rs crate:importer deps:extern_crate1,extern_crate2
+extern crate extern_crate1;
+extern crate extern_crate2;
+
+pub use extern_crate1;
+pub use extern_crate1 as allowed_reexport;
+
+pub use ::extern_crate;
+pub use self::extern_crate as not_allowed_reexport1;
+pub use crate::extern_crate as not_allowed_reexport2;
+
+//- /extern_crate1.rs crate:extern_crate1
+pub mod exported {
+    pub struct PublicItem;
+    struct PrivateItem;
+}
+
+pub struct Exported;
+
+//- /extern_crate2.rs crate:extern_crate2
+pub struct NotExported;
+"#,
+        expect![[r#"
+            crate
+            Exported: tg vg
+            PublicItem: tg vg
+            allowed_reexport: tg
+            exported: tg
+            not_allowed_reexport1: _
+            not_allowed_reexport2: _
         "#]],
     );
 }
@@ -405,20 +454,19 @@ pub struct Arc;
         expect![[r#"
             crate
             alloc: t
-            alloc_crate: t
+            alloc_crate: te
             sync: t
 
             crate::alloc
 
             crate::sync
-            Arc: t v
+            Arc: ti vi
         "#]],
     );
 }
 
 #[test]
 fn macro_use_extern_crate_self() {
-    cov_mark::check!(ignore_macro_use_extern_crate_self);
     check(
         r#"
 //- /main.rs crate:main
@@ -427,7 +475,7 @@ extern crate self as bla;
 "#,
         expect![[r#"
             crate
-            bla: t
+            bla: te
         "#]],
     );
 }
@@ -448,7 +496,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t v
+            Baz: ti vi
         "#]],
     );
 }
@@ -466,7 +514,7 @@ pub struct Bar;
 "#,
         expect![[r#"
             crate
-            Bar: t v
+            Bar: ti vi
             foo: v
         "#]],
     );
@@ -493,9 +541,9 @@ fn no_std_prelude() {
         }
     "#,
         expect![[r#"
-        crate
-        Rust: t v
-    "#]],
+            crate
+            Rust: ti vi
+        "#]],
     );
 }
 
@@ -517,9 +565,9 @@ fn edition_specific_preludes() {
         }
     "#,
         expect![[r#"
-        crate
-        Rust2018: t v
-    "#]],
+            crate
+            Rust2018: ti vi
+        "#]],
     );
     check(
         r#"
@@ -534,9 +582,9 @@ fn edition_specific_preludes() {
         }
     "#,
         expect![[r#"
-        crate
-        Rust2021: t v
-    "#]],
+            crate
+            Rust2021: ti vi
+        "#]],
     );
 }
 
@@ -564,8 +612,8 @@ pub mod prelude {
 "#,
         expect![[r#"
             crate
-            Bar: t v
-            Foo: t v
+            Bar: ti vi
+            Foo: ti vi
         "#]],
     );
 }
@@ -591,7 +639,7 @@ pub mod prelude {
 "#,
         expect![[r#"
             crate
-            Bar: t v
+            Bar: ti vi
             Baz: _
             Foo: _
         "#]],
@@ -620,8 +668,8 @@ pub mod prelude {
         expect![[r#"
             crate
             Bar: _
-            Baz: t v
-            Foo: t v
+            Baz: ti vi
+            Foo: ti vi
         "#]],
     );
 }
@@ -644,12 +692,12 @@ mod b {
 "#,
         expect![[r#"
             crate
-            T: t v
+            T: ti vi
             a: t
             b: t
 
             crate::a
-            T: t v
+            T: t vg
 
             crate::b
             T: v
@@ -817,8 +865,8 @@ fn bar() {}
         expect![[r#"
             crate
             bar: v
-            baz: v
-            foo: t
+            baz: vi
+            foo: ti
         "#]],
     );
 }
@@ -837,7 +885,7 @@ use self::m::S::{self};
     "#,
         expect![[r#"
             crate
-            S: t
+            S: ti
             m: t
 
             crate::m
@@ -861,8 +909,8 @@ pub const settings: () = ();
         "#,
         expect![[r#"
             crate
-            Settings: t v
-            settings: v
+            Settings: ti vi
+            settings: vi
         "#]],
     )
 }
@@ -891,8 +939,8 @@ pub struct Struct;
         "#,
         expect![[r#"
             crate
-            Struct: t v
-            dep: t
+            Struct: ti vi
+            dep: te
         "#]],
     );
 }
@@ -918,13 +966,13 @@ use some_module::unknown_func;
             crate
             other_module: t
             some_module: t
-            unknown_func: v
+            unknown_func: vi
 
             crate::other_module
             some_submodule: t
 
             crate::other_module::some_submodule
-            unknown_func: v
+            unknown_func: vi
 
             crate::some_module
             unknown_func: v

@@ -1,7 +1,9 @@
-use clippy_utils::diagnostics::span_lint;
-use rustc_ast::ast::{Expr, ExprKind};
+use clippy_utils::diagnostics::span_lint_and_sugg;
+use clippy_utils::source::{HasSession, snippet_with_applicability, snippet_with_context};
+use rustc_ast::ast::{Expr, ExprKind, MethodCall};
+use rustc_errors::Applicability;
 use rustc_lint::{EarlyContext, EarlyLintPass};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -12,7 +14,7 @@ declare_clippy_lint! {
     /// mistake.
     ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// fn simple_double_parens() -> i32 {
     ///     ((0))
     /// }
@@ -22,9 +24,9 @@ declare_clippy_lint! {
     /// ```
     ///
     /// Use instead:
-    /// ```rust
+    /// ```no_run
     /// fn simple_no_parens() -> i32 {
-    ///     0
+    ///     (0)
     /// }
     ///
     /// # fn foo(bar: usize) {}
@@ -40,32 +42,51 @@ declare_lint_pass!(DoubleParens => [DOUBLE_PARENS]);
 
 impl EarlyLintPass for DoubleParens {
     fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &Expr) {
-        if expr.span.from_expansion() {
-            return;
-        }
-
-        let msg: &str = "consider removing unnecessary double parentheses";
-
-        match expr.kind {
-            ExprKind::Paren(ref in_paren) => match in_paren.kind {
-                ExprKind::Paren(_) | ExprKind::Tup(_) => {
-                    span_lint(cx, DOUBLE_PARENS, expr.span, msg);
-                },
-                _ => {},
-            },
-            ExprKind::Call(_, ref params) => {
-                if params.len() == 1 {
-                    let param = &params[0];
-                    if let ExprKind::Paren(_) = param.kind {
-                        span_lint(cx, DOUBLE_PARENS, param.span, msg);
-                    }
+        match &expr.kind {
+            // ((..))
+            // ^^^^^^ expr
+            //  ^^^^  inner
+            ExprKind::Paren(inner) if matches!(inner.kind, ExprKind::Paren(_) | ExprKind::Tup(_)) => {
+                // suggest removing the outer parens
+                if expr.span.eq_ctxt(inner.span) {
+                    let mut applicability = Applicability::MachineApplicable;
+                    // We don't need to use `snippet_with_context` here, because:
+                    // - if `inner`'s `ctxt` is from macro, we don't lint in the first place (see the check above)
+                    // - otherwise, calling `snippet_with_applicability` on a not-from-macro span is fine
+                    let sugg = snippet_with_applicability(cx.sess(), inner.span, "_", &mut applicability);
+                    span_lint_and_sugg(
+                        cx,
+                        DOUBLE_PARENS,
+                        expr.span,
+                        "unnecessary parentheses",
+                        "remove them",
+                        sugg.to_string(),
+                        applicability,
+                    );
                 }
             },
-            ExprKind::MethodCall(ref call) => {
-                if let [ref arg] = call.args[..] {
-                    if let ExprKind::Paren(_) = arg.kind {
-                        span_lint(cx, DOUBLE_PARENS, arg.span, msg);
-                    }
+
+            // func((n))
+            // ^^^^^^^^^ expr
+            //      ^^^  arg
+            //       ^   inner
+            ExprKind::Call(_, args) | ExprKind::MethodCall(box MethodCall { args, .. })
+                if let [arg] = &**args
+                    && let ExprKind::Paren(inner) = &arg.kind =>
+            {
+                // suggest removing the inner parens
+                if expr.span.eq_ctxt(arg.span) {
+                    let mut applicability = Applicability::MachineApplicable;
+                    let sugg = snippet_with_context(cx.sess(), inner.span, arg.span.ctxt(), "_", &mut applicability).0;
+                    span_lint_and_sugg(
+                        cx,
+                        DOUBLE_PARENS,
+                        arg.span,
+                        "unnecessary parentheses",
+                        "remove them",
+                        sugg.to_string(),
+                        applicability,
+                    );
                 }
             },
             _ => {},

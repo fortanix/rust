@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 trait Foo {
@@ -9,6 +9,7 @@ impl Foo for i32 {
     type Assoc = u32;
 }
 type ImplTrait = impl Sized;
+#[define_opaque(ImplTrait)]
 fn constrain() -> ImplTrait {
     1u64
 }

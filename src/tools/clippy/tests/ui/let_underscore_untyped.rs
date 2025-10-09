@@ -1,8 +1,14 @@
+//@aux-build: proc_macros.rs
+
 #![allow(unused)]
 #![warn(clippy::let_underscore_untyped)]
 
+extern crate proc_macros;
+use proc_macros::with_span;
+
+use std::boxed::Box;
+use std::fmt::Display;
 use std::future::Future;
-use std::{boxed::Box, fmt::Display};
 
 fn a() -> u32 {
     1
@@ -32,14 +38,28 @@ fn g() -> impl Fn() {
     || {}
 }
 
+with_span!(
+    span
+
+    fn dont_lint_proc_macro() {
+        let _ = a();
+    }
+);
+
 fn main() {
     let _ = a();
+    //~^ let_underscore_untyped
     let _ = b(1);
+    //~^ let_underscore_untyped
     let _ = c();
     let _ = d(&1);
+    //~^ let_underscore_untyped
     let _ = e();
+    //~^ let_underscore_untyped
     let _ = f();
+    //~^ let_underscore_untyped
     let _ = g();
+    let closure = || {};
 
     _ = a();
     _ = b(1);
@@ -57,3 +77,5 @@ fn main() {
     #[allow(clippy::let_underscore_untyped)]
     let _ = a();
 }
+
+async fn dont_lint_async_prototype(_: u8) {}

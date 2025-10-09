@@ -1,6 +1,6 @@
 //! Checks that a list of items is in alphabetical order
 //!
-//! To use, use the following annotation in the code:
+//! Use the following marker in the code:
 //! ```rust
 //! // tidy-alphabetical-start
 //! fn aaa() {}
@@ -10,16 +10,25 @@
 //! ```
 //!
 //! The following lines are ignored:
+//! - Empty lines
 //! - Lines that are indented with more or less spaces than the first line
-//! - Lines starting with `//`, `#[`, `)`, `]`, `}` if the comment has the same indentation as
-//!   the first line
+//! - Lines starting with `//`, `#` (except those starting with `#!`), `)`, `]`, `}` if the comment
+//!   has the same indentation as the first line
+//! - Lines starting with a closing delimiter (`)`, `[`, `}`) are ignored.
 //!
-//! If a line ends with an opening bracket, the line is ignored and the next line will have
-//! its extra indentation ignored.
+//! If a line ends with an opening delimiter, we effectively join the following line to it before
+//! checking it. E.g. `foo(\nbar)` is treated like `foo(bar)`.
 
-use std::{fmt::Display, path::Path};
+use std::cmp::Ordering;
+use std::fmt::Display;
+use std::iter::Peekable;
+use std::path::Path;
 
+use crate::diagnostics::{CheckId, DiagCtx, RunningCheck};
 use crate::walk::{filter_dirs, walk};
+
+#[cfg(test)]
+mod tests;
 
 fn indentation(line: &str) -> usize {
     line.find(|c| c != ' ').unwrap_or(0)
@@ -29,28 +38,33 @@ fn is_close_bracket(c: char) -> bool {
     matches!(c, ')' | ']' | '}')
 }
 
-// Don't let tidy check this here :D
-const START_COMMENT: &str = concat!("// tidy-alphabetical", "-start");
-const END_COMMENT: &str = "// tidy-alphabetical-end";
+const START_MARKER: &str = "tidy-alphabetical-start";
+const END_MARKER: &str = "tidy-alphabetical-end";
 
 fn check_section<'a>(
     file: impl Display,
     lines: impl Iterator<Item = (usize, &'a str)>,
-    bad: &mut bool,
+    check: &mut RunningCheck,
 ) {
-    let content_lines = lines.take_while(|(_, line)| !line.contains(END_COMMENT));
-
     let mut prev_line = String::new();
     let mut first_indent = None;
     let mut in_split_line = None;
 
-    for (line_idx, line) in content_lines {
-        if line.contains(START_COMMENT) {
-            tidy_error!(
-                bad,
-                "{file}:{} found `{START_COMMENT}` expecting `{END_COMMENT}`",
-                line_idx
-            )
+    for (idx, line) in lines {
+        if line.is_empty() {
+            continue;
+        }
+
+        if line.contains(START_MARKER) {
+            check.error(format!(
+                "{file}:{} found `{START_MARKER}` expecting `{END_MARKER}`",
+                idx + 1
+            ));
+            return;
+        }
+
+        if line.contains(END_MARKER) {
+            return;
         }
 
         let indent = first_indent.unwrap_or_else(|| {
@@ -60,6 +74,7 @@ fn check_section<'a>(
         });
 
         let line = if let Some(prev_split_line) = in_split_line {
+            // Join the split lines.
             in_split_line = None;
             format!("{prev_split_line}{}", line.trim_start())
         } else {
@@ -73,7 +88,7 @@ fn check_section<'a>(
         let trimmed_line = line.trim_start_matches(' ');
 
         if trimmed_line.starts_with("//")
-            || trimmed_line.starts_with("#[")
+            || (trimmed_line.starts_with('#') && !trimmed_line.starts_with("#!"))
             || trimmed_line.starts_with(is_close_bracket)
         {
             continue;
@@ -84,28 +99,99 @@ fn check_section<'a>(
             continue;
         }
 
-        let prev_line_trimmed_lowercase = prev_line.trim_start_matches(' ').to_lowercase();
+        let prev_line_trimmed_lowercase = prev_line.trim_start_matches(' ');
 
-        if trimmed_line.to_lowercase() < prev_line_trimmed_lowercase {
-            tidy_error!(bad, "{file}:{}: line not in alphabetical order", line_idx + 1,);
+        if version_sort(trimmed_line, prev_line_trimmed_lowercase).is_lt() {
+            check.error(format!("{file}:{}: line not in alphabetical order", idx + 1));
         }
 
         prev_line = line;
     }
+
+    check.error(format!("{file}: reached end of file expecting `{END_MARKER}`"));
 }
 
-pub fn check(path: &Path, bad: &mut bool) {
-    walk(path, |path, _is_dir| filter_dirs(path), &mut |entry, contents| {
-        let file = &entry.path().display();
+fn check_lines<'a>(
+    file: &impl Display,
+    mut lines: impl Iterator<Item = (usize, &'a str)>,
+    check: &mut RunningCheck,
+) {
+    while let Some((idx, line)) = lines.next() {
+        if line.contains(END_MARKER) {
+            check.error(format!(
+                "{file}:{} found `{END_MARKER}` expecting `{START_MARKER}`",
+                idx + 1
+            ));
+        }
 
-        let mut lines = contents.lines().enumerate().peekable();
-        while let Some((_, line)) = lines.next() {
-            if line.contains(START_COMMENT) {
-                check_section(file, &mut lines, bad);
-                if lines.peek().is_none() {
-                    tidy_error!(bad, "{file}: reached end of file expecting `{END_COMMENT}`")
+        if line.contains(START_MARKER) {
+            check_section(file, &mut lines, check);
+        }
+    }
+}
+
+pub fn check(path: &Path, diag_ctx: DiagCtx) {
+    let mut check = diag_ctx.start_check(CheckId::new("alphabetical").path(path));
+
+    let skip =
+        |path: &_, _is_dir| filter_dirs(path) || path.ends_with("tidy/src/alphabetical/tests.rs");
+
+    walk(path, skip, &mut |entry, contents| {
+        let file = &entry.path().display();
+        let lines = contents.lines().enumerate();
+        check_lines(file, lines, &mut check)
+    });
+}
+
+fn consume_numeric_prefix<I: Iterator<Item = char>>(it: &mut Peekable<I>) -> String {
+    let mut result = String::new();
+
+    while let Some(&c) = it.peek() {
+        if !c.is_numeric() {
+            break;
+        }
+
+        result.push(c);
+        it.next();
+    }
+
+    result
+}
+
+// A sorting function that is case-sensitive, and sorts sequences of digits by their numeric value,
+// so that `9` sorts before `12`.
+fn version_sort(a: &str, b: &str) -> Ordering {
+    let mut it1 = a.chars().peekable();
+    let mut it2 = b.chars().peekable();
+
+    while let (Some(x), Some(y)) = (it1.peek(), it2.peek()) {
+        match (x.is_numeric(), y.is_numeric()) {
+            (true, true) => {
+                let num1: String = consume_numeric_prefix(it1.by_ref());
+                let num2: String = consume_numeric_prefix(it2.by_ref());
+
+                let int1: u64 = num1.parse().unwrap();
+                let int2: u64 = num2.parse().unwrap();
+
+                // Compare strings when the numeric value is equal to handle "00" versus "0".
+                match int1.cmp(&int2).then_with(|| num1.cmp(&num2)) {
+                    Ordering::Equal => continue,
+                    different => return different,
                 }
             }
+            (false, false) => match x.cmp(y) {
+                Ordering::Equal => {
+                    it1.next();
+                    it2.next();
+                    continue;
+                }
+                different => return different,
+            },
+            (false, true) | (true, false) => {
+                return x.cmp(y);
+            }
         }
-    });
+    }
+
+    it1.next().cmp(&it2.next())
 }

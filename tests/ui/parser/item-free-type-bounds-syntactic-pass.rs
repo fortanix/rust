@@ -1,8 +1,8 @@
-// check-pass
+//@ check-pass
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 fn syntax() {
     type A: Ord;
     type B: Ord = u8;

@@ -2,7 +2,7 @@
 
 rustc_codegen_cranelift can be used as a near-drop-in replacement for `cargo build` or `cargo run` for existing projects.
 
-Assuming `$cg_clif_dir` is the directory you cloned this repo into and you followed the instructions (`y.rs prepare` and `y.rs build` or `test.sh`).
+Assuming `$cg_clif_dir` is the directory you cloned this repo into and you followed the instructions (`y.sh prepare` and `y.sh build` or `test.sh`).
 
 ## Cargo
 
@@ -38,14 +38,7 @@ $ $cg_clif_dir/dist/cargo-clif jit
 or
 
 ```bash
-$ $cg_clif_dir/dist/rustc-clif -Zunstable-features -Cllvm-args=mode=jit -Cprefer-dynamic my_crate.rs
-```
-
-There is also an experimental lazy jit mode. In this mode functions are only compiled once they are
-first called.
-
-```bash
-$ $cg_clif_dir/dist/cargo-clif lazy-jit
+$ $cg_clif_dir/dist/rustc-clif -Cllvm-args=jit-mode -Cprefer-dynamic my_crate.rs
 ```
 
 ## Shell
@@ -54,7 +47,7 @@ These are a few functions that allow you to easily run rust code from the shell 
 
 ```bash
 function jit_naked() {
-    echo "$@" | $cg_clif_dir/dist/rustc-clif - -Zunstable-features -Cllvm-args=mode=jit -Cprefer-dynamic
+    echo "$@" | $cg_clif_dir/dist/rustc-clif - -Zunstable-options -Cllvm-args=jit-mode -Cprefer-dynamic
 }
 
 function jit() {

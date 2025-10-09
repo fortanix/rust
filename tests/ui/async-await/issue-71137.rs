@@ -1,4 +1,4 @@
-// edition:2018
+//@ edition:2018
 #![feature(must_not_suspend)]
 #![allow(must_not_suspend)]
 
@@ -19,5 +19,5 @@ async fn wrong_mutex() {
 }
 
 fn main() {
-  fake_spawn(wrong_mutex()); //~ Error future cannot be sent between threads safely
+  fake_spawn(wrong_mutex()); //~ ERROR future cannot be sent between threads safely
 }

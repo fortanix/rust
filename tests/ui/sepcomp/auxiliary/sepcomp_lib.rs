@@ -1,4 +1,4 @@
-// compile-flags: -C codegen-units=3 --crate-type=rlib,dylib -g
+//@ compile-flags: -C codegen-units=3 --crate-type=rlib,dylib -g
 
 pub mod a {
     pub fn one() -> usize {
@@ -13,8 +13,8 @@ pub mod b {
 }
 
 pub mod c {
-    use a::one;
-    use b::two;
+    use crate::a::one;
+    use crate::b::two;
     pub fn three() -> usize {
         one() + two()
     }

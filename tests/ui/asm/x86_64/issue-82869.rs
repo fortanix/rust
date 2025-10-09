@@ -1,5 +1,5 @@
-// needs-asm-support
-// only-x86_64
+//@ needs-asm-support
+//@ only-x86_64
 // Make sure rustc doesn't ICE on asm! for a foreign architecture.
 
 #![crate_type = "rlib"]
@@ -12,9 +12,9 @@ pub unsafe fn aarch64(a: f64, b: f64) -> f64 {
         || {};
         b
     });
-    //~^^^^ invalid register class
-    //~^^^^^ invalid register class
-    //~^^^^^^ invalid register
+    //~^^^^ ERROR invalid register class
+    //~^^^^^ ERROR invalid register class
+    //~^^^^^^ ERROR invalid register
     c
 }
 

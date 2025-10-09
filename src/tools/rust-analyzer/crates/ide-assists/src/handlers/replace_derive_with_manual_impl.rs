@@ -1,21 +1,20 @@
 use hir::{InFile, ModuleDef};
-use ide_db::{
-    helpers::mod_path_to_ast, imports::import_assets::NameToImport, items_locator,
-    syntax_helpers::insert_whitespace_into_node::insert_ws_into,
-};
+use ide_db::{helpers::mod_path_to_ast, imports::import_assets::NameToImport, items_locator};
 use itertools::Itertools;
 use syntax::{
-    ast::{self, AstNode, HasName},
     SyntaxKind::WHITESPACE,
+    T,
+    ast::{self, AstNode, HasName, make},
+    syntax_editor::{Position, SyntaxEditor},
 };
 
 use crate::{
-    assist_context::{AssistContext, Assists, SourceChangeBuilder},
+    AssistConfig, AssistId,
+    assist_context::{AssistContext, Assists},
     utils::{
-        add_trait_assoc_items_to_impl, filter_assoc_items, gen_trait_fn_body,
-        generate_trait_impl_text, render_snippet, Cursor, DefaultMethods,
+        DefaultMethods, IgnoreAssocItems, add_trait_assoc_items_to_impl, filter_assoc_items,
+        gen_trait_fn_body, generate_trait_impl,
     },
-    AssistId, AssistKind,
 };
 
 // Assist: replace_derive_with_manual_impl
@@ -46,12 +45,12 @@ pub(crate) fn replace_derive_with_manual_impl(
 ) -> Option<()> {
     let attr = ctx.find_node_at_offset_with_descend::<ast::Attr>()?;
     let path = attr.path()?;
-    let hir_file = ctx.sema.hir_file_for(attr.syntax());
-    if !hir_file.is_derive_attr_pseudo_expansion(ctx.db()) {
+    let macro_file = ctx.sema.hir_file_for(attr.syntax()).macro_file()?;
+    if !macro_file.is_derive_attr_pseudo_expansion(ctx.db()) {
         return None;
     }
 
-    let InFile { file_id, value } = hir_file.call_node(ctx.db())?;
+    let InFile { file_id, value } = macro_file.call_node(ctx.db());
     if file_id.is_macro() {
         // FIXME: make this work in macro files
         return None;
@@ -59,7 +58,7 @@ pub(crate) fn replace_derive_with_manual_impl(
     // collect the derive paths from the #[derive] expansion
     let current_derives = ctx
         .sema
-        .parse_or_expand(hir_file)?
+        .parse_or_expand(macro_file.into())
         .descendants()
         .filter_map(ast::Attr::cast)
         .filter_map(|attr| attr.path())
@@ -71,23 +70,24 @@ pub(crate) fn replace_derive_with_manual_impl(
 
     let current_module = ctx.sema.scope(adt.syntax())?.module();
     let current_crate = current_module.krate();
+    let current_edition = current_crate.edition(ctx.db());
+    let cfg = ctx.config.find_path_confg(ctx.sema.is_nightly(current_crate));
 
     let found_traits = items_locator::items_with_name(
-        &ctx.sema,
+        ctx.db(),
         current_crate,
         NameToImport::exact_case_sensitive(path.segments().last()?.to_string()),
-        items_locator::AssocItemSearch::Exclude,
-        Some(items_locator::DEFAULT_QUERY_SEARCH_LIMIT.inner()),
+        items_locator::AssocSearchMode::Exclude,
     )
-    .filter_map(|item| match item.as_module_def()? {
+    .filter_map(|(item, _)| match item.into_module_def() {
         ModuleDef::Trait(trait_) => Some(trait_),
         _ => None,
     })
     .flat_map(|trait_| {
         current_module
-            .find_use_path(ctx.sema.db, hir::ModuleDef::Trait(trait_), ctx.config.prefer_no_std)
+            .find_path(ctx.sema.db, hir::ModuleDef::Trait(trait_), cfg)
             .as_ref()
-            .map(mod_path_to_ast)
+            .map(|path| mod_path_to_ast(path, current_edition))
             .zip(Some(trait_))
     });
 
@@ -126,102 +126,118 @@ fn add_assist(
     let annotated_name = adt.name()?;
     let label = format!("Convert to manual `impl {replace_trait_path} for {annotated_name}`");
 
-    acc.add(
-        AssistId("replace_derive_with_manual_impl", AssistKind::Refactor),
-        label,
-        target,
-        |builder| {
-            let insert_pos = adt.syntax().text_range().end();
-            let impl_def_with_items =
-                impl_def_from_trait(&ctx.sema, adt, &annotated_name, trait_, replace_trait_path);
-            update_attribute(builder, old_derives, old_tree, old_trait_path, attr);
-            let trait_path = replace_trait_path.to_string();
-            match (ctx.config.snippet_cap, impl_def_with_items) {
-                (None, _) => {
-                    builder.insert(insert_pos, generate_trait_impl_text(adt, &trait_path, ""))
-                }
-                (Some(cap), None) => builder.insert_snippet(
-                    cap,
-                    insert_pos,
-                    generate_trait_impl_text(adt, &trait_path, "    $0"),
-                ),
-                (Some(cap), Some((impl_def, first_assoc_item))) => {
-                    let mut cursor = Cursor::Before(first_assoc_item.syntax());
-                    let placeholder;
-                    if let ast::AssocItem::Fn(ref func) = first_assoc_item {
-                        if let Some(m) = func.syntax().descendants().find_map(ast::MacroCall::cast)
-                        {
-                            if m.syntax().text() == "todo!()" {
-                                placeholder = m;
-                                cursor = Cursor::Replace(placeholder.syntax());
-                            }
-                        }
-                    }
+    acc.add(AssistId::refactor("replace_derive_with_manual_impl"), label, target, |builder| {
+        let insert_after = Position::after(adt.syntax());
+        let impl_is_unsafe = trait_.map(|s| s.is_unsafe(ctx.db())).unwrap_or(false);
+        let impl_def = impl_def_from_trait(
+            &ctx.sema,
+            ctx.config,
+            adt,
+            &annotated_name,
+            trait_,
+            replace_trait_path,
+            impl_is_unsafe,
+        );
 
-                    let rendered = render_snippet(cap, impl_def.syntax(), cursor);
-                    builder.insert_snippet(cap, insert_pos, format!("\n\n{rendered}"))
+        let mut editor = builder.make_editor(attr.syntax());
+        update_attribute(&mut editor, old_derives, old_tree, old_trait_path, attr);
+
+        let trait_path = make::ty_path(replace_trait_path.clone());
+
+        let (impl_def, first_assoc_item) = if let Some(impl_def) = impl_def {
+            (
+                impl_def.clone(),
+                impl_def.assoc_item_list().and_then(|list| list.assoc_items().next()),
+            )
+        } else {
+            (generate_trait_impl(impl_is_unsafe, adt, trait_path), None)
+        };
+
+        if let Some(cap) = ctx.config.snippet_cap {
+            if let Some(first_assoc_item) = first_assoc_item {
+                if let ast::AssocItem::Fn(ref func) = first_assoc_item
+                    && let Some(m) = func.syntax().descendants().find_map(ast::MacroCall::cast)
+                    && m.syntax().text() == "todo!()"
+                {
+                    // Make the `todo!()` a placeholder
+                    builder.add_placeholder_snippet(cap, m);
+                } else {
+                    // If we haven't already added a snippet, add a tabstop before the generated function
+                    builder.add_tabstop_before(cap, first_assoc_item);
                 }
-            };
-        },
-    )
+            } else if let Some(l_curly) =
+                impl_def.assoc_item_list().and_then(|it| it.l_curly_token())
+            {
+                builder.add_tabstop_after_token(cap, l_curly);
+            }
+        }
+
+        editor.insert_all(
+            insert_after,
+            vec![make::tokens::blank_line().into(), impl_def.syntax().clone().into()],
+        );
+        builder.add_file_edits(ctx.vfs_file_id(), editor);
+    })
 }
 
 fn impl_def_from_trait(
     sema: &hir::Semantics<'_, ide_db::RootDatabase>,
+    config: &AssistConfig,
     adt: &ast::Adt,
     annotated_name: &ast::Name,
     trait_: Option<hir::Trait>,
     trait_path: &ast::Path,
-) -> Option<(ast::Impl, ast::AssocItem)> {
+    impl_is_unsafe: bool,
+) -> Option<ast::Impl> {
     let trait_ = trait_?;
     let target_scope = sema.scope(annotated_name.syntax())?;
-    let trait_items = filter_assoc_items(sema, &trait_.items(sema.db), DefaultMethods::No);
+
+    // Keep assoc items of local crates even if they have #[doc(hidden)] attr.
+    let ignore_items = if trait_.module(sema.db).krate().origin(sema.db).is_local() {
+        IgnoreAssocItems::No
+    } else {
+        IgnoreAssocItems::DocHiddenAttrPresent
+    };
+
+    let trait_items =
+        filter_assoc_items(sema, &trait_.items(sema.db), DefaultMethods::No, ignore_items);
+
     if trait_items.is_empty() {
         return None;
     }
-    let impl_def = {
-        use syntax::ast::Impl;
-        let text = generate_trait_impl_text(adt, trait_path.to_string().as_str(), "");
-        let parse = syntax::SourceFile::parse(&text);
-        let node = match parse.tree().syntax().descendants().find_map(Impl::cast) {
-            Some(it) => it,
-            None => {
-                panic!(
-                    "Failed to make ast node `{}` from text {}",
-                    std::any::type_name::<Impl>(),
-                    text
-                )
-            }
+    let impl_def = generate_trait_impl(impl_is_unsafe, adt, make::ty_path(trait_path.clone()));
+
+    let assoc_items =
+        add_trait_assoc_items_to_impl(sema, config, &trait_items, trait_, &impl_def, &target_scope);
+    let assoc_item_list = if let Some((first, other)) =
+        assoc_items.split_first().map(|(first, other)| (first.clone_subtree(), other))
+    {
+        let first_item = if let ast::AssocItem::Fn(ref func) = first
+            && let Some(body) = gen_trait_fn_body(func, trait_path, adt, None)
+            && let Some(func_body) = func.body()
+        {
+            let mut editor = SyntaxEditor::new(first.syntax().clone());
+            editor.replace(func_body.syntax(), body.syntax());
+            ast::AssocItem::cast(editor.finish().new_root().clone())
+        } else {
+            Some(first.clone())
         };
-        let node = node.clone_subtree();
-        assert_eq!(node.syntax().text_range().start(), 0.into());
-        node
-    };
+        let items = first_item.into_iter().chain(other.iter().cloned()).collect();
+        make::assoc_item_list(Some(items))
+    } else {
+        make::assoc_item_list(None)
+    }
+    .clone_for_update();
 
-    let trait_items = trait_items
-        .into_iter()
-        .map(|it| {
-            if sema.hir_file_for(it.syntax()).is_macro() {
-                if let Some(it) = ast::AssocItem::cast(insert_ws_into(it.syntax().clone())) {
-                    return it;
-                }
-            }
-            it.clone_for_update()
-        })
-        .collect();
-    let (impl_def, first_assoc_item) =
-        add_trait_assoc_items_to_impl(sema, trait_items, trait_, impl_def, target_scope);
-
-    // Generate a default `impl` function body for the derived trait.
-    if let ast::AssocItem::Fn(ref func) = first_assoc_item {
-        let _ = gen_trait_fn_body(func, trait_path, adt, None);
-    };
-
-    Some((impl_def, first_assoc_item))
+    let impl_def = impl_def.clone_subtree();
+    let mut editor = SyntaxEditor::new(impl_def.syntax().clone());
+    editor.replace(impl_def.assoc_item_list()?.syntax(), assoc_item_list.syntax());
+    let impl_def = ast::Impl::cast(editor.finish().new_root().clone())?;
+    Some(impl_def)
 }
 
 fn update_attribute(
-    builder: &mut SourceChangeBuilder,
+    editor: &mut SyntaxEditor,
     old_derives: &[ast::Path],
     old_tree: &ast::TokenTree,
     old_trait_path: &ast::Path,
@@ -234,26 +250,37 @@ fn update_attribute(
     let has_more_derives = !new_derives.is_empty();
 
     if has_more_derives {
-        let new_derives = format!("({})", new_derives.iter().format(", "));
-        builder.replace(old_tree.syntax().text_range(), new_derives);
-    } else {
-        let attr_range = attr.syntax().text_range();
-        builder.delete(attr_range);
+        // Make the paths into flat lists of tokens in a vec
+        let tt = new_derives.iter().map(|path| path.syntax().clone()).map(|node| {
+            node.descendants_with_tokens()
+                .filter_map(|element| element.into_token())
+                .collect::<Vec<_>>()
+        });
+        // ...which are interspersed with ", "
+        let tt = Itertools::intersperse(tt, vec![make::token(T![,]), make::tokens::single_space()]);
+        // ...wrap them into the appropriate `NodeOrToken` variant
+        let tt = tt.flatten().map(syntax::NodeOrToken::Token);
+        // ...and make them into a flat list of tokens
+        let tt = tt.collect::<Vec<_>>();
 
-        if let Some(line_break_range) = attr
-            .syntax()
-            .next_sibling_or_token()
-            .filter(|t| t.kind() == WHITESPACE)
-            .map(|t| t.text_range())
+        let new_tree = make::token_tree(T!['('], tt).clone_for_update();
+        editor.replace(old_tree.syntax(), new_tree.syntax());
+    } else {
+        // Remove the attr and any trailing whitespace
+
+        if let Some(line_break) =
+            attr.syntax().next_sibling_or_token().filter(|t| t.kind() == WHITESPACE)
         {
-            builder.delete(line_break_range);
+            editor.delete(line_break)
         }
+
+        editor.delete(attr.syntax())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_assist, check_assist_not_applicable};
+    use crate::tests::{check_assist, check_assist_no_snippet_cap, check_assist_not_applicable};
 
     use super::*;
 
@@ -275,6 +302,30 @@ struct Foo {
 
 impl core::fmt::Debug for Foo {
     $0fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Foo").field("bar", &self.bar).finish()
+    }
+}
+"#,
+        )
+    }
+    #[test]
+    fn add_custom_impl_without_snippet() {
+        check_assist_no_snippet_cap(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: fmt, derive
+#[derive(Debu$0g)]
+struct Foo {
+    bar: String,
+}
+"#,
+            r#"
+struct Foo {
+    bar: String,
+}
+
+impl core::fmt::Debug for Foo {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Foo").field("bar", &self.bar).finish()
     }
 }
@@ -1164,9 +1215,7 @@ struct Foo {
     bar: String,
 }
 
-impl Debug for Foo {
-    $0
-}
+impl Debug for Foo {$0}
             "#,
         )
     }
@@ -1187,9 +1236,7 @@ pub struct Foo {
     bar: String,
 }
 
-impl Debug for Foo {
-    $0
-}
+impl Debug for Foo {$0}
             "#,
         )
     }
@@ -1207,9 +1254,7 @@ struct Foo {}
 #[derive(Display, Serialize)]
 struct Foo {}
 
-impl Debug for Foo {
-    $0
-}
+impl Debug for Foo {$0}
             "#,
         )
     }
@@ -1359,6 +1404,23 @@ impl core::fmt::Debug for Foo {
         f.debug_struct("Foo").finish()
     }
 }
+"#,
+        )
+    }
+
+    #[test]
+    fn unsafeness_of_a_trait_observed() {
+        check_assist(
+            replace_derive_with_manual_impl,
+            r#"
+//- minicore: send, derive
+#[derive(Sen$0d)]
+pub struct Foo;
+"#,
+            r#"
+pub struct Foo;
+
+unsafe impl Send for Foo {$0}
 "#,
         )
     }

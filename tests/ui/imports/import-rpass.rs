@@ -1,11 +1,11 @@
-// run-pass
+//@ run-pass
 mod foo {
     pub fn x(y: isize) { println!("{}", y); }
 }
 
 mod bar {
-    use foo::x;
-    use foo::x as z;
+    use crate::foo::x;
+    use crate::foo::x as z;
     pub fn thing() { x(10); z(10); }
 }
 

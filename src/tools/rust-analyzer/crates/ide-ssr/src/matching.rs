@@ -2,16 +2,16 @@
 //! process of matching, placeholder values are recorded.
 
 use crate::{
+    SsrMatches,
     parsing::{Constraint, NodeKind, Placeholder, Var},
     resolving::{ResolvedPattern, ResolvedRule, UfcsCallInfo},
-    SsrMatches,
 };
-use hir::Semantics;
-use ide_db::{base_db::FileRange, FxHashMap};
+use hir::{FileRange, FindPathConfig, Semantics};
+use ide_db::{FxHashMap, base_db::RootQueryDb};
 use std::{cell::Cell, iter::Peekable};
 use syntax::{
-    ast::{self, AstNode, AstToken},
     SmolStr, SyntaxElement, SyntaxElementChildren, SyntaxKind, SyntaxNode, SyntaxToken,
+    ast::{self, AstNode, AstToken, HasGenericArgs},
 };
 
 // Creates a match error. If we're currently attempting to match some code that we thought we were
@@ -84,12 +84,12 @@ pub(crate) struct MatchFailed {
 /// Checks if `code` matches the search pattern found in `search_scope`, returning information about
 /// the match, if it does. Since we only do matching in this module and searching is done by the
 /// parent module, we don't populate nested matches.
-pub(crate) fn get_match(
+pub(crate) fn get_match<'db>(
     debug_active: bool,
-    rule: &ResolvedRule,
+    rule: &ResolvedRule<'db>,
     code: &SyntaxNode,
     restrict_range: &Option<FileRange>,
-    sema: &Semantics<'_, ide_db::RootDatabase>,
+    sema: &Semantics<'db, ide_db::RootDatabase>,
 ) -> Result<Match, MatchFailed> {
     record_match_fails_reasons_scope(debug_active, || {
         Matcher::try_match(rule, code, restrict_range, sema)
@@ -102,7 +102,7 @@ struct Matcher<'db, 'sema> {
     /// If any placeholders come from anywhere outside of this range, then the match will be
     /// rejected.
     restrict_range: Option<FileRange>,
-    rule: &'sema ResolvedRule,
+    rule: &'sema ResolvedRule<'db>,
 }
 
 /// Which phase of matching we're currently performing. We do two phases because most attempted
@@ -117,7 +117,7 @@ enum Phase<'a> {
 
 impl<'db, 'sema> Matcher<'db, 'sema> {
     fn try_match(
-        rule: &ResolvedRule,
+        rule: &ResolvedRule<'db>,
         code: &SyntaxNode,
         restrict_range: &Option<FileRange>,
         sema: &'sema Semantics<'db, ide_db::RootDatabase>,
@@ -125,9 +125,12 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
         let match_state = Matcher { sema, restrict_range: *restrict_range, rule };
         // First pass at matching, where we check that node types and idents match.
         match_state.attempt_match_node(&mut Phase::First, &rule.pattern.node, code)?;
-        match_state.validate_range(&sema.original_range(code))?;
+        let file_range = sema
+            .original_range_opt(code)
+            .ok_or(MatchFailed { reason: Some("def site definition".to_owned()) })?;
+        match_state.validate_range(&file_range)?;
         let mut the_match = Match {
-            range: sema.original_range(code),
+            range: file_range,
             matched_node: code.clone(),
             placeholder_values: FxHashMap::default(),
             ignored_comments: Vec::new(),
@@ -153,12 +156,11 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
     /// processing a macro expansion and we want to fail the match if we're working with a node that
     /// didn't originate from the token tree of the macro call.
     fn validate_range(&self, range: &FileRange) -> Result<(), MatchFailed> {
-        if let Some(restrict_range) = &self.restrict_range {
-            if restrict_range.file_id != range.file_id
-                || !restrict_range.range.contains_range(range.range)
-            {
-                fail_match!("Node originated from a macro");
-            }
+        if let Some(restrict_range) = &self.restrict_range
+            && (restrict_range.file_id != range.file_id
+                || !restrict_range.range.contains_range(range.range))
+        {
+            fail_match!("Node originated from a macro");
         }
         Ok(())
     }
@@ -175,7 +177,10 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                 self.check_constraint(constraint, code)?;
             }
             if let Phase::Second(matches_out) = phase {
-                let original_range = self.sema.original_range(code);
+                let original_range = self
+                    .sema
+                    .original_range_opt(code)
+                    .ok_or(MatchFailed { reason: Some("def site definition".to_owned()) })?;
                 // We validated the range for the node when we started the match, so the placeholder
                 // probably can't fail range validation, but just to be safe...
                 self.validate_range(&original_range)?;
@@ -310,6 +315,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
         Ok(())
     }
 
+    #[allow(clippy::only_used_in_recursion)]
     fn check_constraint(
         &self,
         constraint: &Constraint,
@@ -320,7 +326,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                 kind.matches(code)?;
             }
             Constraint::Not(sub) => {
-                if self.check_constraint(&*sub, code).is_ok() {
+                if self.check_constraint(sub, code).is_ok() {
                     fail_match!("Constraint {:?} failed for '{}'", constraint, code.text());
                 }
             }
@@ -351,8 +357,8 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                 )?;
                 self.attempt_match_opt(
                     phase,
-                    pattern_segment.param_list(),
-                    code_segment.param_list(),
+                    pattern_segment.parenthesized_arg_list(),
+                    code_segment.parenthesized_arg_list(),
                 )?;
             }
             if matches!(phase, Phase::Second(_)) {
@@ -397,30 +403,27 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
         // Build a map keyed by field name.
         let mut fields_by_name: FxHashMap<SmolStr, SyntaxNode> = FxHashMap::default();
         for child in code.children() {
-            if let Some(record) = ast::RecordExprField::cast(child.clone()) {
-                if let Some(name) = record.field_name() {
-                    fields_by_name.insert(name.text().into(), child.clone());
-                }
+            if let Some(record) = ast::RecordExprField::cast(child.clone())
+                && let Some(name) = record.field_name()
+            {
+                fields_by_name.insert(name.text().into(), child.clone());
             }
         }
         for p in pattern.children_with_tokens() {
-            if let SyntaxElement::Node(p) = p {
-                if let Some(name_element) = p.first_child_or_token() {
-                    if self.get_placeholder(&name_element).is_some() {
-                        // If the pattern is using placeholders for field names then order
-                        // independence doesn't make sense. Fall back to regular ordered
-                        // matching.
-                        return self.attempt_match_node_children(phase, pattern, code);
-                    }
-                    if let Some(ident) = only_ident(name_element) {
-                        let code_record = fields_by_name.remove(ident.text()).ok_or_else(|| {
-                            match_error!(
-                                "Placeholder has record field '{}', but code doesn't",
-                                ident
-                            )
-                        })?;
-                        self.attempt_match_node(phase, &p, &code_record)?;
-                    }
+            if let SyntaxElement::Node(p) = p
+                && let Some(name_element) = p.first_child_or_token()
+            {
+                if self.get_placeholder(&name_element).is_some() {
+                    // If the pattern is using placeholders for field names then order
+                    // independence doesn't make sense. Fall back to regular ordered
+                    // matching.
+                    return self.attempt_match_node_children(phase, pattern, code);
+                }
+                if let Some(ident) = only_ident(name_element) {
+                    let code_record = fields_by_name.remove(ident.text()).ok_or_else(|| {
+                        match_error!("Placeholder has record field '{}', but code doesn't", ident)
+                    })?;
+                    self.attempt_match_node(phase, &p, &code_record)?;
                 }
             }
         }
@@ -455,7 +458,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                         SyntaxElement::Token(t) => Some(t.clone()),
                         SyntaxElement::Node(n) => n.first_token(),
                     })
-                    .map(|p| p.text().to_string());
+                    .map(|p| p.text().to_owned());
                 let first_matched_token = child.clone();
                 let mut last_matched_token = child;
                 // Read code tokens util we reach one equal to the next token from our pattern
@@ -469,14 +472,13 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                             }
                         }
                         SyntaxElement::Node(n) => {
-                            if let Some(first_token) = n.first_token() {
-                                if Some(first_token.text()) == next_pattern_token.as_deref() {
-                                    if let Some(SyntaxElement::Node(p)) = pattern.next() {
-                                        // We have a subtree that starts with the next token in our pattern.
-                                        self.attempt_match_token_tree(phase, &p, n)?;
-                                        break;
-                                    }
-                                }
+                            if let Some(first_token) = n.first_token()
+                                && Some(first_token.text()) == next_pattern_token.as_deref()
+                                && let Some(SyntaxElement::Node(p)) = pattern.next()
+                            {
+                                // We have a subtree that starts with the next token in our pattern.
+                                self.attempt_match_token_tree(phase, &p, n)?;
+                                break;
                             }
                         }
                     };
@@ -486,7 +488,13 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                     match_out.placeholder_values.insert(
                         placeholder.ident.clone(),
                         PlaceholderMatch::from_range(FileRange {
-                            file_id: self.sema.original_range(code).file_id,
+                            file_id: self
+                                .sema
+                                .original_range_opt(code)
+                                .ok_or(MatchFailed {
+                                    reason: Some("def site definition".to_owned()),
+                                })?
+                                .file_id,
                             range: first_matched_token
                                 .text_range()
                                 .cover(last_matched_token.text_range()),
@@ -522,7 +530,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
     fn attempt_match_ufcs_to_method_call(
         &self,
         phase: &mut Phase<'_>,
-        pattern_ufcs: &UfcsCallInfo,
+        pattern_ufcs: &UfcsCallInfo<'db>,
         code: &ast::MethodCallExpr,
     ) -> Result<(), MatchFailed> {
         use ast::HasArgList;
@@ -549,21 +557,22 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                 let deref_count = self.check_expr_type(pattern_type, expr)?;
                 let pattern_receiver = pattern_args.next();
                 self.attempt_match_opt(phase, pattern_receiver.clone(), code.receiver())?;
-                if let Phase::Second(match_out) = phase {
-                    if let Some(placeholder_value) = pattern_receiver
+                if let Phase::Second(match_out) = phase
+                    && let Some(placeholder_value) = pattern_receiver
                         .and_then(|n| self.get_placeholder_for_node(n.syntax()))
                         .and_then(|placeholder| {
                             match_out.placeholder_values.get_mut(&placeholder.ident)
                         })
-                    {
-                        placeholder_value.autoderef_count = deref_count;
-                        placeholder_value.autoref_kind = self
-                            .sema
-                            .resolve_method_call_as_callable(code)
-                            .and_then(|callable| callable.receiver_param(self.sema.db))
-                            .map(|(self_param, _)| self_param.kind())
-                            .unwrap_or(ast::SelfParamKind::Owned);
-                    }
+                {
+                    placeholder_value.autoderef_count = deref_count;
+                    placeholder_value.autoref_kind = self
+                        .sema
+                        .resolve_method_call_as_callable(code)
+                        .and_then(|callable| {
+                            let (self_param, _) = callable.receiver_param(self.sema.db)?;
+                            Some(self.sema.source(self_param)?.value.kind())
+                        })
+                        .unwrap_or(ast::SelfParamKind::Owned);
                 }
             }
         } else {
@@ -582,7 +591,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
     fn attempt_match_ufcs_to_ufcs(
         &self,
         phase: &mut Phase<'_>,
-        pattern_ufcs: &UfcsCallInfo,
+        pattern_ufcs: &UfcsCallInfo<'db>,
         code: &ast::CallExpr,
     ) -> Result<(), MatchFailed> {
         use ast::HasArgList;
@@ -600,7 +609,7 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
     /// times. Returns the number of times it needed to be dereferenced.
     fn check_expr_type(
         &self,
-        pattern_type: &hir::Type,
+        pattern_type: &hir::Type<'db>,
         expr: &ast::Expr,
     ) -> Result<usize, MatchFailed> {
         use hir::HirDisplay;
@@ -611,20 +620,24 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
                 match_error!("Failed to get receiver type for `{}`", expr.syntax().text())
             })?
             .original;
-        // Temporary needed to make the borrow checker happy.
-        let res = code_type
+        let krate = self.sema.scope(expr.syntax()).map(|it| it.krate()).unwrap_or_else(|| {
+            hir::Crate::from(*self.sema.db.all_crates().last().expect("no crate graph present"))
+        });
+
+        code_type
             .autoderef(self.sema.db)
             .enumerate()
             .find(|(_, deref_code_type)| pattern_type == deref_code_type)
             .map(|(count, _)| count)
             .ok_or_else(|| {
+                let display_target = krate.to_display_target(self.sema.db);
+                // Temporary needed to make the borrow checker happy.
                 match_error!(
                     "Pattern type `{}` didn't match code type `{}`",
-                    pattern_type.display(self.sema.db),
-                    code_type.display(self.sema.db)
+                    pattern_type.display(self.sema.db, display_target),
+                    code_type.display(self.sema.db, display_target)
                 )
-            });
-        res
+            })
     }
 
     fn get_placeholder_for_node(&self, node: &SyntaxNode) -> Option<&Placeholder> {
@@ -637,10 +650,10 @@ impl<'db, 'sema> Matcher<'db, 'sema> {
 }
 
 impl Match {
-    fn render_template_paths(
+    fn render_template_paths<'db>(
         &mut self,
-        template: &ResolvedPattern,
-        sema: &Semantics<'_, ide_db::RootDatabase>,
+        template: &ResolvedPattern<'db>,
+        sema: &Semantics<'db, ide_db::RootDatabase>,
     ) -> Result<(), MatchFailed> {
         let module = sema
             .scope(&self.matched_node)
@@ -648,10 +661,15 @@ impl Match {
             .module();
         for (path, resolved_path) in &template.resolved_paths {
             if let hir::PathResolution::Def(module_def) = resolved_path.resolution {
-                let mod_path =
-                    module.find_use_path(sema.db, module_def, false).ok_or_else(|| {
-                        match_error!("Failed to render template path `{}` at match location")
-                    })?;
+                let cfg = FindPathConfig {
+                    prefer_no_std: false,
+                    prefer_prelude: true,
+                    prefer_absolute: false,
+                    allow_unstable: true,
+                };
+                let mod_path = module.find_path(sema.db, module_def, cfg).ok_or_else(|| {
+                    match_error!("Failed to render template path `{}` at match location")
+                })?;
                 self.rendered_template_paths.insert(path.clone(), mod_path);
             }
         }
@@ -674,12 +692,11 @@ impl Phase<'_> {
     }
 
     fn record_ignored_comments(&mut self, token: &SyntaxToken) {
-        if token.kind() == SyntaxKind::COMMENT {
-            if let Phase::Second(match_out) = self {
-                if let Some(comment) = ast::Comment::cast(token.clone()) {
-                    match_out.ignored_comments.push(comment);
-                }
-            }
+        if token.kind() == SyntaxKind::COMMENT
+            && let Phase::Second(match_out) = self
+            && let Some(comment) = ast::Comment::cast(token.clone())
+        {
+            match_out.ignored_comments.push(comment);
         }
     }
 }
@@ -703,7 +720,7 @@ where
 // we are trying to match that bit of code. This saves us having to pass a boolean into all the bits
 // of code that can make the decision to not match.
 thread_local! {
-    pub static RECORDING_MATCH_FAIL_REASONS: Cell<bool> = Cell::new(false);
+    pub static RECORDING_MATCH_FAIL_REASONS: Cell<bool> = const { Cell::new(false) };
 }
 
 fn recording_match_fail_reasons() -> bool {
@@ -762,12 +779,7 @@ impl Iterator for PatternIterator {
     type Item = SyntaxElement;
 
     fn next(&mut self) -> Option<SyntaxElement> {
-        for element in &mut self.iter {
-            if !element.kind().is_trivia() {
-                return Some(element);
-            }
-        }
-        None
+        self.iter.find(|element| !element.kind().is_trivia())
     }
 }
 
@@ -787,7 +799,22 @@ mod tests {
         let input = "fn foo() {} fn bar() {} fn main() { foo(1+2); }";
 
         let (db, position, selections) = crate::tests::single_file(input);
-        let mut match_finder = MatchFinder::in_context(&db, position, selections).unwrap();
+        let position = ide_db::FilePosition {
+            file_id: position.file_id.file_id(&db),
+            offset: position.offset,
+        };
+        let mut match_finder = MatchFinder::in_context(
+            &db,
+            position,
+            selections
+                .into_iter()
+                .map(|frange| ide_db::FileRange {
+                    file_id: frange.file_id.file_id(&db),
+                    range: frange.range,
+                })
+                .collect(),
+        )
+        .unwrap();
         match_finder.add_rule(rule).unwrap();
         let matches = match_finder.matches();
         assert_eq!(matches.matches.len(), 1);
@@ -797,7 +824,7 @@ mod tests {
         let edits = match_finder.edits();
         assert_eq!(edits.len(), 1);
         let edit = &edits[&position.file_id];
-        let mut after = input.to_string();
+        let mut after = input.to_owned();
         edit.apply(&mut after);
         assert_eq!(after, "fn foo() {} fn bar() {} fn main() { bar(1+2); }");
     }

@@ -1,13 +1,14 @@
-// run-pass
+//@ run-pass
 #![allow(dead_code)]
 #![allow(unused_variables)]
+#![allow(non_local_definitions)]
 // Various scenarios in which `pub` is required in blocks
 
 struct S;
 
 mod m {
     fn f() {
-        impl ::S {
+        impl crate::S {
             pub fn s(&self) {}
         }
     }
@@ -23,7 +24,7 @@ pub struct S1;
 fn f() {
     pub struct Z;
 
-    impl ::Tr for ::S1 {
+    impl crate::Tr for crate::S1 {
         type A = Z; // Private-in-public error unless `struct Z` is pub
     }
 }
@@ -42,7 +43,7 @@ mod m1 {
             pub field: u8
         }
 
-        impl ::Tr1 for ::S2 {
+        impl crate::Tr1 for crate::S2 {
             type A = Z;
             fn pull(&self) -> Self::A { Z{field: 10} }
         }

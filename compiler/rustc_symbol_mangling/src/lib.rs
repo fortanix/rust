@@ -87,39 +87,32 @@
 //! virtually impossible. Thus, symbol hash generation exclusively relies on
 //! DefPaths which are much more robust in the face of changes to the code base.
 
+// tidy-alphabetical-start
+#![allow(internal_features)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(never_type)]
-#![recursion_limit = "256"]
-#![allow(rustc::potential_query_instability)]
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
+#![doc(rust_logo)]
+#![feature(assert_matches)]
+#![feature(rustdoc_internals)]
+// tidy-alphabetical-end
 
-#[macro_use]
-extern crate rustc_middle;
-
-#[macro_use]
-extern crate tracing;
-
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
 use rustc_hir::def::DefKind;
 use rustc_hir::def_id::{CrateNum, LOCAL_CRATE};
-use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
-use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrs;
+use rustc_middle::middle::codegen_fn_attrs::{CodegenFnAttrFlags, CodegenFnAttrs};
 use rustc_middle::mir::mono::{InstantiationMode, MonoItem};
-use rustc_middle::ty::query::Providers;
-use rustc_middle::ty::subst::SubstsRef;
+use rustc_middle::query::Providers;
 use rustc_middle::ty::{self, Instance, TyCtxt};
 use rustc_session::config::SymbolManglingVersion;
+use tracing::debug;
 
+mod export;
+mod hashed;
 mod legacy;
 mod v0;
 
 pub mod errors;
 pub mod test;
-pub mod typeid;
 
-fluent_messages! { "../messages.ftl" }
+pub use v0::mangle_internal_symbol;
 
 /// This function computes the symbol name for the given `instance` and the
 /// given instantiating crate. That is, if you know that instance X is
@@ -144,7 +137,7 @@ fn symbol_name_provider<'tcx>(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> ty
         // This closure determines the instantiating crate for instances that
         // need an instantiating-crate-suffix for their symbol name, in order
         // to differentiate between local copies.
-        if is_generic(instance.substs) {
+        if is_generic(instance) {
             // For generics we might find re-usable upstream instances. If there
             // is one, we rely on the symbol being instantiated locally.
             instance.upstream_monomorphization(tcx).unwrap_or(LOCAL_CRATE)
@@ -160,7 +153,7 @@ fn symbol_name_provider<'tcx>(tcx: TyCtxt<'tcx>, instance: Instance<'tcx>) -> ty
 
 pub fn typeid_for_trait_ref<'tcx>(
     tcx: TyCtxt<'tcx>,
-    trait_ref: ty::PolyExistentialTraitRef<'tcx>,
+    trait_ref: ty::ExistentialTraitRef<'tcx>,
 ) -> String {
     v0::mangle_typeid_for_trait_ref(tcx, trait_ref)
 }
@@ -174,58 +167,80 @@ fn compute_symbol_name<'tcx>(
     compute_instantiating_crate: impl FnOnce() -> CrateNum,
 ) -> String {
     let def_id = instance.def_id();
-    let substs = instance.substs;
+    let args = instance.args;
 
-    debug!("symbol_name(def_id={:?}, substs={:?})", def_id, substs);
+    debug!("symbol_name(def_id={:?}, args={:?})", def_id, args);
 
     if let Some(def_id) = def_id.as_local() {
         if tcx.proc_macro_decls_static(()) == Some(def_id) {
-            let stable_crate_id = tcx.sess.local_stable_crate_id();
+            let stable_crate_id = tcx.stable_crate_id(LOCAL_CRATE);
             return tcx.sess.generate_proc_macro_decls_symbol(stable_crate_id);
         }
     }
 
     // FIXME(eddyb) Precompute a custom symbol name based on attributes.
     let attrs = if tcx.def_kind(def_id).has_codegen_attrs() {
-        tcx.codegen_fn_attrs(def_id)
+        &tcx.codegen_instance_attrs(instance.def)
     } else {
         CodegenFnAttrs::EMPTY
     };
 
-    // Foreign items by default use no mangling for their symbol name. There's a
-    // few exceptions to this rule though:
-    //
-    // * This can be overridden with the `#[link_name]` attribute
-    //
-    // * On the wasm32 targets there is a bug (or feature) in LLD [1] where the
-    //   same-named symbol when imported from different wasm modules will get
-    //   hooked up incorrectly. As a result foreign symbols, on the wasm target,
-    //   with a wasm import module, get mangled. Additionally our codegen will
-    //   deduplicate symbols based purely on the symbol name, but for wasm this
-    //   isn't quite right because the same-named symbol on wasm can come from
-    //   different modules. For these reasons if `#[link(wasm_import_module)]`
-    //   is present we mangle everything on wasm because the demangled form will
-    //   show up in the `wasm-import-name` custom attribute in LLVM IR.
-    //
-    // [1]: https://bugs.llvm.org/show_bug.cgi?id=44316
-    if tcx.is_foreign_item(def_id)
-        && (!tcx.sess.target.is_like_wasm
-            || !tcx.wasm_import_module_map(def_id.krate).contains_key(&def_id))
-    {
-        if let Some(name) = attrs.link_name {
+    if attrs.flags.contains(CodegenFnAttrFlags::RUSTC_STD_INTERNAL_SYMBOL) {
+        // Items marked as #[rustc_std_internal_symbol] need to have a fixed
+        // symbol name because it is used to import items from another crate
+        // without a direct dependency. As such it is not possible to look up
+        // the mangled name for the `Instance` from the crate metadata of the
+        // defining crate.
+        // Weak lang items automatically get #[rustc_std_internal_symbol]
+        // applied by the code computing the CodegenFnAttrs.
+        // We are mangling all #[rustc_std_internal_symbol] items as a
+        // combination of the rustc version and the unmangled linkage name.
+        // This is to ensure that if we link against a staticlib compiled by a
+        // different rustc version, we don't get symbol conflicts or even UB
+        // due to a different implementation/ABI. Rust staticlibs currently
+        // export all symbols, including those that are hidden in cdylibs.
+        // We are using the v0 symbol mangling scheme here as we need to be
+        // consistent across all crates and in some contexts the legacy symbol
+        // mangling scheme can't be used. For example both the GCC backend and
+        // Rust-for-Linux don't support some of the characters used by the
+        // legacy symbol mangling scheme.
+        let name = if let Some(name) = attrs.symbol_name { name } else { tcx.item_name(def_id) };
+
+        return v0::mangle_internal_symbol(tcx, name.as_str());
+    }
+
+    let wasm_import_module_exception_force_mangling = {
+        // * On the wasm32 targets there is a bug (or feature) in LLD [1] where the
+        //   same-named symbol when imported from different wasm modules will get
+        //   hooked up incorrectly. As a result foreign symbols, on the wasm target,
+        //   with a wasm import module, get mangled. Additionally our codegen will
+        //   deduplicate symbols based purely on the symbol name, but for wasm this
+        //   isn't quite right because the same-named symbol on wasm can come from
+        //   different modules. For these reasons if `#[link(wasm_import_module)]`
+        //   is present we mangle everything on wasm because the demangled form will
+        //   show up in the `wasm-import-name` custom attribute in LLVM IR.
+        //
+        // [1]: https://bugs.llvm.org/show_bug.cgi?id=44316
+        //
+        // So, on wasm if a foreign item loses its `#[no_mangle]`, it might *still*
+        // be mangled if we're forced to. Note: I don't like this.
+        // These kinds of exceptions should be added during the `codegen_attrs` query.
+        // However, we don't have the wasm import module map there yet.
+        tcx.is_foreign_item(def_id)
+            && tcx.sess.target.is_like_wasm
+            && tcx.wasm_import_module_map(LOCAL_CRATE).contains_key(&def_id.into())
+    };
+
+    if !wasm_import_module_exception_force_mangling {
+        if let Some(name) = attrs.symbol_name {
+            // Use provided name
             return name.to_string();
         }
-        return tcx.item_name(def_id).to_string();
-    }
 
-    if let Some(name) = attrs.export_name {
-        // Use provided name
-        return name.to_string();
-    }
-
-    if attrs.flags.contains(CodegenFnAttrFlags::NO_MANGLE) {
-        // Don't mangle
-        return tcx.item_name(def_id).to_string();
+        if attrs.flags.contains(CodegenFnAttrFlags::NO_MANGLE) {
+            // Don't mangle
+            return tcx.item_name(def_id).to_string();
+        }
     }
 
     // If we're dealing with an instance of a function that's inlined from
@@ -236,7 +251,11 @@ fn compute_symbol_name<'tcx>(
     // and we want to be sure to avoid any symbol conflicts here.
     let is_globally_shared_function = matches!(
         tcx.def_kind(instance.def_id()),
-        DefKind::Fn | DefKind::AssocFn | DefKind::Closure | DefKind::Generator | DefKind::Ctor(..)
+        DefKind::Fn
+            | DefKind::AssocFn
+            | DefKind::Closure
+            | DefKind::SyntheticCoroutineBody
+            | DefKind::Ctor(..)
     ) && matches!(
         MonoItem::Fn(instance).instantiation_mode(tcx),
         InstantiationMode::GloballyShared { may_conflict: true }
@@ -246,7 +265,7 @@ fn compute_symbol_name<'tcx>(
     // the ID of the instantiating crate. This avoids symbol conflicts
     // in case the same instances is emitted in two crates of the same
     // project.
-    let avoid_cross_crate_conflicts = is_generic(substs) || is_globally_shared_function;
+    let avoid_cross_crate_conflicts = is_generic(instance) || is_globally_shared_function;
 
     let instantiating_crate = avoid_cross_crate_conflicts.then(compute_instantiating_crate);
 
@@ -265,9 +284,21 @@ fn compute_symbol_name<'tcx>(
         tcx.symbol_mangling_version(mangling_version_crate)
     };
 
-    let symbol = match mangling_version {
-        SymbolManglingVersion::Legacy => legacy::mangle(tcx, instance, instantiating_crate),
-        SymbolManglingVersion::V0 => v0::mangle(tcx, instance, instantiating_crate),
+    let symbol = match tcx.is_exportable(def_id) {
+        true => format!(
+            "{}.{}",
+            v0::mangle(tcx, instance, instantiating_crate, true),
+            export::compute_hash_of_export_fn(tcx, instance)
+        ),
+        false => match mangling_version {
+            SymbolManglingVersion::Legacy => legacy::mangle(tcx, instance, instantiating_crate),
+            SymbolManglingVersion::V0 => v0::mangle(tcx, instance, instantiating_crate, false),
+            SymbolManglingVersion::Hashed => {
+                hashed::mangle(tcx, instance, instantiating_crate, || {
+                    v0::mangle(tcx, instance, instantiating_crate, false)
+                })
+            }
+        },
     };
 
     debug_assert!(
@@ -278,6 +309,6 @@ fn compute_symbol_name<'tcx>(
     symbol
 }
 
-fn is_generic(substs: SubstsRef<'_>) -> bool {
-    substs.non_erasable_generics().next().is_some()
+fn is_generic<'tcx>(instance: Instance<'tcx>) -> bool {
+    instance.args.non_erasable_generics().next().is_some()
 }

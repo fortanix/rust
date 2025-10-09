@@ -1,5 +1,6 @@
-use crate::liveness::{LiveNode, Variable};
 use std::iter;
+
+use crate::liveness::{LiveNode, Variable};
 
 #[derive(Clone, Copy)]
 pub(super) struct RWU {
@@ -38,12 +39,12 @@ impl RWUTable {
     /// Size of packed RWU in bits.
     const RWU_BITS: usize = 4;
     /// Size of a word in bits.
-    const WORD_BITS: usize = std::mem::size_of::<u8>() * 8;
+    const WORD_BITS: usize = size_of::<u8>() * 8;
     /// Number of packed RWUs that fit into a single word.
     const WORD_RWU_COUNT: usize = Self::WORD_BITS / Self::RWU_BITS;
 
     pub(super) fn new(live_nodes: usize, vars: usize) -> RWUTable {
-        let live_node_words = (vars + Self::WORD_RWU_COUNT - 1) / Self::WORD_RWU_COUNT;
+        let live_node_words = vars.div_ceil(Self::WORD_RWU_COUNT);
         Self { live_nodes, vars, live_node_words, words: vec![0u8; live_node_words * live_nodes] }
     }
 

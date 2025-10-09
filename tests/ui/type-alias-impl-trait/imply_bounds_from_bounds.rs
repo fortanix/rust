@@ -1,14 +1,16 @@
-// check-pass
+//@ check-pass
 
-#![feature(impl_trait_in_assoc_type)]
+#![feature(impl_trait_in_assoc_type, type_alias_impl_trait)]
 
-trait Callable {
+pub trait Callable {
     type Output;
     fn call() -> Self::Output;
 }
 
+pub type OutputHelper = impl Sized;
 impl<'a> Callable for &'a () {
-    type Output = impl Sized;
+    type Output = OutputHelper;
+    #[define_opaque(OutputHelper)]
     fn call() -> Self::Output {}
 }
 

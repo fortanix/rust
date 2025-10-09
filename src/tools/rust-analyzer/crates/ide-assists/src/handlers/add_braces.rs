@@ -1,13 +1,14 @@
+use either::Either;
 use syntax::{
-    ast::{self, edit::AstNodeEdit, make},
     AstNode,
+    ast::{self, edit_in_place::Indent, syntax_factory::SyntaxFactory},
 };
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: add_braces
 //
-// Adds braces to lambda and match arm expressions.
+// Adds braces to closure bodies and match arm expressions.
 //
 // ```
 // fn foo(n: i32) -> i32 {
@@ -32,19 +33,23 @@ pub(crate) fn add_braces(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<(
     let (expr_type, expr) = get_replacement_node(ctx)?;
 
     acc.add(
-        AssistId("add_braces", AssistKind::RefactorRewrite),
+        AssistId::refactor_rewrite("add_braces"),
         match expr_type {
-            ParentType::ClosureExpr => "Add braces to closure body",
-            ParentType::MatchArmExpr => "Add braces to arm expression",
+            ParentType::ClosureExpr => "Add braces to this closure body",
+            ParentType::MatchArmExpr => "Add braces to this match arm expression",
         },
         expr.syntax().text_range(),
         |builder| {
-            let block_expr = AstNodeEdit::indent(
-                &make::block_expr(None, Some(expr.clone())),
-                AstNodeEdit::indent_level(&expr),
-            );
+            let make = SyntaxFactory::with_mappings();
+            let mut editor = builder.make_editor(expr.syntax());
 
-            builder.replace(expr.syntax().text_range(), block_expr.syntax().text());
+            let block_expr = make.block_expr(None, Some(expr.clone()));
+            block_expr.indent(expr.indent_level());
+
+            editor.replace(expr.syntax(), block_expr.syntax());
+
+            editor.add_mappings(make.finish_with_mappings());
+            builder.add_file_edits(ctx.vfs_file_id(), editor);
         },
     )
 }
@@ -55,7 +60,8 @@ enum ParentType {
 }
 
 fn get_replacement_node(ctx: &AssistContext<'_>) -> Option<(ParentType, ast::Expr)> {
-    if let Some(match_arm) = ctx.find_node_at_offset::<ast::MatchArm>() {
+    let node = ctx.find_node_at_offset::<Either<ast::MatchArm, ast::ClosureExpr>>()?;
+    if let Either::Left(match_arm) = &node {
         let match_arm_expr = match_arm.expr()?;
 
         if matches!(match_arm_expr, ast::Expr::BlockExpr(_)) {
@@ -63,7 +69,7 @@ fn get_replacement_node(ctx: &AssistContext<'_>) -> Option<(ParentType, ast::Exp
         }
 
         return Some((ParentType::MatchArmExpr, match_arm_expr));
-    } else if let Some(closure_expr) = ctx.find_node_at_offset::<ast::ClosureExpr>() {
+    } else if let Either::Right(closure_expr) = &node {
         let body = closure_expr.body()?;
 
         if matches!(body, ast::Expr::BlockExpr(_)) {
@@ -96,6 +102,33 @@ fn foo() {
     t(|n| {
         n + 100
     });
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn suggest_add_braces_for_closure_in_match() {
+        check_assist(
+            add_braces,
+            r#"
+fn foo() {
+    match () {
+        () => {
+            t(|n|$0 n + 100);
+        }
+    }
+}
+"#,
+            r#"
+fn foo() {
+    match () {
+        () => {
+            t(|n| {
+                n + 100
+            });
+        }
+    }
 }
 "#,
         );

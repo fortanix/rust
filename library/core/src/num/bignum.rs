@@ -145,8 +145,7 @@ macro_rules! define_bignum {
 
             /// Adds `other` to itself and returns its own mutable reference.
             pub fn add<'a>(&'a mut self, other: &$name) -> &'a mut $name {
-                use crate::cmp;
-                use crate::iter;
+                use crate::{cmp, iter};
 
                 let mut sz = cmp::max(self.size, other.size);
                 let mut carry = false;
@@ -181,8 +180,7 @@ macro_rules! define_bignum {
 
             /// Subtracts `other` from itself and returns its own mutable reference.
             pub fn sub<'a>(&'a mut self, other: &$name) -> &'a mut $name {
-                use crate::cmp;
-                use crate::iter;
+                use crate::{cmp, iter};
 
                 let sz = cmp::max(self.size, other.size);
                 let mut noborrow = true;
@@ -255,12 +253,11 @@ macro_rules! define_bignum {
 
             /// Multiplies itself by `5^e` and returns its own mutable reference.
             pub fn mul_pow5(&mut self, mut e: usize) -> &mut $name {
-                use crate::mem;
                 use crate::num::bignum::SMALL_POW5;
 
                 // There are exactly n trailing zeros on 2^n, and the only relevant digit sizes
                 // are consecutive powers of two, so this is well suited index for the table.
-                let table_index = mem::size_of::<$ty>().trailing_zeros() as usize;
+                let table_index = size_of::<$ty>().trailing_zeros() as usize;
                 let (small_power, small_e) = SMALL_POW5[table_index];
                 let small_power = small_power as $ty;
 
@@ -338,43 +335,6 @@ macro_rules! define_bignum {
                 }
                 (self, borrow)
             }
-
-            /// Divide self by another bignum, overwriting `q` with the quotient and `r` with the
-            /// remainder.
-            pub fn div_rem(&self, d: &$name, q: &mut $name, r: &mut $name) {
-                // Stupid slow base-2 long division taken from
-                // https://en.wikipedia.org/wiki/Division_algorithm
-                // FIXME use a greater base ($ty) for the long division.
-                assert!(!d.is_zero());
-                let digitbits = <$ty>::BITS as usize;
-                for digit in &mut q.base[..] {
-                    *digit = 0;
-                }
-                for digit in &mut r.base[..] {
-                    *digit = 0;
-                }
-                r.size = d.size;
-                q.size = 1;
-                let mut q_is_zero = true;
-                let end = self.bit_length();
-                for i in (0..end).rev() {
-                    r.mul_pow2(1);
-                    r.base[0] |= self.get_bit(i) as $ty;
-                    if &*r >= d {
-                        r.sub(d);
-                        // Set bit `i` of q to 1.
-                        let digit_idx = i / digitbits;
-                        let bit_idx = i % digitbits;
-                        if q_is_zero {
-                            q.size = digit_idx + 1;
-                            q_is_zero = false;
-                        }
-                        q.base[digit_idx] |= 1 << bit_idx;
-                    }
-                }
-                debug_assert!(q.base[q.size..].iter().all(|&d| d == 0));
-                debug_assert!(r.base[r.size..].iter().all(|&d| d == 0));
-            }
         }
 
         impl crate::cmp::PartialEq for $name {
@@ -406,6 +366,8 @@ macro_rules! define_bignum {
                 Self { size: self.size, base: self.base }
             }
         }
+
+        impl crate::clone::UseCloned for $name {}
 
         impl crate::fmt::Debug for $name {
             fn fmt(&self, f: &mut crate::fmt::Formatter<'_>) -> crate::fmt::Result {

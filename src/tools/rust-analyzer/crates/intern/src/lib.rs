@@ -3,79 +3,83 @@
 //! Eventually this should probably be replaced with salsa-based interning.
 
 use std::{
+    borrow::Borrow,
     fmt::{self, Debug, Display},
-    hash::{BuildHasherDefault, Hash, Hasher},
+    hash::{BuildHasher, BuildHasherDefault, Hash, Hasher},
     ops::Deref,
-    sync::Arc,
+    sync::OnceLock,
 };
 
 use dashmap::{DashMap, SharedValue};
-use hashbrown::HashMap;
-use once_cell::sync::OnceCell;
+use hashbrown::raw::RawTable;
 use rustc_hash::FxHasher;
+use triomphe::Arc;
 
 type InternMap<T> = DashMap<Arc<T>, (), BuildHasherDefault<FxHasher>>;
-type Guard<T> = dashmap::RwLockWriteGuard<
-    'static,
-    HashMap<Arc<T>, SharedValue<()>, BuildHasherDefault<FxHasher>>,
->;
+type Guard<T> = dashmap::RwLockWriteGuard<'static, RawTable<(Arc<T>, SharedValue<()>)>>;
+
+mod symbol;
+pub use self::symbol::{Symbol, symbols as sym};
 
 pub struct Interned<T: Internable + ?Sized> {
     arc: Arc<T>,
 }
 
 impl<T: Internable> Interned<T> {
+    #[inline]
     pub fn new(obj: T) -> Self {
-        match Interned::lookup(&obj) {
-            Ok(this) => this,
-            Err(shard) => {
-                let arc = Arc::new(obj);
-                Self::alloc(arc, shard)
-            }
-        }
+        Self::new_generic(obj)
+    }
+}
+
+impl Interned<str> {
+    #[inline]
+    pub fn new_str(s: &str) -> Self {
+        Self::new_generic(s)
     }
 }
 
 impl<T: Internable + ?Sized> Interned<T> {
-    fn lookup(obj: &T) -> Result<Self, Guard<T>> {
+    #[inline]
+    pub fn new_generic<U>(obj: U) -> Self
+    where
+        U: Borrow<T>,
+        Arc<T>: From<U>,
+    {
         let storage = T::storage().get();
-        let shard_idx = storage.determine_map(obj);
-        let shard = &storage.shards()[shard_idx];
-        let shard = shard.write();
-
+        let (mut shard, hash) = Self::select(storage, obj.borrow());
         // Atomically,
         // - check if `obj` is already in the map
         //   - if so, clone its `Arc` and return it
         //   - if not, box it up, insert it, and return a clone
         // This needs to be atomic (locking the shard) to avoid races with other thread, which could
         // insert the same object between us looking it up and inserting it.
-
-        // FIXME: avoid double lookup/hashing by using raw entry API (once stable, or when
-        // hashbrown can be plugged into dashmap)
-        match shard.get_key_value(obj) {
-            Some((arc, _)) => Ok(Self { arc: arc.clone() }),
-            None => Err(shard),
-        }
+        let bucket = match shard.find_or_find_insert_slot(
+            hash,
+            |(other, _)| **other == *obj.borrow(),
+            |(x, _)| Self::hash(storage, x),
+        ) {
+            Ok(bucket) => bucket,
+            // SAFETY: The slot came from `find_or_find_insert_slot()`, and the table wasn't modified since then.
+            Err(insert_slot) => unsafe {
+                shard.insert_in_slot(hash, insert_slot, (Arc::from(obj), SharedValue::new(())))
+            },
+        };
+        // SAFETY: We just retrieved/inserted this bucket.
+        unsafe { Self { arc: bucket.as_ref().0.clone() } }
     }
 
-    fn alloc(arc: Arc<T>, mut shard: Guard<T>) -> Self {
-        let arc2 = arc.clone();
-
-        shard.insert(arc2, SharedValue::new(()));
-
-        Self { arc }
+    #[inline]
+    fn select(storage: &'static InternMap<T>, obj: &T) -> (Guard<T>, u64) {
+        let hash = Self::hash(storage, obj);
+        let shard_idx = storage.determine_shard(hash as usize);
+        let shard = &storage.shards()[shard_idx];
+        (shard.write(), hash)
     }
-}
 
-impl Interned<str> {
-    pub fn new_str(s: &str) -> Self {
-        match Interned::lookup(s) {
-            Ok(this) => this,
-            Err(shard) => {
-                let arc = Arc::<str>::from(s);
-                Self::alloc(arc, shard)
-            }
-        }
+    #[inline]
+    fn hash(storage: &'static InternMap<T>, obj: &T) -> u64 {
+        storage.hasher().hash_one(obj)
     }
 }
 
@@ -83,7 +87,7 @@ impl<T: Internable + ?Sized> Drop for Interned<T> {
     #[inline]
     fn drop(&mut self) {
         // When the last `Ref` is dropped, remove the object from the global map.
-        if Arc::strong_count(&self.arc) == 2 {
+        if Arc::count(&self.arc) == 2 {
             // Only `self` and the global map point to the object.
 
             self.drop_slow();
@@ -95,23 +99,19 @@ impl<T: Internable + ?Sized> Interned<T> {
     #[cold]
     fn drop_slow(&mut self) {
         let storage = T::storage().get();
-        let shard_idx = storage.determine_map(&self.arc);
-        let shard = &storage.shards()[shard_idx];
-        let mut shard = shard.write();
+        let (mut shard, hash) = Self::select(storage, &self.arc);
 
-        // FIXME: avoid double lookup
-        let (arc, _) = shard.get_key_value(&self.arc).expect("interned value removed prematurely");
-
-        if Arc::strong_count(arc) != 2 {
+        if Arc::count(&self.arc) != 2 {
             // Another thread has interned another copy
             return;
         }
 
-        shard.remove(&self.arc);
+        shard.remove_entry(hash, |(other, _)| **other == *self.arc);
 
         // Shrink the backing storage if the shard is less than 50% occupied.
         if shard.len() * 2 < shard.capacity() {
-            shard.shrink_to_fit();
+            let len = shard.len();
+            shard.shrink_to(len, |(x, _)| Self::hash(storage, x));
         }
     }
 }
@@ -178,12 +178,16 @@ impl<T: Display + Internable + ?Sized> Display for Interned<T> {
 }
 
 pub struct InternStorage<T: ?Sized> {
-    map: OnceCell<InternMap<T>>,
+    map: OnceLock<InternMap<T>>,
 }
 
+#[allow(
+    clippy::new_without_default,
+    reason = "this a const fn, so it can't be default yet. See <https://github.com/rust-lang/rust/issues/63065>"
+)]
 impl<T: ?Sized> InternStorage<T> {
     pub const fn new() -> Self {
-        Self { map: OnceCell::new() }
+        Self { map: OnceLock::new() }
     }
 }
 

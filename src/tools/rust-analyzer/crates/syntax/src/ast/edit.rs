@@ -4,11 +4,15 @@
 use std::{fmt, iter, ops};
 
 use crate::{
-    ast::{self, make, AstNode},
-    ted, AstToken, NodeOrToken, SyntaxElement, SyntaxNode, SyntaxToken,
+    AstToken, NodeOrToken, SyntaxElement, SyntaxNode, SyntaxToken,
+    ast::{self, AstNode, make},
+    syntax_editor::{SyntaxEditor, SyntaxMappingBuilder},
+    ted,
 };
 
-#[derive(Debug, Clone, Copy)]
+use super::syntax_factory::SyntaxFactory;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IndentLevel(pub u8);
 
 impl From<u8> for IndentLevel {
@@ -72,9 +76,9 @@ impl IndentLevel {
     }
 
     /// XXX: this intentionally doesn't change the indent of the very first token.
-    /// Ie, in something like
+    /// For example, in something like:
     /// ```
-    /// fn foo() {
+    /// fn foo() -> i32 {
     ///    92
     /// }
     /// ```
@@ -85,13 +89,31 @@ impl IndentLevel {
             _ => None,
         });
         for token in tokens {
-            if let Some(ws) = ast::Whitespace::cast(token) {
-                if ws.text().contains('\n') {
-                    let new_ws = make::tokens::whitespace(&format!("{}{self}", ws.syntax()));
-                    ted::replace(ws.syntax(), &new_ws);
-                }
+            if let Some(ws) = ast::Whitespace::cast(token)
+                && ws.text().contains('\n')
+            {
+                let new_ws = make::tokens::whitespace(&format!("{}{self}", ws.syntax()));
+                ted::replace(ws.syntax(), &new_ws);
             }
         }
+    }
+
+    pub(super) fn clone_increase_indent(self, node: &SyntaxNode) -> SyntaxNode {
+        let node = node.clone_subtree();
+        let mut editor = SyntaxEditor::new(node.clone());
+        let tokens = node
+            .preorder_with_tokens()
+            .filter_map(|event| match event {
+                rowan::WalkEvent::Leave(NodeOrToken::Token(it)) => Some(it),
+                _ => None,
+            })
+            .filter_map(ast::Whitespace::cast)
+            .filter(|ws| ws.text().contains('\n'));
+        for ws in tokens {
+            let new_ws = make::tokens::whitespace(&format!("{}{self}", ws.syntax()));
+            editor.replace(ws.syntax(), &new_ws);
+        }
+        editor.finish().new_root().clone()
     }
 
     pub(super) fn decrease_indent(self, node: &SyntaxNode) {
@@ -100,15 +122,34 @@ impl IndentLevel {
             _ => None,
         });
         for token in tokens {
-            if let Some(ws) = ast::Whitespace::cast(token) {
-                if ws.text().contains('\n') {
-                    let new_ws = make::tokens::whitespace(
-                        &ws.syntax().text().replace(&format!("\n{self}"), "\n"),
-                    );
-                    ted::replace(ws.syntax(), &new_ws);
-                }
+            if let Some(ws) = ast::Whitespace::cast(token)
+                && ws.text().contains('\n')
+            {
+                let new_ws = make::tokens::whitespace(
+                    &ws.syntax().text().replace(&format!("\n{self}"), "\n"),
+                );
+                ted::replace(ws.syntax(), &new_ws);
             }
         }
+    }
+
+    pub(super) fn clone_decrease_indent(self, node: &SyntaxNode) -> SyntaxNode {
+        let node = node.clone_subtree();
+        let mut editor = SyntaxEditor::new(node.clone());
+        let tokens = node
+            .preorder_with_tokens()
+            .filter_map(|event| match event {
+                rowan::WalkEvent::Leave(NodeOrToken::Token(it)) => Some(it),
+                _ => None,
+            })
+            .filter_map(ast::Whitespace::cast)
+            .filter(|ws| ws.text().contains('\n'));
+        for ws in tokens {
+            let new_ws =
+                make::tokens::whitespace(&ws.syntax().text().replace(&format!("\n{self}"), "\n"));
+            editor.replace(ws.syntax(), &new_ws);
+        }
+        editor.finish().new_root().clone()
     }
 }
 
@@ -116,30 +157,29 @@ fn prev_tokens(token: SyntaxToken) -> impl Iterator<Item = SyntaxToken> {
     iter::successors(Some(token), |token| token.prev_token())
 }
 
-/// Soft-deprecated in favor of mutable tree editing API `edit_in_place::Ident`.
 pub trait AstNodeEdit: AstNode + Clone + Sized {
     fn indent_level(&self) -> IndentLevel {
         IndentLevel::from_node(self.syntax())
     }
     #[must_use]
     fn indent(&self, level: IndentLevel) -> Self {
-        fn indent_inner(node: &SyntaxNode, level: IndentLevel) -> SyntaxNode {
-            let res = node.clone_subtree().clone_for_update();
-            level.increase_indent(&res);
-            res.clone_subtree()
+        Self::cast(level.clone_increase_indent(self.syntax())).unwrap()
+    }
+    #[must_use]
+    fn indent_with_mapping(&self, level: IndentLevel, make: &SyntaxFactory) -> Self {
+        let new_node = self.indent(level);
+        if let Some(mut mapping) = make.mappings() {
+            let mut builder = SyntaxMappingBuilder::new(new_node.syntax().clone());
+            for (old, new) in self.syntax().children().zip(new_node.syntax().children()) {
+                builder.map_node(old, new);
+            }
+            builder.finish(&mut mapping);
         }
-
-        Self::cast(indent_inner(self.syntax(), level)).unwrap()
+        new_node
     }
     #[must_use]
     fn dedent(&self, level: IndentLevel) -> Self {
-        fn dedent_inner(node: &SyntaxNode, level: IndentLevel) -> SyntaxNode {
-            let res = node.clone_subtree().clone_for_update();
-            level.decrease_indent(&res);
-            res.clone_subtree()
-        }
-
-        Self::cast(dedent_inner(self.syntax(), level)).unwrap()
+        Self::cast(level.clone_decrease_indent(self.syntax())).unwrap()
     }
     #[must_use]
     fn reset_indent(&self) -> Self {
@@ -153,8 +193,8 @@ impl<N: AstNode + Clone> AstNodeEdit for N {}
 #[test]
 fn test_increase_indent() {
     let arm_list = {
-        let arm = make::match_arm(iter::once(make::wildcard_pat().into()), None, make::expr_unit());
-        make::match_arm_list(vec![arm.clone(), arm])
+        let arm = make::match_arm(make::wildcard_pat().into(), None, make::ext::expr_unit());
+        make::match_arm_list([arm.clone(), arm])
     };
     assert_eq!(
         arm_list.syntax().to_string(),

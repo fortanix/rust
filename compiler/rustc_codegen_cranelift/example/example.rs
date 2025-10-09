@@ -1,6 +1,6 @@
 #![feature(no_core, unboxed_closures)]
 #![no_core]
-#![allow(dead_code)]
+#![allow(dead_code, unnecessary_transmutes)]
 
 extern crate mini_core;
 
@@ -149,7 +149,7 @@ pub fn array_as_slice(arr: &[u8; 3]) -> &[u8] {
     arr
 }
 
-pub unsafe fn use_ctlz_nonzero(a: u16) -> u16 {
+pub unsafe fn use_ctlz_nonzero(a: u16) -> u32 {
     intrinsics::ctlz_nonzero(a)
 }
 

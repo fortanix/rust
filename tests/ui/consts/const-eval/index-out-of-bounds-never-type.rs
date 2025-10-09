@@ -1,4 +1,4 @@
-// build-fail
+//@ build-fail
 
 // Regression test for #66975
 #![warn(unconditional_panic)]
@@ -8,7 +8,7 @@ struct PrintName<T>(T);
 
 impl<T> PrintName<T> {
     const VOID: ! = { let x = 0 * std::mem::size_of::<T>(); [][x] };
-    //~^ ERROR evaluation of `PrintName::<()>::VOID` failed
+    //~^ ERROR index out of bounds: the length is 0 but the index is 0
 
 }
 

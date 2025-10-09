@@ -1,65 +1,73 @@
 //! Database used for testing `hir_def`.
 
-use std::{
-    fmt, panic,
-    sync::{Arc, Mutex},
-};
+use std::{fmt, panic, sync::Mutex};
 
 use base_db::{
-    salsa, AnchoredPath, CrateId, FileId, FileLoader, FileLoaderDelegate, FilePosition,
-    SourceDatabase, Upcast,
+    Crate, CrateGraphBuilder, CratesMap, FileSourceRootInput, FileText, Nonce, RootQueryDb,
+    SourceDatabase, SourceRoot, SourceRootId, SourceRootInput,
 };
-use hir_expand::{db::ExpandDatabase, InFile};
-use stdx::hash::NoHashHashSet;
-use syntax::{algo, ast, AstNode};
+use hir_expand::{InFile, files::FilePosition};
+use salsa::{AsDynDatabase, Durability};
+use span::FileId;
+use syntax::{AstNode, algo, ast};
+use triomphe::Arc;
 
 use crate::{
-    db::DefDatabase,
-    nameres::{DefMap, ModuleSource},
-    src::HasSource,
     LocalModuleId, Lookup, ModuleDefId, ModuleId,
+    db::DefDatabase,
+    nameres::{DefMap, ModuleSource, block_def_map, crate_def_map},
+    src::HasSource,
 };
 
-#[salsa::database(
-    base_db::SourceDatabaseExtStorage,
-    base_db::SourceDatabaseStorage,
-    hir_expand::db::ExpandDatabaseStorage,
-    crate::db::InternDatabaseStorage,
-    crate::db::DefDatabaseStorage
-)]
+#[salsa_macros::db]
 pub(crate) struct TestDB {
-    storage: salsa::Storage<TestDB>,
-    events: Mutex<Option<Vec<salsa::Event>>>,
+    storage: salsa::Storage<Self>,
+    files: Arc<base_db::Files>,
+    crates_map: Arc<CratesMap>,
+    events: Arc<Mutex<Option<Vec<salsa::Event>>>>,
+    nonce: Nonce,
 }
 
 impl Default for TestDB {
     fn default() -> Self {
-        let mut this = Self { storage: Default::default(), events: Default::default() };
-        this.set_enable_proc_attr_macros(true);
+        let events = <Arc<Mutex<Option<Vec<salsa::Event>>>>>::default();
+        let mut this = Self {
+            storage: salsa::Storage::new(Some(Box::new({
+                let events = events.clone();
+                move |event| {
+                    let mut events = events.lock().unwrap();
+                    if let Some(events) = &mut *events {
+                        events.push(event);
+                    }
+                }
+            }))),
+            events,
+            files: Default::default(),
+            crates_map: Default::default(),
+            nonce: Nonce::new(),
+        };
+        this.set_expand_proc_attr_macros_with_durability(true, Durability::HIGH);
+        // This needs to be here otherwise `CrateGraphBuilder` panics.
+        this.set_all_crates(Arc::new(Box::new([])));
+        CrateGraphBuilder::default().set_in_db(&mut this);
         this
     }
 }
 
-impl Upcast<dyn ExpandDatabase> for TestDB {
-    fn upcast(&self) -> &(dyn ExpandDatabase + 'static) {
-        &*self
-    }
-}
-
-impl Upcast<dyn DefDatabase> for TestDB {
-    fn upcast(&self) -> &(dyn DefDatabase + 'static) {
-        &*self
-    }
-}
-
-impl salsa::Database for TestDB {
-    fn salsa_event(&self, event: salsa::Event) {
-        let mut events = self.events.lock().unwrap();
-        if let Some(events) = &mut *events {
-            events.push(event);
+impl Clone for TestDB {
+    fn clone(&self) -> Self {
+        Self {
+            storage: self.storage.clone(),
+            files: self.files.clone(),
+            crates_map: self.crates_map.clone(),
+            events: self.events.clone(),
+            nonce: Nonce::new(),
         }
     }
 }
+
+#[salsa_macros::db]
+impl salsa::Database for TestDB {}
 
 impl fmt::Debug for TestDB {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -69,24 +77,83 @@ impl fmt::Debug for TestDB {
 
 impl panic::RefUnwindSafe for TestDB {}
 
-impl FileLoader for TestDB {
-    fn file_text(&self, file_id: FileId) -> Arc<String> {
-        FileLoaderDelegate(self).file_text(file_id)
+#[salsa_macros::db]
+impl SourceDatabase for TestDB {
+    fn file_text(&self, file_id: base_db::FileId) -> FileText {
+        self.files.file_text(file_id)
     }
-    fn resolve_path(&self, path: AnchoredPath<'_>) -> Option<FileId> {
-        FileLoaderDelegate(self).resolve_path(path)
+
+    fn set_file_text(&mut self, file_id: base_db::FileId, text: &str) {
+        let files = Arc::clone(&self.files);
+        files.set_file_text(self, file_id, text);
     }
-    fn relevant_crates(&self, file_id: FileId) -> Arc<NoHashHashSet<CrateId>> {
-        FileLoaderDelegate(self).relevant_crates(file_id)
+
+    fn set_file_text_with_durability(
+        &mut self,
+        file_id: base_db::FileId,
+        text: &str,
+        durability: Durability,
+    ) {
+        let files = Arc::clone(&self.files);
+        files.set_file_text_with_durability(self, file_id, text, durability);
+    }
+
+    /// Source root of the file.
+    fn source_root(&self, source_root_id: SourceRootId) -> SourceRootInput {
+        self.files.source_root(source_root_id)
+    }
+
+    fn set_source_root_with_durability(
+        &mut self,
+        source_root_id: SourceRootId,
+        source_root: Arc<SourceRoot>,
+        durability: Durability,
+    ) {
+        let files = Arc::clone(&self.files);
+        files.set_source_root_with_durability(self, source_root_id, source_root, durability);
+    }
+
+    fn file_source_root(&self, id: base_db::FileId) -> FileSourceRootInput {
+        self.files.file_source_root(id)
+    }
+
+    fn set_file_source_root_with_durability(
+        &mut self,
+        id: base_db::FileId,
+        source_root_id: SourceRootId,
+        durability: Durability,
+    ) {
+        let files = Arc::clone(&self.files);
+        files.set_file_source_root_with_durability(self, id, source_root_id, durability);
+    }
+
+    fn crates_map(&self) -> Arc<CratesMap> {
+        self.crates_map.clone()
+    }
+
+    fn nonce_and_revision(&self) -> (Nonce, salsa::Revision) {
+        (self.nonce, salsa::plumbing::ZalsaDatabase::zalsa(self).current_revision())
     }
 }
 
 impl TestDB {
+    pub(crate) fn fetch_test_crate(&self) -> Crate {
+        let all_crates = self.all_crates();
+        all_crates
+            .iter()
+            .copied()
+            .find(|&krate| {
+                krate.extra_data(self).display_name.as_ref().map(|it| it.canonical_name().as_str())
+                    == Some("ra_test_fixture")
+            })
+            .unwrap_or(*all_crates.last().unwrap())
+    }
+
     pub(crate) fn module_for_file(&self, file_id: FileId) -> ModuleId {
         for &krate in self.relevant_crates(file_id).iter() {
-            let crate_def_map = self.crate_def_map(krate);
+            let crate_def_map = crate_def_map(self, krate);
             for (local_id, data) in crate_def_map.modules() {
-                if data.origin.file_id() == Some(file_id) {
+                if data.origin.file_id().map(|file_id| file_id.file_id(self)) == Some(file_id) {
                     return crate_def_map.module_id(local_id);
                 }
             }
@@ -95,23 +162,23 @@ impl TestDB {
     }
 
     pub(crate) fn module_at_position(&self, position: FilePosition) -> ModuleId {
-        let file_module = self.module_for_file(position.file_id);
+        let file_module = self.module_for_file(position.file_id.file_id(self));
         let mut def_map = file_module.def_map(self);
-        let module = self.mod_at_position(&def_map, position);
+        let module = self.mod_at_position(def_map, position);
 
-        def_map = match self.block_at_position(&def_map, position) {
+        def_map = match self.block_at_position(def_map, position) {
             Some(it) => it,
             None => return def_map.module_id(module),
         };
         loop {
-            let new_map = self.block_at_position(&def_map, position);
+            let new_map = self.block_at_position(def_map, position);
             match new_map {
-                Some(new_block) if !Arc::ptr_eq(&new_block, &def_map) => {
+                Some(new_block) if !std::ptr::eq(&new_block, &def_map) => {
                     def_map = new_block;
                 }
                 _ => {
                     // FIXME: handle `mod` inside block expression
-                    return def_map.module_id(def_map.root());
+                    return def_map.module_id(DefMap::ROOT);
                 }
             }
         }
@@ -120,10 +187,10 @@ impl TestDB {
     /// Finds the smallest/innermost module in `def_map` containing `position`.
     fn mod_at_position(&self, def_map: &DefMap, position: FilePosition) -> LocalModuleId {
         let mut size = None;
-        let mut res = def_map.root();
+        let mut res = DefMap::ROOT;
         for (module, data) in def_map.modules() {
             let src = data.definition_source(self);
-            if src.file_id != position.file_id.into() {
+            if src.file_id != position.file_id {
                 continue;
             }
 
@@ -149,7 +216,6 @@ impl TestDB {
             };
 
             if size != Some(new_size) {
-                cov_mark::hit!(submodule_in_testdb);
                 size = Some(new_size);
                 res = module;
             }
@@ -158,13 +224,13 @@ impl TestDB {
         res
     }
 
-    fn block_at_position(&self, def_map: &DefMap, position: FilePosition) -> Option<Arc<DefMap>> {
+    fn block_at_position(&self, def_map: &DefMap, position: FilePosition) -> Option<&DefMap> {
         // Find the smallest (innermost) function in `def_map` containing the cursor.
         let mut size = None;
         let mut fn_def = None;
         for (_, module) in def_map.modules() {
             let file_id = module.definition_source(self).file_id;
-            if file_id != position.file_id.into() {
+            if file_id != position.file_id {
                 continue;
             }
             for decl in module.scope.declarations() {
@@ -195,27 +261,28 @@ impl TestDB {
 
         // Find the innermost block expression that has a `DefMap`.
         let def_with_body = fn_def?.into();
-        let (_, source_map) = self.body_with_source_map(def_with_body);
+        let source_map = self.body_with_source_map(def_with_body).1;
         let scopes = self.expr_scopes(def_with_body);
-        let root = self.parse(position.file_id);
 
-        let scope_iter = algo::ancestors_at_offset(&root.syntax_node(), position.offset)
-            .filter_map(|node| {
+        let root_syntax_node = self.parse(position.file_id).syntax_node();
+        let scope_iter =
+            algo::ancestors_at_offset(&root_syntax_node, position.offset).filter_map(|node| {
                 let block = ast::BlockExpr::cast(node)?;
                 let expr = ast::Expr::from(block);
-                let expr_id = source_map.node_expr(InFile::new(position.file_id.into(), &expr))?;
+                let expr_id = source_map
+                    .node_expr(InFile::new(position.file_id.into(), &expr))?
+                    .as_expr()
+                    .unwrap();
                 let scope = scopes.scope_for(expr_id).unwrap();
                 Some(scope)
             });
 
         for scope in scope_iter {
-            let containing_blocks =
+            let mut containing_blocks =
                 scopes.scope_chain(Some(scope)).filter_map(|scope| scopes.block(scope));
 
-            for block in containing_blocks {
-                if let Some(def_map) = self.block_def_map(block) {
-                    return Some(def_map);
-                }
+            if let Some(block) = containing_blocks.next().map(|block| block_def_map(self, block)) {
+                return Some(block);
             }
         }
 
@@ -236,7 +303,10 @@ impl TestDB {
                 // This is pretty horrible, but `Debug` is the only way to inspect
                 // QueryDescriptor at the moment.
                 salsa::EventKind::WillExecute { database_key } => {
-                    Some(format!("{:?}", database_key.debug(self)))
+                    let ingredient = self
+                        .as_dyn_database()
+                        .ingredient_debug_name(database_key.ingredient_index());
+                    Some(ingredient.to_string())
                 }
                 _ => None,
             })

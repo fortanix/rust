@@ -2,10 +2,10 @@
 
 define-function: (
     "check-setting",
-    (storage_value, setting_attribute_value),
+    [storage_value, setting_attribute_value],
     block {
         assert-local-storage: {"rustdoc-go-to-only-result": |storage_value|}
-        click: "#settings-menu"
+        click: "rustdoc-toolbar .settings-menu"
         wait-for: "#settings"
         assert-property: ("#go-to-only-result", {"checked": |setting_attribute_value|})
     }
@@ -25,16 +25,23 @@ wait-for: "#search"
 assert-document-property: ({"URL": "/lib2/index.html"}, CONTAINS)
 
 // Now we change its value.
-click: "#settings-menu"
+click: "rustdoc-toolbar .settings-menu"
 wait-for: "#settings"
 click: "#go-to-only-result"
 assert-local-storage: {"rustdoc-go-to-only-result": "true"}
 
 go-to: "file://" + |DOC_PATH| + "/lib2/index.html"
 // We enter it into the search.
-write: (".search-input", "HasALongTraitWithParams")
+write-into: (".search-input", "HasALongTraitWithParams")
 wait-for-document-property: {"title": "HasALongTraitWithParams in lib2 - Rust"}
-assert-document-property: ({"URL": "/lib2/struct.HasALongTraitWithParams.html"}, ENDS_WITH)
+assert-window-property: ({"location": "/lib2/struct.HasALongTraitWithParams.html"}, ENDS_WITH)
+
+// Regression test for <https://github.com/rust-lang/rust/issues/112676>.
+// If "go-to-only-result" is enabled and you go back to history, it should not lead you back to the
+// page result again automatically.
+history-go-back:
+wait-for-document-property: {"title": "lib2 - Rust"}
+assert-window-property: ({"location": "/lib2/index.html"}, ENDS_WITH)
 
 // We try again to see if it goes to the only result
 go-to: "file://" + |DOC_PATH| + "/lib2/index.html?search=HasALongTraitWithParams"

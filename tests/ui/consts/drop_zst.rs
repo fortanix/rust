@@ -1,4 +1,4 @@
-// check-fail
+//@ check-fail
 
 #![feature(const_precise_live_drops)]
 
@@ -11,7 +11,7 @@ impl Drop for S {
 }
 
 const fn foo() {
-    let s = S; //~ destructor
+    let s = S; //~ ERROR destructor
 }
 
 fn main() {}

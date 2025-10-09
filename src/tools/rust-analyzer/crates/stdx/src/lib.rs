@@ -1,32 +1,40 @@
 //! Missing batteries for standard libraries.
 
-#![warn(rust_2018_idioms, unused_lifetimes, semicolon_in_expressions_from_macros)]
-
 use std::io as sio;
 use std::process::Command;
 use std::{cmp::Ordering, ops, time::Instant};
 
 mod macros;
-pub mod hash;
-pub mod process;
-pub mod panic_context;
-pub mod non_empty_vec;
-pub mod rand;
 
-pub use always_assert::{always, never};
+pub mod anymap;
+pub mod assert;
+pub mod non_empty_vec;
+pub mod panic_context;
+pub mod process;
+pub mod rand;
+pub mod thread;
+pub mod variance;
+
+pub use itertools;
 
 #[inline(always)]
-pub fn is_ci() -> bool {
+pub const fn is_ci() -> bool {
     option_env!("CI").is_some()
 }
 
+pub fn hash_once<Hasher: std::hash::Hasher + Default>(thing: impl std::hash::Hash) -> u64 {
+    std::hash::BuildHasher::hash_one(&std::hash::BuildHasherDefault::<Hasher>::default(), thing)
+}
+
 #[must_use]
+#[expect(clippy::print_stderr, reason = "only visible to developers")]
 pub fn timeit(label: &'static str) -> impl Drop {
     let start = Instant::now();
-    defer(move || eprintln!("{}: {:.2?}", label, start.elapsed()))
+    defer(move || eprintln!("{}: {:.2}", label, start.elapsed().as_nanos()))
 }
 
 /// Prints backtrace to stderr, useful for debugging.
+#[expect(clippy::print_stderr, reason = "only visible to developers")]
 pub fn print_backtrace() {
     #[cfg(feature = "backtrace")]
     eprintln!("{:?}", backtrace::Backtrace::new());
@@ -37,6 +45,35 @@ pub fn print_backtrace() {
 Uncomment `default = [ "backtrace" ]` in `crates/stdx/Cargo.toml`.
 "#
     );
+}
+
+pub trait TupleExt {
+    type Head;
+    type Tail;
+    fn head(self) -> Self::Head;
+    fn tail(self) -> Self::Tail;
+}
+
+impl<T, U> TupleExt for (T, U) {
+    type Head = T;
+    type Tail = U;
+    fn head(self) -> Self::Head {
+        self.0
+    }
+    fn tail(self) -> Self::Tail {
+        self.1
+    }
+}
+
+impl<T, U, V> TupleExt for (T, U, V) {
+    type Head = T;
+    type Tail = V;
+    fn head(self) -> Self::Head {
+        self.0
+    }
+    fn tail(self) -> Self::Tail {
+        self.2
+    }
 }
 
 pub fn to_lower_snake_case(s: &str) -> String {
@@ -89,14 +126,83 @@ where
     words.join("_")
 }
 
-pub fn replace(buf: &mut String, from: char, to: &str) {
-    if !buf.contains(from) {
-        return;
-    }
-    // FIXME: do this in place.
-    *buf = buf.replace(from, to);
+// Taken from rustc.
+#[must_use]
+pub fn to_camel_case(ident: &str) -> String {
+    ident
+        .trim_matches('_')
+        .split('_')
+        .filter(|component| !component.is_empty())
+        .map(|component| {
+            let mut camel_cased_component = String::with_capacity(component.len());
+
+            let mut new_word = true;
+            let mut prev_is_lower_case = true;
+
+            for c in component.chars() {
+                // Preserve the case if an uppercase letter follows a lowercase letter, so that
+                // `camelCase` is converted to `CamelCase`.
+                if prev_is_lower_case && c.is_uppercase() {
+                    new_word = true;
+                }
+
+                if new_word {
+                    camel_cased_component.extend(c.to_uppercase());
+                } else {
+                    camel_cased_component.extend(c.to_lowercase());
+                }
+
+                prev_is_lower_case = c.is_lowercase();
+                new_word = false;
+            }
+
+            camel_cased_component
+        })
+        .fold((String::new(), None), |(mut acc, prev): (_, Option<String>), next| {
+            // separate two components with an underscore if their boundary cannot
+            // be distinguished using an uppercase/lowercase case distinction
+            let join = prev
+                .and_then(|prev| {
+                    let f = next.chars().next()?;
+                    let l = prev.chars().last()?;
+                    Some(!char_has_case(l) && !char_has_case(f))
+                })
+                .unwrap_or(false);
+            acc.push_str(if join { "_" } else { "" });
+            acc.push_str(&next);
+            (acc, Some(next))
+        })
+        .0
 }
 
+// Taken from rustc.
+#[must_use]
+pub const fn char_has_case(c: char) -> bool {
+    c.is_lowercase() || c.is_uppercase()
+}
+
+#[must_use]
+pub fn is_upper_snake_case(s: &str) -> bool {
+    s.chars().all(|c| c.is_uppercase() || c == '_' || c.is_numeric())
+}
+
+pub fn replace(buf: &mut String, from: char, to: &str) {
+    let replace_count = buf.chars().filter(|&ch| ch == from).count();
+    if replace_count == 0 {
+        return;
+    }
+    let from_len = from.len_utf8();
+    let additional = to.len().saturating_sub(from_len);
+    buf.reserve(additional * replace_count);
+
+    let mut end = buf.len();
+    while let Some(i) = buf[..end].rfind(from) {
+        buf.replace_range(i..i + from_len, to);
+        end = i;
+    }
+}
+
+#[must_use]
 pub fn trim_indent(mut text: &str) -> String {
     if text.starts_with('\n') {
         text = &text[1..];
@@ -110,11 +216,7 @@ pub fn trim_indent(mut text: &str) -> String {
     text.split_inclusive('\n')
         .map(
             |line| {
-                if line.len() <= indent {
-                    line.trim_start_matches(' ')
-                } else {
-                    &line[indent..]
-                }
+                if line.len() <= indent { line.trim_start_matches(' ') } else { &line[indent..] }
             },
         )
         .collect()
@@ -162,8 +264,8 @@ impl ops::DerefMut for JodChild {
 
 impl Drop for JodChild {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        _ = self.0.kill();
+        _ = self.0.wait();
     }
 }
 
@@ -172,12 +274,11 @@ impl JodChild {
         command.spawn().map(Self)
     }
 
+    #[must_use]
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn into_inner(self) -> std::process::Child {
-        if cfg!(target_arch = "wasm32") {
-            panic!("no processes on wasm");
-        }
         // SAFETY: repr transparent, except on WASM
-        unsafe { std::mem::transmute::<JodChild, std::process::Child>(self) }
+        unsafe { std::mem::transmute::<Self, std::process::Child>(self) }
     }
 }
 
@@ -249,5 +350,35 @@ mod tests {
             ),
             "fn main() {\n    return 92;\n}\n"
         );
+    }
+
+    #[test]
+    fn test_replace() {
+        #[track_caller]
+        fn test_replace(src: &str, from: char, to: &str, expected: &str) {
+            let mut s = src.to_owned();
+            replace(&mut s, from, to);
+            assert_eq!(s, expected, "from: {from:?}, to: {to:?}");
+        }
+
+        test_replace("", 'a', "b", "");
+        test_replace("", 'a', "😀", "");
+        test_replace("", '😀', "a", "");
+        test_replace("a", 'a', "b", "b");
+        test_replace("aa", 'a', "b", "bb");
+        test_replace("ada", 'a', "b", "bdb");
+        test_replace("a", 'a', "😀", "😀");
+        test_replace("😀", '😀', "a", "a");
+        test_replace("😀x", '😀', "a", "ax");
+        test_replace("y😀x", '😀', "a", "yax");
+        test_replace("a,b,c", ',', ".", "a.b.c");
+        test_replace("a,b,c", ',', "..", "a..b..c");
+        test_replace("a.b.c", '.', "..", "a..b..c");
+        test_replace("a.b.c", '.', "..", "a..b..c");
+        test_replace("a😀b😀c", '😀', ".", "a.b.c");
+        test_replace("a.b.c", '.', "😀", "a😀b😀c");
+        test_replace("a.b.c", '.', "😀😀", "a😀😀b😀😀c");
+        test_replace(".a.b.c.", '.', "()", "()a()b()c()");
+        test_replace(".a.b.c.", '.', "", "abc");
     }
 }

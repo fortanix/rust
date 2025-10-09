@@ -82,8 +82,8 @@ use crate::task::{Context, Poll};
 /// [`AssertUnwindSafe`] wrapper struct can be used to force this trait to be
 /// implemented for any closed over variables passed to `catch_unwind`.
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-#[cfg_attr(not(test), rustc_diagnostic_item = "unwind_safe_trait")]
-#[rustc_on_unimplemented(
+#[rustc_diagnostic_item = "unwind_safe_trait"]
+#[diagnostic::on_unimplemented(
     message = "the type `{Self}` may not be safely transferred across an unwind boundary",
     label = "`{Self}` may not be safely transferred across an unwind boundary"
 )]
@@ -98,8 +98,8 @@ pub auto trait UnwindSafe {}
 /// This is a "helper marker trait" used to provide impl blocks for the
 /// [`UnwindSafe`] trait, for more information see that documentation.
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-#[cfg_attr(not(test), rustc_diagnostic_item = "ref_unwind_safe_trait")]
-#[rustc_on_unimplemented(
+#[rustc_diagnostic_item = "ref_unwind_safe_trait"]
+#[diagnostic::on_unimplemented(
     message = "the type `{Self}` may contain interior mutability and a reference may not be safely \
                transferrable across a catch_unwind boundary",
     label = "`{Self}` may contain interior mutability and a reference may not be safely \
@@ -248,7 +248,8 @@ impl RefUnwindSafe for crate::sync::atomic::AtomicBool {}
 impl<T> RefUnwindSafe for crate::sync::atomic::AtomicPtr<T> {}
 
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-impl<T> Deref for AssertUnwindSafe<T> {
+#[rustc_const_unstable(feature = "const_convert", issue = "143773")]
+impl<T> const Deref for AssertUnwindSafe<T> {
     type Target = T;
 
     fn deref(&self) -> &T {
@@ -257,7 +258,8 @@ impl<T> Deref for AssertUnwindSafe<T> {
 }
 
 #[stable(feature = "catch_unwind", since = "1.9.0")]
-impl<T> DerefMut for AssertUnwindSafe<T> {
+#[rustc_const_unstable(feature = "const_convert", issue = "143773")]
+impl<T> const DerefMut for AssertUnwindSafe<T> {
     fn deref_mut(&mut self) -> &mut T {
         &mut self.0
     }
@@ -267,6 +269,7 @@ impl<T> DerefMut for AssertUnwindSafe<T> {
 impl<R, F: FnOnce() -> R> FnOnce<()> for AssertUnwindSafe<F> {
     type Output = R;
 
+    #[inline]
     extern "rust-call" fn call_once(self, _args: ()) -> R {
         (self.0)()
     }

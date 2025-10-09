@@ -1,9 +1,11 @@
-use crate::fx::FxHashMap;
-use arrayvec::ArrayVec;
-use itertools::Either;
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Index;
+
+use arrayvec::ArrayVec;
+use either::Either;
+
+use crate::fx::FxHashMap;
 
 /// For pointer-sized arguments arrays
 /// are faster than set/map for up to 64
@@ -163,7 +165,7 @@ impl<K, V> SsoHashMap<K, V> {
 
     /// Clears the map, returning all key-value pairs as an iterator. Keeps the
     /// allocated memory for reuse.
-    pub fn drain(&mut self) -> impl Iterator<Item = (K, V)> + '_ {
+    pub fn drain(&mut self) -> impl Iterator<Item = (K, V)> {
         match self {
             SsoHashMap::Array(array) => Either::Left(array.drain(..)),
             SsoHashMap::Map(map) => Either::Right(map.drain()),
@@ -268,11 +270,7 @@ impl<K: Eq + Hash, V> SsoHashMap<K, V> {
     pub fn remove_entry(&mut self, key: &K) -> Option<(K, V)> {
         match self {
             SsoHashMap::Array(array) => {
-                if let Some(index) = array.iter().position(|(k, _v)| k == key) {
-                    Some(array.swap_remove(index))
-                } else {
-                    None
-                }
+                array.iter().position(|(k, _v)| k == key).map(|index| array.swap_remove(index))
             }
             SsoHashMap::Map(map) => map.remove_entry(key),
         }

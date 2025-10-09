@@ -1,11 +1,12 @@
 use hir::{AsAssocItem, HasVisibility, ModuleDef, Visibility};
-use ide_db::assists::{AssistId, AssistKind};
+use ide_db::assists::AssistId;
 use itertools::Itertools;
 use stdx::{format_to, to_lower_snake_case};
 use syntax::{
+    AstNode, AstToken, Edition,
     algo::skip_whitespace_token,
-    ast::{self, edit::IndentLevel, HasDocComments, HasName},
-    match_ast, AstNode, AstToken,
+    ast::{self, HasDocComments, HasGenericArgs, HasName, edit::IndentLevel},
+    match_ast,
 };
 
 use crate::assist_context::{AssistContext, Assists};
@@ -55,7 +56,7 @@ pub(crate) fn generate_documentation_template(
     let indent_level = IndentLevel::from_node(parent_syntax);
 
     acc.add(
-        AssistId("generate_documentation_template", AssistKind::Generate),
+        AssistId::generate("generate_documentation_template"),
         "Generate a documentation template",
         text_range,
         |builder| {
@@ -88,7 +89,7 @@ pub(crate) fn generate_documentation_template(
 // /// # Examples
 // ///
 // /// ```
-// /// use test::add;
+// /// use ra_test_fixture::add;
 // ///
 // /// assert_eq!(add(a, b), );
 // /// ```
@@ -114,7 +115,7 @@ pub(crate) fn generate_doc_example(acc: &mut Assists, ctx: &AssistContext<'_>) -
     let indent_level = IndentLevel::from_node(&node);
 
     acc.add(
-        AssistId("generate_doc_example", AssistKind::Generate),
+        AssistId::generate("generate_doc_example"),
         "Generate a documentation example",
         node.text_range(),
         |builder| {
@@ -139,18 +140,19 @@ fn make_example_for_fn(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> Option<St
 
     let mut example = String::new();
 
-    let use_path = build_path(ast_func, ctx)?;
+    let edition = ctx.sema.scope(ast_func.syntax())?.krate().edition(ctx.db());
+    let use_path = build_path(ast_func, ctx, edition)?;
     let is_unsafe = ast_func.unsafe_token().is_some();
     let param_list = ast_func.param_list()?;
     let ref_mut_params = ref_mut_params(&param_list);
     let self_name = self_name(ast_func);
 
     format_to!(example, "use {use_path};\n\n");
-    if let Some(self_name) = &self_name {
-        if let Some(mut_) = is_ref_mut_self(ast_func) {
-            let mut_ = if mut_ == true { "mut " } else { "" };
-            format_to!(example, "let {mut_}{self_name} = ;\n");
-        }
+    if let Some(self_name) = &self_name
+        && let Some(mut_) = is_ref_mut_self(ast_func)
+    {
+        let mut_ = if mut_ { "mut " } else { "" };
+        format_to!(example, "let {mut_}{self_name} = ;\n");
     }
     for param_name in &ref_mut_params {
         format_to!(example, "let mut {param_name} = ;\n");
@@ -168,10 +170,10 @@ fn make_example_for_fn(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> Option<St
         format_to!(example, "{function_call};\n");
     }
     // Check the mutated values
-    if let Some(self_name) = &self_name {
-        if is_ref_mut_self(ast_func) == Some(true) {
-            format_to!(example, "assert_eq!({self_name}, );");
-        }
+    if let Some(self_name) = &self_name
+        && is_ref_mut_self(ast_func) == Some(true)
+    {
+        format_to!(example, "assert_eq!({self_name}, );");
     }
     for param_name in &ref_mut_params {
         format_to!(example, "assert_eq!({param_name}, );");
@@ -311,12 +313,28 @@ fn crate_name(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> Option<String> {
 /// `None` if function without a body; some bool to guess if function can panic
 fn can_panic(ast_func: &ast::Fn) -> Option<bool> {
     let body = ast_func.body()?.to_string();
-    let can_panic = body.contains("panic!(")
-        // FIXME it would be better to not match `debug_assert*!` macro invocations
-        || body.contains("assert!(")
-        || body.contains(".unwrap()")
-        || body.contains(".expect(");
-    Some(can_panic)
+    let mut iter = body.chars();
+    let assert_postfix = |s| {
+        ["!(", "_eq!(", "_ne!(", "_matches!("].iter().any(|postfix| str::starts_with(s, postfix))
+    };
+
+    while !iter.as_str().is_empty() {
+        let s = iter.as_str();
+        iter.next();
+        if s.strip_prefix("debug_assert").is_some_and(assert_postfix) {
+            iter.nth(10);
+            continue;
+        }
+        if s.strip_prefix("assert").is_some_and(assert_postfix)
+            || s.starts_with("panic!(")
+            || s.starts_with(".unwrap()")
+            || s.starts_with(".expect(")
+        {
+            return Some(true);
+        }
+    }
+
+    Some(false)
 }
 
 /// Helper function to get the name that should be given to `self` arguments
@@ -324,7 +342,7 @@ fn self_name(ast_func: &ast::Fn) -> Option<String> {
     self_partial_type(ast_func).map(|name| to_lower_snake_case(&name))
 }
 
-/// Heper function to get the name of the type of `self`
+/// Helper function to get the name of the type of `self`
 fn self_type(ast_func: &ast::Fn) -> Option<ast::Type> {
     ast_func.syntax().ancestors().find_map(ast::Impl::cast).and_then(|i| i.self_ty())
 }
@@ -350,7 +368,7 @@ fn self_type_without_lifetimes(ast_func: &ast::Fn) -> Option<String> {
     Some(name)
 }
 
-/// Heper function to get the name of the type of `self` without generic arguments
+/// Helper function to get the name of the type of `self` without generic arguments
 fn self_partial_type(ast_func: &ast::Fn) -> Option<String> {
     let mut self_type = self_type(ast_func)?.to_string();
     if let Some(idx) = self_type.find(|c| ['<', ' '].contains(&c)) {
@@ -364,7 +382,7 @@ fn is_in_trait_impl(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> bool {
     ctx.sema
         .to_def(ast_func)
         .and_then(|hir_func| hir_func.as_assoc_item(ctx.db()))
-        .and_then(|assoc_item| assoc_item.containing_trait_impl(ctx.db()))
+        .and_then(|assoc_item| assoc_item.implemented_trait(ctx.db()))
         .is_some()
 }
 
@@ -373,7 +391,7 @@ fn is_in_trait_def(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> bool {
     ctx.sema
         .to_def(ast_func)
         .and_then(|hir_func| hir_func.as_assoc_item(ctx.db()))
-        .and_then(|assoc_item| assoc_item.containing_trait(ctx.db()))
+        .and_then(|assoc_item| assoc_item.container_trait(ctx.db()))
         .is_some()
 }
 
@@ -416,9 +434,9 @@ fn arguments_from_params(param_list: &ast::ParamList) -> String {
                 true => format!("&mut {name}"),
                 false => name.to_string(),
             },
-            None => "_".to_string(),
+            None => "_".to_owned(),
         },
-        _ => "_".to_string(),
+        _ => "_".to_owned(),
     });
     args_iter.format(", ").to_string()
 }
@@ -472,13 +490,13 @@ fn string_vec_from(string_array: &[&str]) -> Vec<String> {
 }
 
 /// Helper function to build the path of the module in the which is the node
-fn build_path(ast_func: &ast::Fn, ctx: &AssistContext<'_>) -> Option<String> {
+fn build_path(ast_func: &ast::Fn, ctx: &AssistContext<'_>, edition: Edition) -> Option<String> {
     let crate_name = crate_name(ast_func, ctx)?;
     let leaf = self_partial_type(ast_func)
         .or_else(|| ast_func.name().map(|n| n.to_string()))
         .unwrap_or_else(|| "*".into());
     let module_def: ModuleDef = ctx.sema.to_def(ast_func)?.module(ctx.db()).into();
-    match module_def.canonical_path(ctx.db()) {
+    match module_def.canonical_path(ctx.db(), edition) {
         Some(path) => Some(format!("{crate_name}::{path}::{leaf}")),
         None => Some(format!("{crate_name}::{leaf}")),
     }
@@ -595,7 +613,7 @@ pub fn noop_with_param(_a: i32) {}
 /// # Examples
 ///
 /// ```
-/// use test::noop_with_param;
+/// use ra_test_fixture::noop_with_param;
 ///
 /// noop_with_param(_a);
 /// ```
@@ -640,7 +658,7 @@ pub unsafe fn noop_unsafe() {}
 /// # Examples
 ///
 /// ```
-/// use test::noop_unsafe;
+/// use ra_test_fixture::noop_unsafe;
 ///
 /// unsafe { noop_unsafe() };
 /// ```
@@ -676,6 +694,24 @@ pub fn panics_if(a: bool) {
     }
 
     #[test]
+    fn guesses_debug_assert_macro_cannot_panic() {
+        check_assist(
+            generate_documentation_template,
+            r#"
+pub fn $0debug_panics_if_not(a: bool) {
+    debug_assert!(a == true);
+}
+"#,
+            r#"
+/// .
+pub fn debug_panics_if_not(a: bool) {
+    debug_assert!(a == true);
+}
+"#,
+        );
+    }
+
+    #[test]
     fn guesses_assert_macro_can_panic() {
         check_assist(
             generate_documentation_template,
@@ -692,6 +728,28 @@ pub fn $0panics_if_not(a: bool) {
 /// Panics if .
 pub fn panics_if_not(a: bool) {
     assert!(a == true);
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn guesses_assert_eq_macro_can_panic() {
+        check_assist(
+            generate_documentation_template,
+            r#"
+pub fn $0panics_if_not(a: bool) {
+    assert_eq!(a, true);
+}
+"#,
+            r#"
+/// .
+///
+/// # Panics
+///
+/// Panics if .
+pub fn panics_if_not(a: bool) {
+    assert_eq!(a, true);
 }
 "#,
         );
@@ -757,7 +815,7 @@ pub fn returns_a_value$0() -> i32 {
 /// # Examples
 ///
 /// ```
-/// use test::returns_a_value;
+/// use ra_test_fixture::returns_a_value;
 ///
 /// assert_eq!(returns_a_value(), );
 /// ```
@@ -806,7 +864,7 @@ pub fn modifies_a_value$0(a: &mut i32) {
 /// # Examples
 ///
 /// ```
-/// use test::modifies_a_value;
+/// use ra_test_fixture::modifies_a_value;
 ///
 /// let mut a = ;
 /// modifies_a_value(&mut a);
@@ -835,7 +893,7 @@ pub fn sum3$0(a: i32, b: i32, c: i32) -> i32 {
 /// # Examples
 ///
 /// ```
-/// use test::sum3;
+/// use ra_test_fixture::sum3;
 ///
 /// let result = sum3(a, b, c);
 /// assert_eq!(result, );
@@ -867,7 +925,7 @@ pub mod a {
         /// # Examples
         ///
         /// ```
-        /// use test::a::b::noop;
+        /// use ra_test_fixture::a::b::noop;
         ///
         /// noop();
         /// ```
@@ -897,7 +955,7 @@ impl MyStruct {
     /// # Examples
     ///
     /// ```
-    /// use test::MyStruct;
+    /// use ra_test_fixture::MyStruct;
     ///
     /// MyStruct::noop();
     /// ```
@@ -1168,7 +1226,7 @@ impl<T> MyGenericStruct<T> {
     /// # Examples
     ///
     /// ```
-    /// use test::MyGenericStruct;
+    /// use ra_test_fixture::MyGenericStruct;
     ///
     /// let my_generic_struct = ;
     /// my_generic_struct.consume();
@@ -1198,7 +1256,7 @@ impl<T> MyGenericStruct<T> {
     /// # Examples
     ///
     /// ```
-    /// use test::MyGenericStruct;
+    /// use ra_test_fixture::MyGenericStruct;
     ///
     /// let mut my_generic_struct = ;
     /// my_generic_struct.modify(new_value);

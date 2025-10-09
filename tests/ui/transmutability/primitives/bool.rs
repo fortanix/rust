@@ -1,26 +1,23 @@
-// revisions: current next
-//[next] compile-flags: -Ztrait-solver=next
+//@ revisions: current next
+//@ ignore-compare-mode-next-solver (explicit revisions)
+//@[next] compile-flags: -Znext-solver
 
-#![crate_type = "lib"]
 #![feature(transmutability)]
-#![allow(dead_code)]
-#![allow(incomplete_features)]
 mod assert {
-    use std::mem::{Assume, BikeshedIntrinsicFrom};
-    pub struct Context;
+    use std::mem::{Assume, TransmuteFrom};
 
     pub fn is_transmutable<Src, Dst>()
     where
-        Dst: BikeshedIntrinsicFrom<Src, Context, { Assume::SAFETY }>
+        Dst: TransmuteFrom<Src, { Assume::SAFETY }>
     {}
 
     pub fn is_maybe_transmutable<Src, Dst>()
     where
-        Dst: BikeshedIntrinsicFrom<Src, Context, { Assume::SAFETY.and(Assume::VALIDITY) }>
+        Dst: TransmuteFrom<Src, { Assume::SAFETY.and(Assume::VALIDITY) }>
     {}
 }
 
-fn contrast_with_u8() {
+fn main() {
     assert::is_transmutable::<u8, bool>(); //~ ERROR cannot be safely transmuted
     assert::is_maybe_transmutable::<u8, bool>();
     assert::is_transmutable::<bool, u8>();

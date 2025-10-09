@@ -1,4 +1,5 @@
-// aux-build:parent-source-spans.rs
+//@ proc-macro: parent-source-spans.rs
+//@ ignore-backends: gcc
 
 #![feature(decl_macro)]
 

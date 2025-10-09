@@ -1,11 +1,12 @@
-// run-pass
+//@ run-pass
 // Checks if the correct registers are being used to pass arguments
 // when the sysv64 ABI is specified.
 
-// ignore-android
-// ignore-arm
-// ignore-aarch64
-// needs-asm-support
+//@ ignore-android
+//@ ignore-arm
+//@ ignore-aarch64
+//@ needs-asm-support
+//@ ignore-backends: gcc
 
 #[cfg(target_arch = "x86_64")]
 pub extern "sysv64" fn all_the_registers(

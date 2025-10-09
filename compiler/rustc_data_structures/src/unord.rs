@@ -2,20 +2,17 @@
 //! ordering. This is a useful property for deterministic computations, such
 //! as required by the query system.
 
-use rustc_hash::{FxHashMap, FxHashSet};
-use smallvec::SmallVec;
-use std::{
-    borrow::Borrow,
-    collections::hash_map::Entry,
-    hash::Hash,
-    iter::{Product, Sum},
-    ops::Index,
-};
+use std::borrow::{Borrow, BorrowMut};
+use std::collections::hash_map::{Entry, OccupiedError};
+use std::hash::Hash;
+use std::iter::{Product, Sum};
+use std::ops::Index;
 
-use crate::{
-    fingerprint::Fingerprint,
-    stable_hasher::{HashStable, StableHasher, StableOrd, ToStableHashKey},
-};
+use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
+
+use crate::fingerprint::Fingerprint;
+use crate::stable_hasher::{HashStable, StableCompare, StableHasher, ToStableHashKey};
 
 /// `UnordItems` is the order-less version of `Iterator`. It only contains methods
 /// that don't (easily) expose an ordering of the underlying items.
@@ -31,6 +28,7 @@ use crate::{
 ///
 /// It's still possible to do the same thing with an `Fn` by using interior mutability,
 /// but the chance of doing it accidentally is reduced.
+#[derive(Clone)]
 pub struct UnordItems<T, I: Iterator<Item = T>>(I);
 
 impl<T, I: Iterator<Item = T>> UnordItems<T, I> {
@@ -107,6 +105,20 @@ impl<T, I: Iterator<Item = T>> UnordItems<T, I> {
     {
         UnordItems(self.0.flat_map(f))
     }
+
+    pub fn collect<C: From<UnordItems<T, I>>>(self) -> C {
+        self.into()
+    }
+
+    /// If the iterator has only one element, returns it, otherwise returns `None`.
+    #[track_caller]
+    pub fn get_only(mut self) -> Option<T> {
+        let item = self.0.next();
+        if self.0.next().is_some() {
+            return None;
+        }
+        item
+    }
 }
 
 impl<T> UnordItems<T, std::iter::Empty<T>> {
@@ -129,39 +141,89 @@ impl<'a, T: Copy + 'a, I: Iterator<Item = &'a T>> UnordItems<&'a T, I> {
     }
 }
 
-impl<T: Ord, I: Iterator<Item = T>> UnordItems<T, I> {
+impl<T, I: Iterator<Item = T>> UnordItems<T, I> {
+    #[inline]
     pub fn into_sorted<HCX>(self, hcx: &HCX) -> Vec<T>
     where
         T: ToStableHashKey<HCX>,
     {
-        let mut items: Vec<T> = self.0.collect();
-        items.sort_by_cached_key(|x| x.to_stable_hash_key(hcx));
+        self.collect_sorted(hcx, true)
+    }
+
+    #[inline]
+    pub fn into_sorted_stable_ord(self) -> Vec<T>
+    where
+        T: StableCompare,
+    {
+        self.collect_stable_ord_by_key(|x| x)
+    }
+
+    #[inline]
+    pub fn into_sorted_stable_ord_by_key<K, C>(self, project_to_key: C) -> Vec<T>
+    where
+        K: StableCompare,
+        C: for<'a> Fn(&'a T) -> &'a K,
+    {
+        self.collect_stable_ord_by_key(project_to_key)
+    }
+
+    #[inline]
+    pub fn collect_sorted<HCX, C>(self, hcx: &HCX, cache_sort_key: bool) -> C
+    where
+        T: ToStableHashKey<HCX>,
+        C: FromIterator<T> + BorrowMut<[T]>,
+    {
+        let mut items: C = self.0.collect();
+
+        let slice = items.borrow_mut();
+        if slice.len() > 1 {
+            if cache_sort_key {
+                slice.sort_by_cached_key(|x| x.to_stable_hash_key(hcx));
+            } else {
+                slice.sort_by_key(|x| x.to_stable_hash_key(hcx));
+            }
+        }
+
         items
     }
 
     #[inline]
-    pub fn into_sorted_stable_ord(self, use_stable_sort: bool) -> Vec<T>
+    pub fn collect_stable_ord_by_key<K, C, P>(self, project_to_key: P) -> C
     where
-        T: Ord + StableOrd,
+        K: StableCompare,
+        P: for<'a> Fn(&'a T) -> &'a K,
+        C: FromIterator<T> + BorrowMut<[T]>,
     {
-        let mut items: Vec<T> = self.0.collect();
-        if use_stable_sort {
-            items.sort();
-        } else {
-            items.sort_unstable()
-        }
-        items
-    }
+        let mut items: C = self.0.collect();
 
-    pub fn into_sorted_small_vec<HCX, const LEN: usize>(self, hcx: &HCX) -> SmallVec<[T; LEN]>
-    where
-        T: ToStableHashKey<HCX>,
-    {
-        let mut items: SmallVec<[T; LEN]> = self.0.collect();
-        items.sort_by_cached_key(|x| x.to_stable_hash_key(hcx));
+        let slice = items.borrow_mut();
+        if slice.len() > 1 {
+            if !K::CAN_USE_UNSTABLE_SORT {
+                slice.sort_by(|a, b| {
+                    let a_key = project_to_key(a);
+                    let b_key = project_to_key(b);
+                    a_key.stable_cmp(b_key)
+                });
+            } else {
+                slice.sort_unstable_by(|a, b| {
+                    let a_key = project_to_key(a);
+                    let b_key = project_to_key(b);
+                    a_key.stable_cmp(b_key)
+                });
+            }
+        }
+
         items
     }
 }
+
+/// A marker trait specifying that `Self` can consume `UnordItems<_>` without
+/// exposing any internal ordering.
+///
+/// Note: right now this is just a marker trait. It could be extended to contain
+/// some useful, common methods though, like `len`, `clear`, or the various
+/// kinds of `to_sorted`.
+trait UnordCollection {}
 
 /// This is a set collection type that tries very hard to not expose
 /// any internal iteration. This is a useful property when trying to
@@ -172,10 +234,12 @@ impl<T: Ord, I: Iterator<Item = T>> UnordItems<T, I> {
 ///
 /// See [MCP 533](https://github.com/rust-lang/compiler-team/issues/533)
 /// for more information.
-#[derive(Debug, Eq, PartialEq, Clone, Encodable, Decodable)]
+#[derive(Debug, Eq, PartialEq, Clone, Encodable_NoContext, Decodable_NoContext)]
 pub struct UnordSet<V: Eq + Hash> {
     inner: FxHashSet<V>,
 }
+
+impl<V: Eq + Hash> UnordCollection for UnordSet<V> {}
 
 impl<V: Eq + Hash> Default for UnordSet<V> {
     #[inline]
@@ -191,6 +255,11 @@ impl<V: Eq + Hash> UnordSet<V> {
     }
 
     #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inner: FxHashSet::with_capacity_and_hasher(capacity, Default::default()) }
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -198,6 +267,12 @@ impl<V: Eq + Hash> UnordSet<V> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.is_empty()
+    }
+
+    /// If the set has only one element, returns it, otherwise returns `None`.
+    #[inline]
+    pub fn get_only(&self) -> Option<&V> {
+        if self.inner.len() == 1 { self.inner.iter().next() } else { None }
     }
 
     #[inline]
@@ -248,16 +323,30 @@ impl<V: Eq + Hash> UnordSet<V> {
     }
 
     /// Returns the items of this set in stable sort order (as defined by
-    /// `StableOrd`). This method is much more efficient than
+    /// `StableCompare`). This method is much more efficient than
     /// `into_sorted` because it does not need to transform keys to their
     /// `ToStableHashKey` equivalent.
     #[inline]
-    pub fn to_sorted_stable_ord(&self) -> Vec<V>
+    pub fn to_sorted_stable_ord(&self) -> Vec<&V>
     where
-        V: Ord + StableOrd + Copy,
+        V: StableCompare,
     {
-        let mut items: Vec<V> = self.inner.iter().copied().collect();
-        items.sort_unstable();
+        let mut items: Vec<&V> = self.inner.iter().collect();
+        items.sort_unstable_by(|a, b| a.stable_cmp(*b));
+        items
+    }
+
+    /// Returns the items of this set in stable sort order (as defined by
+    /// `StableCompare`). This method is much more efficient than
+    /// `into_sorted` because it does not need to transform keys to their
+    /// `ToStableHashKey` equivalent.
+    #[inline]
+    pub fn into_sorted_stable_ord(self) -> Vec<V>
+    where
+        V: StableCompare,
+    {
+        let mut items: Vec<V> = self.inner.into_iter().collect();
+        items.sort_unstable_by(V::stable_cmp);
         items
     }
 
@@ -275,16 +364,28 @@ impl<V: Eq + Hash> UnordSet<V> {
         to_sorted_vec(hcx, self.inner.into_iter(), cache_sort_key, |x| x)
     }
 
-    // We can safely extend this UnordSet from a set of unordered values because that
-    // won't expose the internal ordering anywhere.
-    #[inline]
-    pub fn extend_unord<I: Iterator<Item = V>>(&mut self, items: UnordItems<V, I>) {
-        self.inner.extend(items.0)
-    }
-
     #[inline]
     pub fn clear(&mut self) {
         self.inner.clear();
+    }
+}
+
+pub trait ExtendUnord<T> {
+    /// Extend this unord collection with the given `UnordItems`.
+    /// This method is called `extend_unord` instead of just `extend` so it
+    /// does not conflict with `Extend::extend`. Otherwise there would be many
+    /// places where the two methods would have to be explicitly disambiguated
+    /// via UFCS.
+    fn extend_unord<I: Iterator<Item = T>>(&mut self, items: UnordItems<T, I>);
+}
+
+// Note: it is important that `C` implements `UnordCollection` in addition to
+// `Extend`, otherwise this impl would leak the internal iteration order of
+// `items`, e.g. when calling `some_vec.extend_unord(some_unord_items)`.
+impl<C: Extend<T> + UnordCollection, T> ExtendUnord<T> for C {
+    #[inline]
+    fn extend_unord<I: Iterator<Item = T>>(&mut self, items: UnordItems<T, I>) {
+        self.extend(items.0)
     }
 }
 
@@ -308,6 +409,12 @@ impl<V: Hash + Eq> From<FxHashSet<V>> for UnordSet<V> {
     }
 }
 
+impl<V: Hash + Eq, I: Iterator<Item = V>> From<UnordItems<V, I>> for UnordSet<V> {
+    fn from(value: UnordItems<V, I>) -> Self {
+        UnordSet { inner: FxHashSet::from_iter(value.0) }
+    }
+}
+
 impl<HCX, V: Hash + Eq + HashStable<HCX>> HashStable<HCX> for UnordSet<V> {
     #[inline]
     fn hash_stable(&self, hcx: &mut HCX, hasher: &mut StableHasher) {
@@ -324,10 +431,12 @@ impl<HCX, V: Hash + Eq + HashStable<HCX>> HashStable<HCX> for UnordSet<V> {
 ///
 /// See [MCP 533](https://github.com/rust-lang/compiler-team/issues/533)
 /// for more information.
-#[derive(Debug, Eq, PartialEq, Clone, Encodable, Decodable)]
+#[derive(Debug, Eq, PartialEq, Clone, Encodable_NoContext, Decodable_NoContext)]
 pub struct UnordMap<K: Eq + Hash, V> {
     inner: FxHashMap<K, V>,
 }
+
+impl<K: Eq + Hash, V> UnordCollection for UnordMap<K, V> {}
 
 impl<K: Eq + Hash, V> Default for UnordMap<K, V> {
     #[inline]
@@ -359,6 +468,11 @@ impl<K: Hash + Eq, V, I: Iterator<Item = (K, V)>> From<UnordItems<(K, V), I>> fo
 
 impl<K: Eq + Hash, V> UnordMap<K, V> {
     #[inline]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self { inner: FxHashMap::with_capacity_and_hasher(capacity, Default::default()) }
+    }
+
+    #[inline]
     pub fn len(&self) -> usize {
         self.inner.len()
     }
@@ -366,6 +480,11 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
     #[inline]
     pub fn insert(&mut self, k: K, v: V) -> Option<V> {
         self.inner.insert(k, v)
+    }
+
+    #[inline]
+    pub fn try_insert(&mut self, k: K, v: V) -> Result<&mut V, OccupiedError<'_, K, V>> {
+        self.inner.try_insert(k, v)
     }
 
     #[inline]
@@ -424,11 +543,9 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
         UnordItems(self.inner.into_iter())
     }
 
-    // We can safely extend this UnordMap from a set of unordered values because that
-    // won't expose the internal ordering anywhere.
     #[inline]
-    pub fn extend<I: Iterator<Item = (K, V)>>(&mut self, items: UnordItems<(K, V), I>) {
-        self.inner.extend(items.0)
+    pub fn keys(&self) -> UnordItems<&K, impl Iterator<Item = &K>> {
+        UnordItems(self.inner.keys())
     }
 
     /// Returns the entries of this map in stable sort order (as defined by `ToStableHashKey`).
@@ -445,16 +562,16 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
         to_sorted_vec(hcx, self.inner.iter(), cache_sort_key, |&(k, _)| k)
     }
 
-    /// Returns the entries of this map in stable sort order (as defined by `StableOrd`).
+    /// Returns the entries of this map in stable sort order (as defined by `StableCompare`).
     /// This method can be much more efficient than `into_sorted` because it does not need
     /// to transform keys to their `ToStableHashKey` equivalent.
     #[inline]
-    pub fn to_sorted_stable_ord(&self) -> Vec<(K, &V)>
+    pub fn to_sorted_stable_ord(&self) -> Vec<(&K, &V)>
     where
-        K: Ord + StableOrd + Copy,
+        K: StableCompare,
     {
-        let mut items: Vec<(K, &V)> = self.inner.iter().map(|(&k, v)| (k, v)).collect();
-        items.sort_unstable_by_key(|&(k, _)| k);
+        let mut items: Vec<_> = self.inner.iter().collect();
+        items.sort_unstable_by(|(a, _), (b, _)| a.stable_cmp(*b));
         items
     }
 
@@ -472,6 +589,19 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
         to_sorted_vec(hcx, self.inner.into_iter(), cache_sort_key, |(k, _)| k)
     }
 
+    /// Returns the entries of this map in stable sort order (as defined by `StableCompare`).
+    /// This method can be much more efficient than `into_sorted` because it does not need
+    /// to transform keys to their `ToStableHashKey` equivalent.
+    #[inline]
+    pub fn into_sorted_stable_ord(self) -> Vec<(K, V)>
+    where
+        K: StableCompare,
+    {
+        let mut items: Vec<(K, V)> = self.inner.into_iter().collect();
+        items.sort_unstable_by(|a, b| a.0.stable_cmp(&b.0));
+        items
+    }
+
     /// Returns the values of this map in stable sort order (as defined by K's
     /// `ToStableHashKey` implementation).
     ///
@@ -487,6 +617,11 @@ impl<K: Eq + Hash, V> UnordMap<K, V> {
         to_sorted_vec(hcx, self.inner.iter(), cache_sort_key, |&(k, _)| k)
             .into_iter()
             .map(|(_, v)| v)
+    }
+
+    #[inline]
+    pub fn clear(&mut self) {
+        self.inner.clear()
     }
 }
 
@@ -520,7 +655,7 @@ impl<HCX, K: Hash + Eq + HashStable<HCX>, V: HashStable<HCX>> HashStable<HCX> fo
 ///
 /// See [MCP 533](https://github.com/rust-lang/compiler-team/issues/533)
 /// for more information.
-#[derive(Default, Debug, Eq, PartialEq, Clone, Encodable, Decodable)]
+#[derive(Default, Debug, Eq, PartialEq, Clone, Encodable_NoContext, Decodable_NoContext)]
 pub struct UnordBag<V> {
     inner: Vec<V>,
 }
@@ -550,14 +685,9 @@ impl<V> UnordBag<V> {
     pub fn into_items(self) -> UnordItems<V, impl Iterator<Item = V>> {
         UnordItems(self.inner.into_iter())
     }
-
-    // We can safely extend this UnordSet from a set of unordered values because that
-    // won't expose the internal ordering anywhere.
-    #[inline]
-    pub fn extend<I: Iterator<Item = V>>(&mut self, items: UnordItems<V, I>) {
-        self.inner.extend(items.0)
-    }
 }
+
+impl<T> UnordCollection for UnordBag<T> {}
 
 impl<T> Extend<T> for UnordBag<T> {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {

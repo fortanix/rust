@@ -1,37 +1,18 @@
 use rustc_data_structures::stable_hasher::{HashStable, StableHasher, ToStableHashKey};
+use rustc_span::def_id::DefPathHash;
 
+use crate::HashIgnoredAttrId;
 use crate::hir::{
     AttributeMap, BodyId, Crate, ForeignItemId, ImplItemId, ItemId, OwnerNodes, TraitItemId,
 };
-use crate::hir_id::{HirId, ItemLocalId};
-use rustc_span::def_id::DefPathHash;
+use crate::hir_id::ItemLocalId;
+use crate::lints::DelayedLints;
 
 /// Requirements for a `StableHashingContext` to be used in this crate.
 /// This is a hack to allow using the `HashStable_Generic` derive macro
 /// instead of implementing everything in `rustc_middle`.
-pub trait HashStableContext:
-    rustc_ast::HashStableContext + rustc_target::HashStableContext
-{
-    fn hash_body_id(&mut self, _: BodyId, hasher: &mut StableHasher);
-}
-
-impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for HirId {
-    type KeyType = (DefPathHash, ItemLocalId);
-
-    #[inline]
-    fn to_stable_hash_key(&self, hcx: &HirCtx) -> (DefPathHash, ItemLocalId) {
-        let def_path_hash = self.owner.def_id.to_stable_hash_key(hcx);
-        (def_path_hash, self.local_id)
-    }
-}
-
-impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for ItemLocalId {
-    type KeyType = ItemLocalId;
-
-    #[inline]
-    fn to_stable_hash_key(&self, _: &HirCtx) -> ItemLocalId {
-        *self
-    }
+pub trait HashStableContext: rustc_ast::HashStableContext + rustc_abi::HashStableContext {
+    fn hash_attr_id(&mut self, id: &HashIgnoredAttrId, hasher: &mut StableHasher);
 }
 
 impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for BodyId {
@@ -80,12 +61,6 @@ impl<HirCtx: crate::HashStableContext> ToStableHashKey<HirCtx> for ForeignItemId
     }
 }
 
-impl<HirCtx: crate::HashStableContext> HashStable<HirCtx> for BodyId {
-    fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
-        hcx.hash_body_id(*self, hasher)
-    }
-}
-
 // The following implementations of HashStable for `ItemId`, `TraitItemId`, and
 // `ImplItemId` deserve special attention. Normally we do not hash `NodeId`s within
 // the HIR, since they just signify a HIR nodes own path. But `ItemId` et al
@@ -105,11 +80,18 @@ impl<'tcx, HirCtx: crate::HashStableContext> HashStable<HirCtx> for OwnerNodes<'
     }
 }
 
+impl<HirCtx: crate::HashStableContext> HashStable<HirCtx> for DelayedLints {
+    fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
+        let DelayedLints { opt_hash, .. } = *self;
+        opt_hash.unwrap().hash_stable(hcx, hasher);
+    }
+}
+
 impl<'tcx, HirCtx: crate::HashStableContext> HashStable<HirCtx> for AttributeMap<'tcx> {
     fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
         // We ignore the `map` since it refers to information included in `opt_hash` which is
         // hashed in the collector and used for the crate hash.
-        let AttributeMap { opt_hash, map: _ } = *self;
+        let AttributeMap { opt_hash, define_opaque: _, map: _ } = *self;
         opt_hash.unwrap().hash_stable(hcx, hasher);
     }
 }
@@ -118,5 +100,11 @@ impl<HirCtx: crate::HashStableContext> HashStable<HirCtx> for Crate<'_> {
     fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
         let Crate { owners: _, opt_hir_hash } = self;
         opt_hir_hash.unwrap().hash_stable(hcx, hasher)
+    }
+}
+
+impl<HirCtx: crate::HashStableContext> HashStable<HirCtx> for HashIgnoredAttrId {
+    fn hash_stable(&self, hcx: &mut HirCtx, hasher: &mut StableHasher) {
+        hcx.hash_attr_id(self, hasher)
     }
 }

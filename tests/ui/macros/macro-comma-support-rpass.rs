@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 // This is meant to be a comprehensive test of invocations with/without
 // trailing commas (or other, similar optionally-trailing separators).
 // Every macro is accounted for, even those not tested in this file.
@@ -9,13 +9,12 @@
 // detail.
 
 
-// compile-flags: --test -C debug_assertions=yes
-// revisions: std core
+//@ compile-flags: --test -C debug_assertions=yes
+//@ revisions: std core
 
 #![cfg_attr(core, no_std)]
 
 #![allow(deprecated)] // for deprecated `try!()` macro
-#![feature(concat_idents)]
 
 #[cfg(std)] use std::fmt;
 #[cfg(core)] use core::fmt;
@@ -51,6 +50,7 @@ fn assert_ne() {
 }
 
 #[test]
+#[allow(unexpected_cfgs)]
 fn cfg() {
     let _ = cfg!(pants);
     let _ = cfg!(pants,);
@@ -76,17 +76,6 @@ fn concat() {
     let _ = concat!("hello",);
     let _ = concat!("hello", " world");
     let _ = concat!("hello", " world",);
-}
-
-#[test]
-fn concat_idents() {
-    fn foo() {}
-    fn foobar() {}
-
-    concat_idents!(foo)();
-    concat_idents!(foo,)();
-    concat_idents!(foo, bar)();
-    concat_idents!(foo, bar,)();
 }
 
 #[test]
@@ -170,8 +159,8 @@ fn format_args() {
 
 #[test]
 fn include() {
-    let _ = include!("auxiliary/macro-comma-support.rs");
-    let _ = include!("auxiliary/macro-comma-support.rs",);
+    include!("auxiliary/macro-comma-support.rs");
+    include!("auxiliary/macro-comma-support.rs",);
 }
 
 #[test]

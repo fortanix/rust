@@ -1,5 +1,5 @@
-// run-pass
-// compile-flags: -Zunleash-the-miri-inside-of-you
+//@ run-pass
+//@ compile-flags: -Zunleash-the-miri-inside-of-you
 #![allow(unused)]
 
 fn double(x: usize) -> usize { x * 2 }
@@ -10,3 +10,5 @@ const fn bar(x: usize) -> usize {
 }
 
 fn main() {}
+
+//~? WARN skipping const checks

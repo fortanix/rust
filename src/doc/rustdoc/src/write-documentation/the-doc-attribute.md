@@ -62,7 +62,7 @@ This form of the `doc` attribute lets you control the favicon of your docs.
 This will put `<link rel="icon" href="{}">` into your docs, where
 the string for the attribute goes into the `{}`.
 
-If you don't use this attribute, there will be no favicon.
+If you don't use this attribute, a default favicon will be used.
 
 ### `html_logo_url`
 
@@ -88,8 +88,10 @@ on your documentation examples make requests to.
 ```
 
 Now, when you press "run", the button will make a request to this domain. The request
-URL will contain 2 query parameters: `code` and `edition` for the code in the documentation
-and the Rust edition respectively.
+URL will contain 3 query parameters:
+1. `code` for the code in the documentation
+2. `version` for the Rust channel, e.g. nightly, which is decided by whether `code` contain unstable features
+3. `edition` for the Rust edition, e.g. 2024
 
 If you don't use this attribute, there will be no run buttons.
 
@@ -140,15 +142,6 @@ But if you include this:
 ```
 
 it will not.
-
-### `test(attr(...))`
-
-This form of the `doc` attribute allows you to add arbitrary attributes to all your doctests. For
-example, if you want your doctests to fail if they produce any warnings, you could add this:
-
-```rust,no_run
-#![doc(test(attr(deny(warnings))))]
-```
 
 ## At the item level
 
@@ -201,7 +194,7 @@ mod bar {
 # fn main() {}
 ```
 
-Here, because `bar` is not public, `Bar` wouldn't have its own page, so there's nowhere
+Here, because `bar` is not public, `bar` wouldn't have its own page, so there's nowhere
 to link to. `rustdoc` will inline these definitions, and so we end up in the same case
 as the `#[doc(inline)]` above; `Bar` is in a `Structs` section, as if it were defined at
 the top level. If we add the `no_inline` form of the attribute:
@@ -223,12 +216,17 @@ Now we'll have a `Re-exports` line, and `Bar` will not link to anywhere.
 One special case: In Rust 2018 and later, if you `pub use` one of your dependencies, `rustdoc` will
 not eagerly inline it as a module unless you add `#[doc(inline)]`.
 
+If you want to know more about inlining rules, take a look at the
+[`re-exports` chapter](./re-exports.md).
+
 ### `hidden`
 
 <span id="dochidden"></span>
 
-Any item annotated with `#[doc(hidden)]` will not appear in the documentation, unless
-the `strip-hidden` pass is removed.
+Any item annotated with `#[doc(hidden)]` will not appear in the documentation,
+unless the [`--document-hidden-items`](../unstable-features.md#document-hidden-items) flag is used.
+
+You can find more information in the [`re-exports` chapter](./re-exports.md).
 
 ### `alias`
 
@@ -276,3 +274,26 @@ To get around this limitation, we just add `#[doc(alias = "lib_name_do_something
 on the `do_something` method and then it's all good!
 Users can now look for `lib_name_do_something` in our crate directly and find
 `Obj::do_something`.
+
+### `test(attr(...))`
+
+This form of the `doc` attribute allows you to add arbitrary attributes to all your doctests. For
+example, if you want your doctests to fail if they have dead code, you could add this:
+
+```rust,no_run
+#![doc(test(attr(deny(dead_code))))]
+
+mod my_mod {
+    #![doc(test(attr(allow(dead_code))))] // but allow `dead_code` for this module
+}
+```
+
+`test(attr(..))` attributes are appended to the parent module's, they do not replace the current
+list of attributes. In the previous example, both attributes would be present:
+
+```rust,no_run
+// For every doctest in `my_mod`
+
+#![deny(dead_code)] // from the crate-root
+#![allow(dead_code)] // from `my_mod`
+```

@@ -2,6 +2,7 @@
 
 use crate::error::Error;
 use crate::fmt;
+use crate::iter::FusedIterator;
 
 /// An iterator that decodes UTF-16 encoded code points from an iterator of `u16`s.
 ///
@@ -105,6 +106,9 @@ impl<I: Iterator<Item = u16>> Iterator for DecodeUtf16<I> {
     }
 }
 
+#[stable(feature = "decode_utf16_fused_iterator", since = "1.75.0")]
+impl<I: Iterator<Item = u16> + FusedIterator> FusedIterator for DecodeUtf16<I> {}
+
 impl DecodeUtf16Error {
     /// Returns the unpaired surrogate which caused this error.
     #[must_use]
@@ -122,9 +126,4 @@ impl fmt::Display for DecodeUtf16Error {
 }
 
 #[stable(feature = "decode_utf16", since = "1.9.0")]
-impl Error for DecodeUtf16Error {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        "unpaired surrogate found"
-    }
-}
+impl Error for DecodeUtf16Error {}

@@ -1,6 +1,6 @@
-// check-pass
-// edition:2018
-// revisions: default sa
+//@ check-pass
+//@ edition:2018
+//@ revisions: default sa
 
 #![feature(type_alias_impl_trait)]
 
@@ -77,6 +77,7 @@ mod opaque_types {
 
     type Ex = impl Trait<Out = <() as Implemented>::Assoc>;
 
+    #[define_opaque(Ex)]
     fn define() -> Ex {
         ()
     }

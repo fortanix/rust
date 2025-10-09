@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 
@@ -8,6 +8,7 @@ struct Send<T> {
 
 type InnerSend<T> = impl Sized;
 
+#[define_opaque(InnerSend)]
 fn constrain<T>() -> InnerSend<T> {
     ()
 }

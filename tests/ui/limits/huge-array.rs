@@ -1,8 +1,9 @@
-// FIXME https://github.com/rust-lang/rust/issues/59774
-
-// build-fail
-// normalize-stderr-test "thread.*panicked.*Metadata module not compiled.*\n" -> ""
-// normalize-stderr-test "note:.*RUST_BACKTRACE=1.*\n" -> ""
+// FIXME(#61117): Remove revisions once x86_64-gnu-debug CI job sets rust.debuginfo-level-tests=2
+// NOTE: The .stderr for both revisions shall be identical.
+//@ revisions: no-debuginfo full-debuginfo
+//@[no-debuginfo] compile-flags: -Cdebuginfo=0
+//@[full-debuginfo] compile-flags: -Cdebuginfo=2
+//@ build-fail
 
 fn generic<T: Copy>(t: T) {
     let s: [T; 1518600000] = [t; 1518600000];

@@ -1,4 +1,4 @@
-// compile-flags: -Z ui-testing=no
+//@ compile-flags: -Z ui-testing=no
 #[path = "auxiliary/dummy_lib.rs"]
 mod lib;
 
@@ -102,5 +102,5 @@ fn main() {
     ();
     ();
     ();
-    dbg!(lib::Dummy); //~ Error: `Dummy` doesn't implement `Debug`
+    dbg!(lib::Dummy); //~ ERROR `Dummy` doesn't implement `Debug`
 }

@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(unused_must_use)]
 fn main() {
     if false { test(); }
@@ -17,7 +17,7 @@ use future::{Future, IntoFuture};
 mod future {
     use std::result;
 
-    use {stream, Stream};
+    use crate::{stream, Stream};
 
     pub trait Future {
         type Item;
@@ -100,7 +100,7 @@ mod future {
 }
 
 mod stream {
-    use IntoFuture;
+    use crate::IntoFuture;
 
     pub trait Stream {
         type Item;
@@ -153,7 +153,7 @@ mod stream {
     }
 
     enum Slot<T> {
-        Next(#[allow(unused_tuple_struct_fields)] usize),
+        Next(#[allow(dead_code)] usize),
         _Data { _a: T },
     }
 

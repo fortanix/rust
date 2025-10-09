@@ -1,4 +1,5 @@
-// run-pass
+//@ edition: 2015
+//@ run-pass
 use std::mem::*;
 
 pub fn main() {

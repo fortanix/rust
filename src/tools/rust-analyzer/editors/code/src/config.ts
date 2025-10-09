@@ -2,44 +2,33 @@ import * as Is from "vscode-languageclient/lib/common/utils/is";
 import * as os from "os";
 import * as path from "path";
 import * as vscode from "vscode";
-import { Env } from "./client";
-import { log } from "./util";
+import { expectNotUndefined, log, normalizeDriveLetter, unwrapUndefinable } from "./util";
+import type { Env } from "./util";
+import type { Disposable } from "vscode";
 
-export type RunnableEnvCfg =
-    | undefined
-    | Record<string, string>
-    | { mask?: string; env: Record<string, string> }[];
+export type RunnableEnvCfgItem = {
+    mask?: string;
+    env: { [key: string]: { toString(): string } | null };
+    platform?: string | string[];
+};
+
+type ShowStatusBar = "always" | "never" | { documentSelector: vscode.DocumentSelector };
 
 export class Config {
     readonly extensionId = "rust-lang.rust-analyzer";
     configureLang: vscode.Disposable | undefined;
 
     readonly rootSection = "rust-analyzer";
-    private readonly requiresReloadOpts = [
-        "cargo",
-        "procMacro",
-        "serverPath",
-        "server",
-        "files",
-        "lens", // works as lens.*
-    ].map((opt) => `${this.rootSection}.${opt}`);
+    private readonly requiresServerReloadOpts = ["server", "files", "showSyntaxTree"].map(
+        (opt) => `${this.rootSection}.${opt}`,
+    );
 
-    readonly package: {
-        version: string;
-        releaseTag: string | null;
-        enableProposedApi: boolean | undefined;
-    } = vscode.extensions.getExtension(this.extensionId)!.packageJSON;
+    private readonly requiresWindowReloadOpts = ["testExplorer"].map(
+        (opt) => `${this.rootSection}.${opt}`,
+    );
 
-    readonly globalStorageUri: vscode.Uri;
-
-    constructor(ctx: vscode.ExtensionContext) {
-        this.globalStorageUri = ctx.globalStorageUri;
-        this.discoveredWorkspaces = [];
-        vscode.workspace.onDidChangeConfiguration(
-            this.onDidChangeConfiguration,
-            this,
-            ctx.subscriptions
-        );
+    constructor(disposables: Disposable[]) {
+        vscode.workspace.onDidChangeConfiguration(this.onDidChangeConfiguration, this, disposables);
         this.refreshLogging();
         this.configureLanguage();
     }
@@ -49,36 +38,49 @@ export class Config {
     }
 
     private refreshLogging() {
-        log.setEnabled(this.traceExtension ?? false);
-        log.info("Extension version:", this.package.version);
+        log.info(
+            "Extension version:",
+            vscode.extensions.getExtension(this.extensionId)!.packageJSON.version,
+        );
 
         const cfg = Object.entries(this.cfg).filter(([_, val]) => !(val instanceof Function));
         log.info("Using configuration", Object.fromEntries(cfg));
     }
-
-    public discoveredWorkspaces: JsonProject[];
 
     private async onDidChangeConfiguration(event: vscode.ConfigurationChangeEvent) {
         this.refreshLogging();
 
         this.configureLanguage();
 
-        const requiresReloadOpt = this.requiresReloadOpts.find((opt) =>
-            event.affectsConfiguration(opt)
+        const requiresWindowReloadOpt = this.requiresWindowReloadOpts.find((opt) =>
+            event.affectsConfiguration(opt),
         );
 
-        if (!requiresReloadOpt) return;
+        if (requiresWindowReloadOpt) {
+            const message = `Changing "${requiresWindowReloadOpt}" requires a window reload`;
+            const userResponse = await vscode.window.showInformationMessage(message, "Reload now");
+
+            if (userResponse) {
+                await vscode.commands.executeCommand("workbench.action.reloadWindow");
+            }
+        }
+
+        const requiresServerReloadOpt = this.requiresServerReloadOpts.find((opt) =>
+            event.affectsConfiguration(opt),
+        );
+
+        if (!requiresServerReloadOpt) return;
 
         if (this.restartServerOnConfigChange) {
-            await vscode.commands.executeCommand("rust-analyzer.reload");
+            await vscode.commands.executeCommand("rust-analyzer.restartServer");
             return;
         }
 
-        const message = `Changing "${requiresReloadOpt}" requires a server restart`;
+        const message = `Changing "${requiresServerReloadOpt}" requires a server restart`;
         const userResponse = await vscode.window.showInformationMessage(message, "Restart now");
 
         if (userResponse) {
-            const command = "rust-analyzer.reload";
+            const command = "rust-analyzer.restartServer";
             await vscode.commands.executeCommand(command);
         }
     }
@@ -99,7 +101,8 @@ export class Config {
         let onEnterRules: vscode.OnEnterRule[] = [
             {
                 // Carry indentation from the previous line
-                beforeText: /^\s*$/,
+                // if it's only whitespace
+                beforeText: /^\s+$/,
                 action: { indentAction: vscode.IndentAction.None },
             },
             {
@@ -131,13 +134,13 @@ export class Config {
                 {
                     // Parent doc single-line comment
                     // e.g. //!|
-                    beforeText: /^\s*\/{2}\!.*$/,
+                    beforeText: /^\s*\/{2}!.*$/,
                     action: { indentAction, appendText: "//! " },
                 },
                 {
                     // Begins an auto-closed multi-line comment (standard or parent doc)
                     // e.g. /** | */ or /*! | */
-                    beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
+                    beforeText: /^\s*\/\*(\*|!)(?!\/)([^*]|\*(?!\/))*$/,
                     afterText: /^\s*\*\/$/,
                     action: {
                         indentAction: vscode.IndentAction.IndentOutdent,
@@ -147,19 +150,19 @@ export class Config {
                 {
                     // Begins a multi-line comment (standard or parent doc)
                     // e.g. /** ...| or /*! ...|
-                    beforeText: /^\s*\/\*(\*|\!)(?!\/)([^\*]|\*(?!\/))*$/,
+                    beforeText: /^\s*\/\*(\*|!)(?!\/)([^*]|\*(?!\/))*$/,
                     action: { indentAction, appendText: " * " },
                 },
                 {
                     // Continues a multi-line comment
                     // e.g.  * ...|
-                    beforeText: /^(\ \ )*\ \*(\ ([^\*]|\*(?!\/))*)?$/,
+                    beforeText: /^( {2})* \*( ([^*]|\*(?!\/))*)?$/,
                     action: { indentAction, appendText: "* " },
                 },
                 {
                     // Dedents after closing a multi-line comment
                     // e.g.  */|
-                    beforeText: /^(\ \ )*\ \*\/\s*$/,
+                    beforeText: /^( {2})* \*\/\s*$/,
                     action: { indentAction, removeText: 1 },
                 },
             ];
@@ -198,49 +201,101 @@ export class Config {
     }
 
     get serverPath() {
-        return this.get<null | string>("server.path") ?? this.get<null | string>("serverPath");
+        return this.get<null | string>("server.path");
     }
 
     get serverExtraEnv(): Env {
         const extraEnv =
-            this.get<{ [key: string]: string | number } | null>("server.extraEnv") ?? {};
+            this.get<{ [key: string]: { toString(): string } | null } | null>("server.extraEnv") ??
+            {};
         return substituteVariablesInEnv(
             Object.fromEntries(
                 Object.entries(extraEnv).map(([k, v]) => [
                     k,
-                    typeof v !== "string" ? v.toString() : v,
-                ])
-            )
+                    typeof v === "string" ? v : v?.toString(),
+                ]),
+            ),
         );
     }
-    get traceExtension() {
-        return this.get<boolean>("trace.extension");
+
+    get checkOnSave() {
+        return this.get<boolean>("checkOnSave") ?? false;
     }
 
-    get discoverProjectCommand() {
-        return this.get<string[] | undefined>("discoverProjectCommand");
+    async toggleCheckOnSave() {
+        const config = this.cfg.inspect<boolean>("checkOnSave") ?? { key: "checkOnSave" };
+        let overrideInLanguage;
+        let target;
+        let value;
+        if (
+            config.workspaceFolderValue !== undefined ||
+            config.workspaceFolderLanguageValue !== undefined
+        ) {
+            target = vscode.ConfigurationTarget.WorkspaceFolder;
+            overrideInLanguage = config.workspaceFolderLanguageValue;
+            value = config.workspaceFolderValue || config.workspaceFolderLanguageValue;
+        } else if (
+            config.workspaceValue !== undefined ||
+            config.workspaceLanguageValue !== undefined
+        ) {
+            target = vscode.ConfigurationTarget.Workspace;
+            overrideInLanguage = config.workspaceLanguageValue;
+            value = config.workspaceValue || config.workspaceLanguageValue;
+        } else if (config.globalValue !== undefined || config.globalLanguageValue !== undefined) {
+            target = vscode.ConfigurationTarget.Global;
+            overrideInLanguage = config.globalLanguageValue;
+            value = config.globalValue || config.globalLanguageValue;
+        } else if (config.defaultValue !== undefined || config.defaultLanguageValue !== undefined) {
+            overrideInLanguage = config.defaultLanguageValue;
+            value = config.defaultValue || config.defaultLanguageValue;
+        }
+        await this.cfg.update("checkOnSave", !(value || false), target || null, overrideInLanguage);
     }
 
-    get cargoRunner() {
-        return this.get<string | undefined>("cargoRunner");
+    get problemMatcher(): string[] {
+        return this.get<string[]>("runnables.problemMatcher") || [];
     }
 
-    get runnableEnv() {
-        const item = this.get<any>("runnableEnv");
-        if (!item) return item;
-        const fixRecord = (r: Record<string, any>) => {
-            for (const key in r) {
-                if (typeof r[key] !== "string") {
-                    r[key] = String(r[key]);
+    get testExplorer() {
+        return this.get<boolean | undefined>("testExplorer");
+    }
+
+    runnablesExtraEnv(label: string): Env {
+        const serverEnv = this.serverExtraEnv;
+        let extraEnv =
+            this.get<
+                RunnableEnvCfgItem[] | { [key: string]: { toString(): string } | null } | null
+            >("runnables.extraEnv") ?? {};
+        if (!extraEnv) return serverEnv;
+
+        const platform = process.platform;
+        const checkPlatform = (it: RunnableEnvCfgItem) => {
+            if (it.platform) {
+                const platforms = Array.isArray(it.platform) ? it.platform : [it.platform];
+                return platforms.indexOf(platform) >= 0;
+            }
+            return true;
+        };
+
+        if (extraEnv instanceof Array) {
+            const env = {};
+            for (const it of extraEnv) {
+                const masked = !it.mask || new RegExp(it.mask).test(label);
+                if (masked && checkPlatform(it)) {
+                    Object.assign(env, it.env);
                 }
             }
-        };
-        if (item instanceof Array) {
-            item.forEach((x) => fixRecord(x.env));
-        } else {
-            fixRecord(item);
+            extraEnv = env;
         }
-        return item;
+        const runnableExtraEnv = substituteVariablesInEnv(
+            Object.fromEntries(
+                Object.entries(extraEnv).map(([k, v]) => [
+                    k,
+                    typeof v === "string" ? v : v?.toString(),
+                ]),
+            ),
+        );
+        return { ...runnableExtraEnv, ...serverEnv };
     }
 
     get restartServerOnConfigChange() {
@@ -263,7 +318,7 @@ export class Config {
         return {
             engine: this.get<string>("debug.engine"),
             engineSettings: this.get<object>("debug.engineSettings") ?? {},
-            openDebugPane: this.get<boolean>("debug.openDebugPane"),
+            buildBeforeRestart: this.get<boolean>("debug.buildBeforeRestart"),
             sourceFileMap: sourceFileMap,
         };
     }
@@ -278,6 +333,7 @@ export class Config {
             gotoTypeDef: this.get<boolean>("hover.actions.gotoTypeDef.enable"),
         };
     }
+
     get previewRustcOutput() {
         return this.get<boolean>("diagnostics.previewRustcOutput");
     }
@@ -285,34 +341,50 @@ export class Config {
     get useRustcErrorCode() {
         return this.get<boolean>("diagnostics.useRustcErrorCode");
     }
+
+    get showDependenciesExplorer() {
+        return this.get<boolean>("showDependenciesExplorer");
+    }
+
+    get showSyntaxTree() {
+        return this.get<boolean>("showSyntaxTree");
+    }
+
+    get statusBarClickAction() {
+        return this.get<string>("statusBar.clickAction");
+    }
+
+    get statusBarShowStatusBar() {
+        return this.get<ShowStatusBar>("statusBar.showStatusBar");
+    }
+
+    get initializeStopped() {
+        return this.get<boolean>("initializeStopped");
+    }
+
+    get askBeforeUpdateTest() {
+        return this.get<boolean>("runnables.askBeforeUpdateTest");
+    }
+
+    async setAskBeforeUpdateTest(value: boolean) {
+        await this.cfg.update("runnables.askBeforeUpdateTest", value, true);
+    }
 }
 
-// the optional `cb?` parameter is meant to be used to add additional
-// key/value pairs to the VS Code configuration. This needed for, e.g.,
-// including a `rust-project.json` into the `linkedProjects` key as part
-// of the configuration/InitializationParams _without_ causing VS Code
-// configuration to be written out to workspace-level settings. This is
-// undesirable behavior because rust-project.json files can be tens of
-// thousands of lines of JSON, most of which is not meant for humans
-// to interact with.
-export function prepareVSCodeConfig<T>(
-    resp: T,
-    cb?: (key: Extract<keyof T, string>, res: { [key: string]: any }) => void
-): T {
+export function prepareVSCodeConfig<T>(resp: T): T {
     if (Is.string(resp)) {
         return substituteVSCodeVariableInString(resp) as T;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } else if (resp && Is.array<any>(resp)) {
         return resp.map((val) => {
             return prepareVSCodeConfig(val);
         }) as T;
     } else if (resp && typeof resp === "object") {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const res: { [key: string]: any } = {};
         for (const key in resp) {
             const val = resp[key];
             res[key] = prepareVSCodeConfig(val);
-            if (cb) {
-                cb(key, res);
-            }
         }
         return res as T;
     }
@@ -321,6 +393,7 @@ export function prepareVSCodeConfig<T>(
 
 // FIXME: Merge this with `substituteVSCodeVariables` above
 export function substituteVariablesInEnv(env: Env): Env {
+    const depRe = new RegExp(/\${(?<depName>.+?)}/g);
     const missingDeps = new Set<string>();
     // vscode uses `env:ENV_NAME` for env vars resolution, and it's easier
     // to follow the same convention for our dependency tracking
@@ -328,19 +401,20 @@ export function substituteVariablesInEnv(env: Env): Env {
     const envWithDeps = Object.fromEntries(
         Object.entries(env).map(([key, value]) => {
             const deps = new Set<string>();
-            const depRe = new RegExp(/\${(?<depName>.+?)}/g);
-            let match = undefined;
-            while ((match = depRe.exec(value))) {
-                const depName = match.groups!.depName;
-                deps.add(depName);
-                // `depName` at this point can have a form of `expression` or
-                // `prefix:expression`
-                if (!definedEnvKeys.has(depName)) {
-                    missingDeps.add(depName);
+            if (value) {
+                let match = undefined;
+                while ((match = depRe.exec(value))) {
+                    const depName = unwrapUndefinable(match.groups?.["depName"]);
+                    deps.add(depName);
+                    // `depName` at this point can have a form of `expression` or
+                    // `prefix:expression`
+                    if (!definedEnvKeys.has(depName)) {
+                        missingDeps.add(depName);
+                    }
                 }
             }
             return [`env:${key}`, { deps: [...deps], value }];
-        })
+        }),
     );
 
     const resolved = new Set<string>();
@@ -349,7 +423,7 @@ export function substituteVariablesInEnv(env: Env): Env {
         if (match) {
             const { prefix, body } = match.groups!;
             if (prefix === "env") {
-                const envName = body;
+                const envName = unwrapUndefinable(body);
                 envWithDeps[dep] = {
                     value: process.env[envName] ?? "",
                     deps: [],
@@ -377,13 +451,11 @@ export function substituteVariablesInEnv(env: Env): Env {
     do {
         leftToResolveSize = toResolve.size;
         for (const key of toResolve) {
-            if (envWithDeps[key].deps.every((dep) => resolved.has(dep))) {
-                envWithDeps[key].value = envWithDeps[key].value.replace(
-                    /\${(?<depName>.+?)}/g,
-                    (_wholeMatch, depName) => {
-                        return envWithDeps[depName].value;
-                    }
-                );
+            const item = envWithDeps[key];
+            if (item && item.deps.every((dep) => resolved.has(dep))) {
+                item.value = item.value?.replace(/\${(?<depName>.+?)}/g, (_wholeMatch, depName) => {
+                    return envWithDeps[depName]?.value ?? "";
+                });
                 resolved.add(key);
                 toResolve.delete(key);
             }
@@ -392,7 +464,8 @@ export function substituteVariablesInEnv(env: Env): Env {
 
     const resolvedEnv: Env = {};
     for (const key of Object.keys(env)) {
-        resolvedEnv[key] = envWithDeps[`env:${key}`].value;
+        const item = unwrapUndefinable(envWithDeps[`env:${key}`]);
+        resolvedEnv[key] = item.value;
     }
     return resolvedEnv;
 }
@@ -411,20 +484,18 @@ function substituteVSCodeVariableInString(val: string): string {
 function computeVscodeVar(varName: string): string | null {
     const workspaceFolder = () => {
         const folders = vscode.workspace.workspaceFolders ?? [];
-        if (folders.length === 1) {
-            // TODO: support for remote workspaces?
-            return folders[0].uri.fsPath;
-        } else if (folders.length > 1) {
-            // could use currently opened document to detect the correct
-            // workspace. However, that would be determined by the document
-            // user has opened on Editor startup. Could lead to
-            // unpredictable workspace selection in practice.
-            // It's better to pick the first one
-            return folders[0].uri.fsPath;
-        } else {
-            // no workspace opened
-            return "";
-        }
+        const folder = folders[0];
+        // TODO: support for remote workspaces?
+        const fsPath: string =
+            folder === undefined
+                ? "" // no workspace opened
+                : // could use currently opened document to detect the correct
+                  // workspace. However, that would be determined by the document
+                  // user has opened on Editor startup. Could lead to
+                  // unpredictable workspace selection in practice.
+                  // It's better to pick the first one
+                  normalizeDriveLetter(folder.uri.fsPath);
+        return fsPath;
     };
     // https://code.visualstudio.com/docs/editor/variables-reference
     const supportedVariables: { [k: string]: () => string } = {
@@ -441,13 +512,17 @@ function computeVscodeVar(varName: string): string | null {
         // https://github.com/microsoft/vscode/blob/08ac1bb67ca2459496b272d8f4a908757f24f56f/src/vs/workbench/api/common/extHostVariableResolverService.ts#L81
         // or
         // https://github.com/microsoft/vscode/blob/29eb316bb9f154b7870eb5204ec7f2e7cf649bec/src/vs/server/node/remoteTerminalChannel.ts#L56
-        execPath: () => process.env.VSCODE_EXEC_PATH ?? process.execPath,
+        execPath: () => process.env["VSCODE_EXEC_PATH"] ?? process.execPath,
 
         pathSeparator: () => path.sep,
     };
 
     if (varName in supportedVariables) {
-        return supportedVariables[varName]();
+        const fn = expectNotUndefined(
+            supportedVariables[varName],
+            `${varName} should not be undefined here`,
+        );
+        return fn();
     } else {
         // return "${" + varName + "}";
         return null;

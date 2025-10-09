@@ -2,7 +2,7 @@ use std::fmt::Write;
 use std::{env, iter};
 
 use anyhow::bail;
-use xshell::{cmd, Shell};
+use xshell::{Shell, cmd};
 
 pub(crate) fn get_changelog(
     sh: &Shell,
@@ -13,7 +13,9 @@ pub(crate) fn get_changelog(
 ) -> anyhow::Result<String> {
     let token = match env::var("GITHUB_TOKEN") {
         Ok(token) => token,
-        Err(_) => bail!("Please obtain a personal access token from https://github.com/settings/tokens and set the `GITHUB_TOKEN` environment variable."),
+        Err(_) => bail!(
+            "Please obtain a personal access token from https://github.com/settings/tokens and set the `GITHUB_TOKEN` environment variable."
+        ),
     };
 
     let git_log = cmd!(sh, "git log {prev_tag}..HEAD --reverse").read()?;
@@ -30,34 +32,52 @@ pub(crate) fn get_changelog(
 
             // we don't use an HTTPS client or JSON parser to keep the build times low
             let pr = pr_num.to_string();
-            let pr_json =
-                cmd!(sh, "curl -s -H {accept} -H {authorization} {pr_url}/{pr}").read()?;
+            let cmd = &cmd!(sh, "curl --fail -s -H {accept} -H {authorization} {pr_url}/{pr}");
+            let pr_json = match cmd.read() {
+                Ok(pr_json) => pr_json,
+                Err(e) => {
+                    // most likely a rust-lang/rust PR
+                    eprintln!("Cannot get info for #{pr}: {e}");
+                    continue;
+                }
+            };
+
             let pr_title = cmd!(sh, "jq .title").stdin(&pr_json).read()?;
             let pr_title = unescape(&pr_title[1..pr_title.len() - 1]);
             let pr_comment = cmd!(sh, "jq .body").stdin(pr_json).read()?;
 
-            let comments_json =
-                cmd!(sh, "curl -s -H {accept} -H {authorization} {pr_url}/{pr}/comments").read()?;
-            let pr_comments = cmd!(sh, "jq .[].body").stdin(comments_json).read()?;
+            let cmd =
+                &cmd!(sh, "curl --fail -s -H {accept} -H {authorization} {pr_url}/{pr}/comments");
+            let pr_info = match cmd.read() {
+                Ok(comments_json) => {
+                    let pr_comments = cmd!(sh, "jq .[].body").stdin(comments_json).read()?;
 
-            let l = iter::once(pr_comment.as_str())
-                .chain(pr_comments.lines())
-                .rev()
-                .find_map(|it| {
-                    let it = unescape(&it[1..it.len() - 1]);
-                    it.lines().find_map(parse_changelog_line)
-                })
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| parse_title_line(&pr_title));
-            let s = match l.kind {
+                    iter::once(pr_comment.as_str())
+                        .chain(pr_comments.lines())
+                        .rev()
+                        .find_map(|it| {
+                            let it = unescape(&it[1..it.len() - 1]);
+                            it.lines().find_map(parse_changelog_line)
+                        })
+                        .into_iter()
+                        .next()
+                }
+                Err(e) => {
+                    eprintln!("Cannot get comments for #{pr}: {e}");
+                    None
+                }
+            };
+
+            let pr_info = pr_info.unwrap_or_else(|| parse_title_line(&pr_title));
+            let s = match pr_info.kind {
                 PrKind::Feature => &mut features,
                 PrKind::Fix => &mut fixes,
                 PrKind::Internal => &mut internal,
                 PrKind::Other => &mut others,
                 PrKind::Skip => continue,
             };
-            writeln!(s, "* pr:{pr_num}[] {}", l.message.as_deref().unwrap_or(&pr_title)).unwrap();
+            writeln!(s, "* pr:{pr_num}[] {}", pr_info.message.as_deref().unwrap_or(&pr_title))
+                .unwrap();
         }
     }
 
@@ -110,16 +130,13 @@ fn unescape(s: &str) -> String {
 }
 
 fn parse_pr_number(s: &str) -> Option<u32> {
-    const BORS_PREFIX: &str = "Merge #";
+    const GITHUB_PREFIX: &str = "Merge pull request #";
     const HOMU_PREFIX: &str = "Auto merge of #";
-    if let Some(s) = s.strip_prefix(BORS_PREFIX) {
+    if let Some(s) = s.strip_prefix(GITHUB_PREFIX) {
+        let s = if let Some(space) = s.find(' ') { &s[..space] } else { s };
         s.parse().ok()
     } else if let Some(s) = s.strip_prefix(HOMU_PREFIX) {
-        if let Some(space) = s.find(' ') {
-            s[..space].parse().ok()
-        } else {
-            None
-        }
+        if let Some(space) = s.find(' ') { s[..space].parse().ok() } else { None }
     } else {
         None
     }
@@ -165,5 +182,5 @@ fn parse_title_line(s: &str) -> PrInfo {
             return PrInfo { message, kind };
         }
     }
-    PrInfo { kind: PrKind::Other, message: Some(s.to_string()) }
+    PrInfo { kind: PrKind::Other, message: Some(s.to_owned()) }
 }

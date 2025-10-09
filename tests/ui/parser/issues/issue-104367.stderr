@@ -18,9 +18,8 @@ LL |     d: [u32; {
 LL |         #![cfg] {
    |                 - unclosed delimiter
 LL |             #![w,)
-   |                  - missing open `(` for this delimiter
 LL |
-   |                                                                       ^
+   |                                                                      ^
 
 error: aborting due to 2 previous errors
 

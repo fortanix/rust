@@ -1,4 +1,5 @@
 //@compile-flags: --crate-name mut_key
+//@check-pass
 
 #![warn(clippy::mutable_key_type)]
 
@@ -44,10 +45,18 @@ impl<T> Deref for Counted<T> {
     }
 }
 
+#[derive(Hash, PartialEq, Eq)]
+struct ContainsCounted {
+    inner: Counted<String>,
+}
+
 // This is not linted because `"mut_key::Counted"` is in
 // `arc_like_types` in `clippy.toml`
 fn should_not_take_this_arg(_v: HashSet<Counted<String>>) {}
 
+fn indirect(_: HashMap<ContainsCounted, usize>) {}
+
 fn main() {
     should_not_take_this_arg(HashSet::new());
+    indirect(HashMap::new());
 }

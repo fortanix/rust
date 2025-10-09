@@ -1,12 +1,14 @@
 error[E0373]: closure may outlive the current function, but it borrows `prefix`, which is owned by the current function
   --> $DIR/does-not-live-long-enough.rs:6:33
    |
+LL |     fn started_with<'a>(&'a self, prefix: &'a str) -> impl Iterator<Item=&'a str> {
+   |                     -- lifetime `'a` defined here
 LL |         self.data.iter().filter(|s| s.starts_with(prefix)).map(|s| s.as_ref())
    |                                 ^^^               ------ `prefix` is borrowed here
    |                                 |
    |                                 may outlive borrowed value `prefix`
    |
-note: closure is returned here
+note: function requires argument type to outlive `'a`
   --> $DIR/does-not-live-long-enough.rs:6:9
    |
 LL |         self.data.iter().filter(|s| s.starts_with(prefix)).map(|s| s.as_ref())
@@ -16,6 +18,6 @@ help: to force the closure to take ownership of `prefix` (and any other referenc
 LL |         self.data.iter().filter(move |s| s.starts_with(prefix)).map(|s| s.as_ref())
    |                                 ++++
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 
 For more information about this error, try `rustc --explain E0373`.

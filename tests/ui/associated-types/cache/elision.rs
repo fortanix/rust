@@ -2,7 +2,7 @@
 // trait without elision (a bug in this cropped up during
 // bootstrapping, so this is a regression test).
 
-// check-pass
+//@ check-pass
 
 pub struct SplitWhitespace<'a> {
     x: &'a u8
@@ -14,7 +14,7 @@ pub trait UnicodeStr {
 
 impl UnicodeStr for str {
     #[inline]
-    fn split_whitespace(&self) -> SplitWhitespace {
+    fn split_whitespace(&self) -> SplitWhitespace<'_> {
         unimplemented!()
     }
 }

@@ -4,13 +4,21 @@
 #![feature(no_core)]
 #![no_core]
 
+#[lang = "pointee_sized"]
+//~^ ERROR: lang items are subject to change [E0658]
+pub trait PointeeSized {}
+
+#[lang = "meta_sized"]
+//~^ ERROR: lang items are subject to change [E0658]
+pub trait MetaSized: PointeeSized {}
+
 #[lang = "sized"]
-//~^ ERROR: language items are subject to change [E0658]
-trait Sized {}
+//~^ ERROR: lang items are subject to change [E0658]
+trait Sized: MetaSized {}
 
 #[lang = "fn"]
-//~^ ERROR: language items are subject to change [E0658]
-//~| ERROR: `fn` language item must be applied to a trait with 1 generic argument
+//~^ ERROR: lang items are subject to change [E0658]
+//~| ERROR: `fn` lang item must be applied to a trait with 1 generic argument
 trait Fn {
     fn call(export_name);
     //~^ ERROR: expected type

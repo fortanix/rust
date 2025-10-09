@@ -1,10 +1,14 @@
-use crate::error::ConstNotUsedTraitAlias;
-use crate::ty::fold::{TypeFolder, TypeSuperFoldable};
-use crate::ty::subst::{GenericArg, GenericArgKind};
-use crate::ty::{self, Ty, TyCtxt, TypeFoldable};
 use rustc_data_structures::fx::FxHashMap;
-use rustc_span::def_id::DefId;
 use rustc_span::Span;
+use rustc_span::def_id::DefId;
+use tracing::{debug, instrument, trace};
+
+use crate::error::ConstNotUsedTraitAlias;
+use crate::ty::{
+    self, GenericArg, GenericArgKind, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable,
+};
+
+pub type OpaqueTypeKey<'tcx> = rustc_type_ir::OpaqueTypeKey<TyCtxt<'tcx>>;
 
 /// Converts generic params of a TypeFoldable from one
 /// item's generics to another. Usually from a function's generics
@@ -16,12 +20,6 @@ pub(super) struct ReverseMapper<'tcx> {
     /// for an explanation of this field.
     do_not_error: bool,
 
-    /// We do not want to emit any errors in typeck because
-    /// the spans in typeck are subpar at the moment.
-    /// Borrowck will do the same work again (this time with
-    /// lifetime information) and thus report better errors.
-    ignore_errors: bool,
-
     /// Span of function being checked.
     span: Span,
 }
@@ -31,9 +29,8 @@ impl<'tcx> ReverseMapper<'tcx> {
         tcx: TyCtxt<'tcx>,
         map: FxHashMap<GenericArg<'tcx>, GenericArg<'tcx>>,
         span: Span,
-        ignore_errors: bool,
     ) -> Self {
-        Self { tcx, map, do_not_error: false, ignore_errors, span }
+        Self { tcx, map, do_not_error: false, span }
     }
 
     fn fold_kind_no_missing_regions_error(&mut self, kind: GenericArg<'tcx>) -> GenericArg<'tcx> {
@@ -49,11 +46,11 @@ impl<'tcx> ReverseMapper<'tcx> {
         kind.fold_with(self)
     }
 
-    fn fold_closure_substs(
+    fn fold_closure_args(
         &mut self,
         def_id: DefId,
-        substs: ty::SubstsRef<'tcx>,
-    ) -> ty::SubstsRef<'tcx> {
+        args: ty::GenericArgsRef<'tcx>,
+    ) -> ty::GenericArgsRef<'tcx> {
         // I am a horrible monster and I pray for death. When
         // we encounter a closure here, it is always a closure
         // from within the function that we are currently
@@ -79,7 +76,7 @@ impl<'tcx> ReverseMapper<'tcx> {
         // during codegen.
 
         let generics = self.tcx.generics_of(def_id);
-        self.tcx.mk_substs_from_iter(substs.iter().enumerate().map(|(index, kind)| {
+        self.tcx.mk_args_from_iter(args.iter().enumerate().map(|(index, kind)| {
             if index < generics.parent_count {
                 // Accommodate missing regions in the parent kinds...
                 self.fold_kind_no_missing_regions_error(kind)
@@ -92,18 +89,19 @@ impl<'tcx> ReverseMapper<'tcx> {
 }
 
 impl<'tcx> TypeFolder<TyCtxt<'tcx>> for ReverseMapper<'tcx> {
-    fn interner(&self) -> TyCtxt<'tcx> {
+    fn cx(&self) -> TyCtxt<'tcx> {
         self.tcx
     }
 
     #[instrument(skip(self), level = "debug")]
     fn fold_region(&mut self, r: ty::Region<'tcx>) -> ty::Region<'tcx> {
-        match *r {
+        match r.kind() {
             // Ignore bound regions and `'static` regions that appear in the
             // type, we only need to remap regions that reference lifetimes
             // from the function declaration.
-            // This would ignore `'r` in a type like `for<'r> fn(&'r u32)`.
-            ty::ReLateBound(..) | ty::ReStatic => return r,
+            //
+            // E.g. We ignore `'r` in a type like `for<'r> fn(&'r u32)`.
+            ty::ReBound(..) | ty::ReStatic => return r,
 
             // If regions have been erased (by writeback), don't try to unerase
             // them.
@@ -112,7 +110,7 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for ReverseMapper<'tcx> {
             ty::ReError(_) => return r,
 
             // The regions that we expect from borrow checking.
-            ty::ReEarlyBound(_) | ty::ReFree(_) => {}
+            ty::ReEarlyParam(_) | ty::ReLateParam(_) => {}
 
             ty::RePlaceholder(_) | ty::ReVar(_) => {
                 // All of the regions in the type should either have been
@@ -122,71 +120,67 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for ReverseMapper<'tcx> {
             }
         }
 
-        match self.map.get(&r.into()).map(|k| k.unpack()) {
+        match self.map.get(&r.into()).map(|arg| arg.kind()) {
             Some(GenericArgKind::Lifetime(r1)) => r1,
-            Some(u) => panic!("region mapped to unexpected kind: {:?}", u),
+            Some(u) => panic!("region mapped to unexpected kind: {u:?}"),
             None if self.do_not_error => self.tcx.lifetimes.re_static,
             None => {
                 let e = self
                     .tcx
-                    .sess
+                    .dcx()
                     .struct_span_err(self.span, "non-defining opaque type use in defining scope")
-                    .span_label(
+                    .with_span_label(
                         self.span,
                         format!(
-                            "lifetime `{}` is part of concrete type but not used in \
-                             parameter list of the `impl Trait` type alias",
-                            r
+                            "lifetime `{r}` is part of concrete type but not used in \
+                             parameter list of the `impl Trait` type alias"
                         ),
                     )
                     .emit();
 
-                self.interner().mk_re_error(e)
+                ty::Region::new_error(self.cx(), e)
             }
         }
     }
 
     fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
         match *ty.kind() {
-            ty::Closure(def_id, substs) => {
-                let substs = self.fold_closure_substs(def_id, substs);
-                self.tcx.mk_closure(def_id, substs)
+            ty::Closure(def_id, args) => {
+                let args = self.fold_closure_args(def_id, args);
+                Ty::new_closure(self.tcx, def_id, args)
             }
 
-            ty::Generator(def_id, substs, movability) => {
-                let substs = self.fold_closure_substs(def_id, substs);
-                self.tcx.mk_generator(def_id, substs, movability)
+            ty::Coroutine(def_id, args) => {
+                let args = self.fold_closure_args(def_id, args);
+                Ty::new_coroutine(self.tcx, def_id, args)
             }
 
-            ty::GeneratorWitnessMIR(def_id, substs) => {
-                let substs = self.fold_closure_substs(def_id, substs);
-                self.tcx.mk_generator_witness_mir(def_id, substs)
+            ty::CoroutineWitness(def_id, args) => {
+                let args = self.fold_closure_args(def_id, args);
+                Ty::new_coroutine_witness(self.tcx, def_id, args)
             }
 
             ty::Param(param) => {
-                // Look it up in the substitution list.
-                match self.map.get(&ty.into()).map(|k| k.unpack()) {
-                    // Found it in the substitution list; replace with the parameter from the
+                // Look it up in the generic parameters list.
+                match self.map.get(&ty.into()).map(|arg| arg.kind()) {
+                    // Found it in the generic parameters list; replace with the parameter from the
                     // opaque type.
                     Some(GenericArgKind::Type(t1)) => t1,
-                    Some(u) => panic!("type mapped to unexpected kind: {:?}", u),
+                    Some(u) => panic!("type mapped to unexpected kind: {u:?}"),
                     None => {
                         debug!(?param, ?self.map);
-                        if !self.ignore_errors {
-                            self.tcx
-                                .sess
-                                .struct_span_err(
-                                    self.span,
-                                    format!(
-                                        "type parameter `{}` is part of concrete type but not \
-                                          used in parameter list for the `impl Trait` type alias",
-                                        ty
-                                    ),
-                                )
-                                .emit();
-                        }
-
-                        self.interner().ty_error_misc()
+                        let guar = self
+                            .tcx
+                            .dcx()
+                            .struct_span_err(
+                                self.span,
+                                format!(
+                                    "type parameter `{ty}` is part of concrete type but not \
+                                          used in parameter list for the `impl Trait` type alias"
+                                ),
+                            )
+                            .emit();
+                        Ty::new_error(self.tcx, guar)
                     }
                 }
             }
@@ -200,21 +194,22 @@ impl<'tcx> TypeFolder<TyCtxt<'tcx>> for ReverseMapper<'tcx> {
         // Find a const parameter
         match ct.kind() {
             ty::ConstKind::Param(..) => {
-                // Look it up in the substitution list.
-                match self.map.get(&ct.into()).map(|k| k.unpack()) {
-                    // Found it in the substitution list, replace with the parameter from the
+                // Look it up in the generic parameters list.
+                match self.map.get(&ct.into()).map(|arg| arg.kind()) {
+                    // Found it in the generic parameters list, replace with the parameter from the
                     // opaque type.
                     Some(GenericArgKind::Const(c1)) => c1,
-                    Some(u) => panic!("const mapped to unexpected kind: {:?}", u),
+                    Some(u) => panic!("const mapped to unexpected kind: {u:?}"),
                     None => {
-                        if !self.ignore_errors {
-                            self.tcx.sess.emit_err(ConstNotUsedTraitAlias {
+                        let guar = self
+                            .tcx
+                            .dcx()
+                            .create_err(ConstNotUsedTraitAlias {
                                 ct: ct.to_string(),
                                 span: self.span,
-                            });
-                        }
-
-                        self.interner().const_error(ct.ty())
+                            })
+                            .emit();
+                        ty::Const::new_error(self.tcx, guar)
                     }
                 }
             }

@@ -1,11 +1,10 @@
-//@run-rustfix
-
 #![warn(clippy::match_like_matches_macro)]
 #![allow(
     unreachable_patterns,
     dead_code,
     clippy::equatable_if_let,
-    clippy::needless_borrowed_reference
+    clippy::needless_borrowed_reference,
+    clippy::redundant_guards
 )]
 
 fn main() {
@@ -16,27 +15,32 @@ fn main() {
         Some(0) => true,
         _ => false,
     };
+    //~^^^^ match_like_matches_macro
 
     // Lint
     let _w = match x {
         Some(_) => true,
         _ => false,
     };
+    //~^^^^ redundant_pattern_matching
 
     // Turn into is_none
     let _z = match x {
         Some(_) => false,
         None => true,
     };
+    //~^^^^ redundant_pattern_matching
 
     // Lint
     let _zz = match x {
         Some(r) if r == 0 => false,
         _ => true,
     };
+    //~^^^^ match_like_matches_macro
 
     // Lint
     let _zzz = if let Some(5) = x { true } else { false };
+    //~^ match_like_matches_macro
 
     // No lint
     let _a = match x {
@@ -65,6 +69,7 @@ fn main() {
             E::B(_) => true,
             _ => false,
         };
+        //~^^^^^ match_like_matches_macro
     }
     {
         // lint
@@ -77,6 +82,7 @@ fn main() {
             E::B(_) => true,
             _ => false,
         };
+        //~^^^^^^^ match_like_matches_macro
     }
     {
         // lint
@@ -85,6 +91,7 @@ fn main() {
             E::C => false,
             _ => true,
         };
+        //~^^^^^ match_like_matches_macro
     }
     {
         // no lint
@@ -144,6 +151,7 @@ fn main() {
             Some(3) => true,
             _ => false,
         };
+        //~^^^^ match_like_matches_macro
     }
 
     {
@@ -153,6 +161,7 @@ fn main() {
             Some(3) => true,
             _ => false,
         };
+        //~^^^^ match_like_matches_macro
     }
 
     {
@@ -170,6 +179,7 @@ fn main() {
                 AnEnum::X => true,
                 _ => false,
             };
+            //~^^^^ match_like_matches_macro
             foo(z);
         }
     }
@@ -184,6 +194,7 @@ fn main() {
             &Some(ref _a) => true,
             _ => false,
         };
+        //~^^^^ match_like_matches_macro
         fun(val);
     }
 
@@ -196,6 +207,7 @@ fn main() {
             &Some(ref _a) => true,
             _ => false,
         };
+        //~^^^^ match_like_matches_macro
         fun(val);
     }
 
@@ -254,4 +266,5 @@ fn msrv_1_42() {
         Some(0) => true,
         _ => false,
     };
+    //~^^^^ match_like_matches_macro
 }

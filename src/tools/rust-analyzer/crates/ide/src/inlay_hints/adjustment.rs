@@ -3,24 +3,28 @@
 //! let _: u32  = /* <never-to-any> */ loop {};
 //! let _: &u32 = /* &* */ &mut 0;
 //! ```
-use hir::{Adjust, Adjustment, AutoBorrow, HirDisplay, Mutability, PointerCast, Safety, Semantics};
-use ide_db::RootDatabase;
+use std::ops::Not;
 
-use stdx::never;
-use syntax::{
-    ast::{self, make, AstNode},
-    ted,
+use either::Either;
+use hir::{
+    Adjust, Adjustment, AutoBorrow, DisplayTarget, HirDisplay, Mutability, OverloadedDeref,
+    PointerCast, Safety,
 };
+use ide_db::{base_db::salsa, famous_defs::FamousDefs};
+
+use ide_db::text_edit::TextEditBuilder;
+use syntax::ast::{self, AstNode, prec::ExprPrecedence};
 
 use crate::{
-    AdjustmentHints, AdjustmentHintsMode, InlayHint, InlayHintLabel, InlayHintsConfig, InlayKind,
-    InlayTooltip,
+    AdjustmentHints, AdjustmentHintsMode, InlayHint, InlayHintLabel, InlayHintLabelPart,
+    InlayHintPosition, InlayHintsConfig, InlayKind, InlayTooltip,
 };
 
 pub(super) fn hints(
     acc: &mut Vec<InlayHint>,
-    sema: &Semantics<'_, RootDatabase>,
+    FamousDefs(sema, _): &FamousDefs<'_, '_>,
     config: &InlayHintsConfig,
+    display_target: DisplayTarget,
     expr: &ast::Expr,
 ) -> Option<()> {
     if config.adjustment_hints_hide_outside_unsafe && !sema.is_inside_unsafe(expr) {
@@ -35,125 +39,251 @@ pub(super) fn hints(
     if let ast::Expr::ParenExpr(_) = expr {
         return None;
     }
-    if let ast::Expr::BlockExpr(b) = expr {
-        if !b.is_standalone() {
-            return None;
-        }
+    if let ast::Expr::BlockExpr(b) = expr
+        && !b.is_standalone()
+    {
+        return None;
     }
 
     let descended = sema.descend_node_into_attributes(expr.clone()).pop();
     let desc_expr = descended.as_ref().unwrap_or(expr);
-    let adjustments = sema.expr_adjustments(desc_expr).filter(|it| !it.is_empty())?;
+    let mut adjustments = sema.expr_adjustments(desc_expr).filter(|it| !it.is_empty())?;
+
+    if config.adjustment_hints_disable_reborrows {
+        // Remove consecutive deref-ref, i.e. reborrows.
+        let mut i = 0;
+        while i < adjustments.len().saturating_sub(1) {
+            let [current, next, ..] = &adjustments[i..] else { unreachable!() };
+            if matches!(current.kind, Adjust::Deref(None))
+                && matches!(next.kind, Adjust::Borrow(AutoBorrow::Ref(_)))
+            {
+                adjustments.splice(i..i + 2, []);
+            } else {
+                i += 1;
+            }
+        }
+    }
 
     if let ast::Expr::BlockExpr(_) | ast::Expr::IfExpr(_) | ast::Expr::MatchExpr(_) = desc_expr {
-        if let [Adjustment { kind: Adjust::Deref(_), source, .. }, Adjustment { kind: Adjust::Borrow(_), source: _, target }] =
-            &*adjustments
-        {
-            // Don't show unnecessary reborrows for these, they will just repeat the inner ones again
-            if source == target {
-                return None;
-            }
+        // Don't show unnecessary reborrows for these, they will just repeat the inner ones again
+        if matches!(
+            &*adjustments,
+            [Adjustment { kind: Adjust::Deref(_), source, .. }, Adjustment { kind: Adjust::Borrow(_), target, .. }]
+            if source == target
+        ) {
+            return None;
         }
     }
 
     let (postfix, needs_outer_parens, needs_inner_parens) =
         mode_and_needs_parens_for_adjustment_hints(expr, config.adjustment_hints_mode);
 
-    if needs_outer_parens {
-        acc.push(InlayHint::opening_paren(expr.syntax().text_range()));
+    let range = expr.syntax().text_range();
+    let mut pre = InlayHint {
+        range,
+        position: InlayHintPosition::Before,
+        pad_left: false,
+        pad_right: false,
+        kind: InlayKind::Adjustment,
+        label: InlayHintLabel::default(),
+        text_edit: None,
+        resolve_parent: Some(range),
+    };
+    let mut post = InlayHint {
+        range,
+        position: InlayHintPosition::After,
+        pad_left: false,
+        pad_right: false,
+        kind: InlayKind::Adjustment,
+        label: InlayHintLabel::default(),
+        text_edit: None,
+        resolve_parent: Some(range),
+    };
+
+    if needs_outer_parens || (postfix && needs_inner_parens) {
+        pre.label.append_str("(");
     }
 
     if postfix && needs_inner_parens {
-        acc.push(InlayHint::opening_paren(expr.syntax().text_range()));
-        acc.push(InlayHint::closing_paren(expr.syntax().text_range()));
+        post.label.append_str(")");
     }
 
-    let (mut tmp0, mut tmp1);
-    let iter: &mut dyn Iterator<Item = _> = if postfix {
-        tmp0 = adjustments.into_iter();
-        &mut tmp0
+    let mut iter = if postfix {
+        Either::Left(adjustments.into_iter())
     } else {
-        tmp1 = adjustments.into_iter().rev();
-        &mut tmp1
+        Either::Right(adjustments.into_iter().rev())
     };
+    let iter: &mut dyn Iterator<Item = _> = iter.as_mut().either(|it| it as _, |it| it as _);
 
+    let mut has_adjustments = false;
+    let mut allow_edit = !postfix;
     for Adjustment { source, target, kind } in iter {
         if source == target {
             cov_mark::hit!(same_type_adjustment);
             continue;
         }
+        has_adjustments = true;
 
-        // FIXME: Add some nicer tooltips to each of these
-        let (text, coercion) = match kind {
+        let (text, coercion, detailed_tooltip) = match kind {
             Adjust::NeverToAny if config.adjustment_hints == AdjustmentHints::Always => {
-                ("<never-to-any>", "never to any")
+                allow_edit = false;
+                (
+                    "<never-to-any>",
+                    "never to any",
+                    "Coerces the never type `!` into any other type. This happens in code paths that never return, like after `panic!()` or `return`.",
+                )
             }
-            Adjust::Deref(_) => ("*", "dereference"),
-            Adjust::Borrow(AutoBorrow::Ref(Mutability::Shared)) => ("&", "borrow"),
-            Adjust::Borrow(AutoBorrow::Ref(Mutability::Mut)) => ("&mut ", "unique borrow"),
-            Adjust::Borrow(AutoBorrow::RawPtr(Mutability::Shared)) => {
-                ("&raw const ", "const pointer borrow")
-            }
-            Adjust::Borrow(AutoBorrow::RawPtr(Mutability::Mut)) => {
-                ("&raw mut ", "mut pointer borrow")
-            }
+            Adjust::Deref(None) => (
+                "*",
+                "dereference",
+                "Built-in dereference of a reference to access the underlying value. The compiler inserts `*` to get the value from `&T`.",
+            ),
+            Adjust::Deref(Some(OverloadedDeref(Mutability::Shared))) => (
+                "*",
+                "`Deref` dereference",
+                "Dereference via the `Deref` trait. Used for types like `Box<T>` or `Rc<T>` so they act like plain `T`.",
+            ),
+            Adjust::Deref(Some(OverloadedDeref(Mutability::Mut))) => (
+                "*",
+                "`DerefMut` dereference",
+                "Mutable dereference using the `DerefMut` trait. Enables smart pointers to give mutable access to their inner values.",
+            ),
+            Adjust::Borrow(AutoBorrow::Ref(Mutability::Shared)) => (
+                "&",
+                "shared borrow",
+                "Inserts `&` to create a shared reference. Lets you use a value without moving or cloning it.",
+            ),
+            Adjust::Borrow(AutoBorrow::Ref(Mutability::Mut)) => (
+                "&mut ",
+                "mutable borrow",
+                "Inserts `&mut` to create a unique, mutable reference. Lets you modify a value without taking ownership.",
+            ),
+            Adjust::Borrow(AutoBorrow::RawPtr(Mutability::Shared)) => (
+                "&raw const ",
+                "const raw pointer",
+                "Converts a reference to a raw const pointer `*const T`. Often used when working with FFI or unsafe code.",
+            ),
+            Adjust::Borrow(AutoBorrow::RawPtr(Mutability::Mut)) => (
+                "&raw mut ",
+                "mut raw pointer",
+                "Converts a mutable reference to a raw mutable pointer `*mut T`. Allows mutation in unsafe contexts.",
+            ),
             // some of these could be represented via `as` casts, but that's not too nice and
             // handling everything as a prefix expr makes the `(` and `)` insertion easier
             Adjust::Pointer(cast) if config.adjustment_hints == AdjustmentHints::Always => {
+                allow_edit = false;
                 match cast {
-                    PointerCast::ReifyFnPointer => {
-                        ("<fn-item-to-fn-pointer>", "fn item to fn pointer")
-                    }
+                    PointerCast::ReifyFnPointer => (
+                        "<fn-item-to-fn-pointer>",
+                        "fn item to fn pointer",
+                        "Converts a named function to a function pointer `fn()`. Useful when passing functions as values.",
+                    ),
                     PointerCast::UnsafeFnPointer => (
                         "<safe-fn-pointer-to-unsafe-fn-pointer>",
                         "safe fn pointer to unsafe fn pointer",
+                        "Coerces a safe function pointer to an unsafe one. Allows calling it in an unsafe context.",
                     ),
-                    PointerCast::ClosureFnPointer(Safety::Unsafe) => {
-                        ("<closure-to-unsafe-fn-pointer>", "closure to unsafe fn pointer")
-                    }
-                    PointerCast::ClosureFnPointer(Safety::Safe) => {
-                        ("<closure-to-fn-pointer>", "closure to fn pointer")
-                    }
-                    PointerCast::MutToConstPointer => {
-                        ("<mut-ptr-to-const-ptr>", "mut ptr to const ptr")
-                    }
-                    PointerCast::ArrayToPointer => ("<array-ptr-to-element-ptr>", ""),
-                    PointerCast::Unsize => ("<unsize>", "unsize"),
+                    PointerCast::ClosureFnPointer(Safety::Unsafe) => (
+                        "<closure-to-unsafe-fn-pointer>",
+                        "closure to unsafe fn pointer",
+                        "Converts a non-capturing closure to an unsafe function pointer. Required for use in `extern` or unsafe APIs.",
+                    ),
+                    PointerCast::ClosureFnPointer(Safety::Safe) => (
+                        "<closure-to-fn-pointer>",
+                        "closure to fn pointer",
+                        "Converts a non-capturing closure to a function pointer. Lets closures behave like plain functions.",
+                    ),
+                    PointerCast::MutToConstPointer => (
+                        "<mut-ptr-to-const-ptr>",
+                        "mut ptr to const ptr",
+                        "Coerces `*mut T` to `*const T`. Safe because const pointers restrict what you can do.",
+                    ),
+                    PointerCast::ArrayToPointer => (
+                        "<array-ptr-to-element-ptr>",
+                        "array to pointer",
+                        "Converts an array to a pointer to its first element. Similar to how arrays decay to pointers in C.",
+                    ),
+                    PointerCast::Unsize => (
+                        "<unsize>",
+                        "unsize coercion",
+                        "Converts a sized type to an unsized one. Used for things like turning arrays into slices or concrete types into trait objects.",
+                    ),
                 }
             }
             _ => continue,
         };
-        acc.push(InlayHint {
-            range: expr.syntax().text_range(),
-            kind: if postfix { InlayKind::AdjustmentPostfix } else { InlayKind::Adjustment },
-            label: InlayHintLabel::simple(
-                if postfix { format!(".{}", text.trim_end()) } else { text.to_owned() },
-                Some(InlayTooltip::Markdown(format!(
-                    "`{}` → `{}` ({coercion} coercion)",
-                    source.display(sema.db),
-                    target.display(sema.db),
-                ))),
-                None,
-            ),
-        });
+        let label = InlayHintLabelPart {
+            text: if postfix { format!(".{}", text.trim_end()) } else { text.to_owned() },
+            linked_location: None,
+            tooltip: Some(config.lazy_tooltip(|| {
+                salsa::attach(sema.db, || {
+                    InlayTooltip::Markdown(format!(
+                        "`{}` → `{}`\n\n**{}**\n\n{}",
+                        source.display(sema.db, display_target),
+                        target.display(sema.db, display_target),
+                        coercion,
+                        detailed_tooltip
+                    ))
+                })
+            })),
+        };
+        if postfix { &mut post } else { &mut pre }.label.append_part(label);
     }
+    if !has_adjustments {
+        return None;
+    }
+
     if !postfix && needs_inner_parens {
-        acc.push(InlayHint::opening_paren(expr.syntax().text_range()));
-        acc.push(InlayHint::closing_paren(expr.syntax().text_range()));
+        pre.label.append_str("(");
     }
-    if needs_outer_parens {
-        acc.push(InlayHint::closing_paren(expr.syntax().text_range()));
+    if needs_outer_parens || (!postfix && needs_inner_parens) {
+        post.label.append_str(")");
     }
+
+    let mut pre = pre.label.parts.is_empty().not().then_some(pre);
+    let mut post = post.label.parts.is_empty().not().then_some(post);
+    if pre.is_none() && post.is_none() {
+        return None;
+    }
+    if allow_edit {
+        let edit = Some(config.lazy_text_edit(|| {
+            let mut b = TextEditBuilder::default();
+            if let Some(pre) = &pre {
+                b.insert(
+                    pre.range.start(),
+                    pre.label.parts.iter().map(|part| &*part.text).collect::<String>(),
+                );
+            }
+            if let Some(post) = &post {
+                b.insert(
+                    post.range.end(),
+                    post.label.parts.iter().map(|part| &*part.text).collect::<String>(),
+                );
+            }
+            b.finish()
+        }));
+        match (&mut pre, &mut post) {
+            (Some(pre), Some(post)) => {
+                pre.text_edit = edit.clone();
+                post.text_edit = edit;
+            }
+            (Some(pre), None) => pre.text_edit = edit,
+            (None, Some(post)) => post.text_edit = edit,
+            (None, None) => (),
+        }
+    }
+    acc.extend(pre);
+    acc.extend(post);
     Some(())
 }
 
-/// Returns whatever the hint should be postfix and if we need to add paretheses on the inside and/or outside of `expr`,
+/// Returns whatever the hint should be postfix and if we need to add parentheses on the inside and/or outside of `expr`,
 /// if we are going to add (`postfix`) adjustments hints to it.
 fn mode_and_needs_parens_for_adjustment_hints(
     expr: &ast::Expr,
     mode: AdjustmentHintsMode,
 ) -> (bool, bool, bool) {
-    use {std::cmp::Ordering::*, AdjustmentHintsMode::*};
+    use {AdjustmentHintsMode::*, std::cmp::Ordering::*};
 
     match mode {
         Prefix | Postfix => {
@@ -182,184 +312,133 @@ fn mode_and_needs_parens_for_adjustment_hints(
     }
 }
 
-/// Returns whatever we need to add paretheses on the inside and/or outside of `expr`,
+/// Returns whatever we need to add parentheses on the inside and/or outside of `expr`,
 /// if we are going to add (`postfix`) adjustments hints to it.
 fn needs_parens_for_adjustment_hints(expr: &ast::Expr, postfix: bool) -> (bool, bool) {
-    // This is a very miserable pile of hacks...
-    //
-    // `Expr::needs_parens_in` requires that the expression is the child of the other expression,
-    // that is supposed to be its parent.
-    //
-    // But we want to check what would happen if we add `*`/`.*` to the inner expression.
-    // To check for inner we need `` expr.needs_parens_in(`*expr`) ``,
-    // to check for outer we need `` `*expr`.needs_parens_in(parent) ``,
-    // where "expr" is the `expr` parameter, `*expr` is the editted `expr`,
-    // and "parent" is the parent of the original expression...
-    //
-    // For this we utilize mutable mutable trees, which is a HACK, but it works.
-    //
-    // FIXME: comeup with a better API for `needs_parens_in`, so that we don't have to do *this*
+    let prec = expr.precedence();
+    if postfix {
+        let needs_inner_parens = prec.needs_parentheses_in(ExprPrecedence::Postfix);
+        // given we are the higher precedence, no parent expression will have stronger requirements
+        let needs_outer_parens = false;
+        (needs_outer_parens, needs_inner_parens)
+    } else {
+        let needs_inner_parens = prec.needs_parentheses_in(ExprPrecedence::Prefix);
+        let parent = expr
+            .syntax()
+            .parent()
+            .and_then(ast::Expr::cast)
+            // if we are already wrapped, great, no need to wrap again
+            .filter(|it| !matches!(it, ast::Expr::ParenExpr(_)))
+            .map(|it| it.precedence())
+            .filter(|&prec| prec != ExprPrecedence::Unambiguous);
 
-    // Make `&expr`/`expr?`
-    let dummy_expr = {
-        // `make::*` function go through a string, so they parse wrongly.
-        // for example `` make::expr_try(`|| a`) `` would result in a
-        // `|| (a?)` and not `(|| a)?`.
-        //
-        // Thus we need dummy parens to preserve the relationship we want.
-        // The parens are then simply ignored by the following code.
-        let dummy_paren = make::expr_paren(expr.clone());
-        if postfix {
-            make::expr_try(dummy_paren)
-        } else {
-            make::expr_ref(dummy_paren, false)
-        }
-    };
-
-    // Do the dark mutable tree magic.
-    // This essentially makes `dummy_expr` and `expr` switch places (families),
-    // so that `expr`'s parent is not `dummy_expr`'s parent.
-    let dummy_expr = dummy_expr.clone_for_update();
-    let expr = expr.clone_for_update();
-    ted::replace(expr.syntax(), dummy_expr.syntax());
-
-    let parent = dummy_expr.syntax().parent();
-    let Some(expr) = (|| {
-        if postfix {
-            let ast::Expr::TryExpr(e) = &dummy_expr else { return None };
-            let Some(ast::Expr::ParenExpr(e)) = e.expr() else { return None };
-
-            e.expr()
-        } else {
-            let ast::Expr::RefExpr(e) = &dummy_expr else { return None };
-            let Some(ast::Expr::ParenExpr(e)) = e.expr() else { return None };
-
-            e.expr()
-        }
-    })() else {
-        never!("broken syntax tree?\n{:?}\n{:?}", expr, dummy_expr);
-        return (true, true)
-    };
-
-    // At this point
-    // - `parent`     is the parrent of the original expression
-    // - `dummy_expr` is the original expression wrapped in the operator we want (`*`/`.*`)
-    // - `expr`       is the clone of the original expression (with `dummy_expr` as the parent)
-
-    let needs_outer_parens = parent.map_or(false, |p| dummy_expr.needs_parens_in(p));
-    let needs_inner_parens = expr.needs_parens_in(dummy_expr.syntax().clone());
-
-    (needs_outer_parens, needs_inner_parens)
+        // if we have no parent, we don't need outer parens to disambiguate
+        // otherwise anything with higher precedence than what we insert needs to wrap us
+        let needs_outer_parens = parent
+            .is_some_and(|parent_prec| ExprPrecedence::Prefix.needs_parentheses_in(parent_prec));
+        (needs_outer_parens, needs_inner_parens)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        inlay_hints::tests::{check_with_config, DISABLED_CONFIG},
         AdjustmentHints, AdjustmentHintsMode, InlayHintsConfig,
+        inlay_hints::tests::{DISABLED_CONFIG, check_with_config},
     };
 
     #[test]
-    fn adjustment_hints() {
+    fn adjustment_hints_prefix() {
         check_with_config(
             InlayHintsConfig { adjustment_hints: AdjustmentHints::Always, ..DISABLED_CONFIG },
             r#"
-//- minicore: coerce_unsized, fn, eq
+//- minicore: coerce_unsized, fn, eq, index, dispatch_from_dyn
 fn main() {
     let _: u32         = loop {};
                        //^^^^^^^<never-to-any>
     let _: &u32        = &mut 0;
-                       //^^^^^^&
-                       //^^^^^^*
+                       //^^^^^^&*
     let _: &mut u32    = &mut 0;
-                       //^^^^^^&mut $
-                       //^^^^^^*
+                       //^^^^^^&mut *
     let _: *const u32  = &mut 0;
-                       //^^^^^^&raw const $
-                       //^^^^^^*
+                       //^^^^^^&raw const *
     let _: *mut u32    = &mut 0;
-                       //^^^^^^&raw mut $
-                       //^^^^^^*
+                       //^^^^^^&raw mut *
     let _: fn()        = main;
                        //^^^^<fn-item-to-fn-pointer>
     let _: unsafe fn() = main;
-                       //^^^^<safe-fn-pointer-to-unsafe-fn-pointer>
-                       //^^^^<fn-item-to-fn-pointer>
+                       //^^^^<safe-fn-pointer-to-unsafe-fn-pointer><fn-item-to-fn-pointer>
     let _: unsafe fn() = main as fn();
-                       //^^^^^^^^^^^^<safe-fn-pointer-to-unsafe-fn-pointer>
-                       //^^^^^^^^^^^^(
+                       //^^^^^^^^^^^^<safe-fn-pointer-to-unsafe-fn-pointer>(
                        //^^^^^^^^^^^^)
+                       //^^^^<fn-item-to-fn-pointer>
     let _: fn()        = || {};
                        //^^^^^<closure-to-fn-pointer>
     let _: unsafe fn() = || {};
                        //^^^^^<closure-to-unsafe-fn-pointer>
     let _: *const u32  = &mut 0u32 as *mut u32;
-                       //^^^^^^^^^^^^^^^^^^^^^<mut-ptr-to-const-ptr>
-                       //^^^^^^^^^^^^^^^^^^^^^(
+                       //^^^^^^^^^^^^^^^^^^^^^<mut-ptr-to-const-ptr>(
                        //^^^^^^^^^^^^^^^^^^^^^)
+                       //^^^^^^^^^&raw mut *
     let _: &mut [_]    = &mut [0; 0];
-                       //^^^^^^^^^^^<unsize>
-                       //^^^^^^^^^^^&mut $
-                       //^^^^^^^^^^^*
+                       //^^^^^^^^^^^<unsize>&mut *
 
     Struct.consume();
     Struct.by_ref();
-  //^^^^^^(
-  //^^^^^^&
+  //^^^^^^(&
   //^^^^^^)
     Struct.by_ref_mut();
-  //^^^^^^(
-  //^^^^^^&mut $
+  //^^^^^^(&mut $
   //^^^^^^)
 
     (&Struct).consume();
    //^^^^^^^*
     (&Struct).by_ref();
+   //^^^^^^^&*
 
     (&mut Struct).consume();
    //^^^^^^^^^^^*
     (&mut Struct).by_ref();
-   //^^^^^^^^^^^&
-   //^^^^^^^^^^^*
+   //^^^^^^^^^^^&*
     (&mut Struct).by_ref_mut();
+   //^^^^^^^^^^^&mut *
 
     // Check that block-like expressions don't duplicate hints
     let _: &mut [u32] = (&mut []);
-                       //^^^^^^^<unsize>
-                       //^^^^^^^&mut $
-                       //^^^^^^^*
+                       //^^^^^^^<unsize>&mut *
     let _: &mut [u32] = { &mut [] };
-                        //^^^^^^^<unsize>
-                        //^^^^^^^&mut $
-                        //^^^^^^^*
+                        //^^^^^^^<unsize>&mut *
     let _: &mut [u32] = unsafe { &mut [] };
-                               //^^^^^^^<unsize>
-                               //^^^^^^^&mut $
-                               //^^^^^^^*
+                               //^^^^^^^<unsize>&mut *
     let _: &mut [u32] = if true {
         &mut []
-      //^^^^^^^<unsize>
-      //^^^^^^^&mut $
-      //^^^^^^^*
+      //^^^^^^^<unsize>&mut *
     } else {
         loop {}
       //^^^^^^^<never-to-any>
     };
     let _: &mut [u32] = match () { () => &mut [] };
-                                       //^^^^^^^<unsize>
-                                       //^^^^^^^&mut $
-                                       //^^^^^^^*
+                                       //^^^^^^^<unsize>&mut *
 
     let _: &mut dyn Fn() = &mut || ();
-                         //^^^^^^^^^^<unsize>
-                         //^^^^^^^^^^&mut $
-                         //^^^^^^^^^^*
+                         //^^^^^^^^^^<unsize>&mut *
     () == ();
  // ^^&
        // ^^&
     (()) == {()};
   // ^^&
          // ^^^^&
+    let closure: &dyn Fn = &|| ();
+                         //^^^^^^<unsize>&*
+    closure();
+    Struct[0];
+  //^^^^^^(&
+  //^^^^^^)
+    &mut Struct[0];
+       //^^^^^^(&mut $
+       //^^^^^^)
+    let _: (&mut (),) = (&mut (),);
+                       //^^^^^^^&mut *
 }
 
 #[derive(Copy, Clone)]
@@ -369,8 +448,13 @@ impl Struct {
     fn by_ref(&self) {}
     fn by_ref_mut(&mut self) {}
 }
+struct StructMut;
+impl core::ops::Index<usize> for Struct {
+    type Output = ();
+}
+impl core::ops::IndexMut for Struct {}
 "#,
-        )
+        );
     }
 
     #[test]
@@ -382,7 +466,7 @@ impl Struct {
                 ..DISABLED_CONFIG
             },
             r#"
-//- minicore: coerce_unsized, fn, eq
+//- minicore: coerce_unsized, fn, eq, index, dispatch_from_dyn
 fn main() {
 
     Struct.consume();
@@ -393,70 +477,63 @@ fn main() {
 
     (&Struct).consume();
    //^^^^^^^(
-   //^^^^^^^)
-   //^^^^^^^.*
+   //^^^^^^^).*
     (&Struct).by_ref();
+   //^^^^^^^(
+   //^^^^^^^).*.&
 
     (&mut Struct).consume();
    //^^^^^^^^^^^(
-   //^^^^^^^^^^^)
-   //^^^^^^^^^^^.*
+   //^^^^^^^^^^^).*
     (&mut Struct).by_ref();
    //^^^^^^^^^^^(
-   //^^^^^^^^^^^)
-   //^^^^^^^^^^^.*
-   //^^^^^^^^^^^.&
+   //^^^^^^^^^^^).*.&
     (&mut Struct).by_ref_mut();
+   //^^^^^^^^^^^(
+   //^^^^^^^^^^^).*.&mut
 
     // Check that block-like expressions don't duplicate hints
     let _: &mut [u32] = (&mut []);
                        //^^^^^^^(
-                       //^^^^^^^)
-                       //^^^^^^^.*
-                       //^^^^^^^.&mut
-                       //^^^^^^^.<unsize>
+                       //^^^^^^^).*.&mut.<unsize>
     let _: &mut [u32] = { &mut [] };
                         //^^^^^^^(
-                        //^^^^^^^)
-                        //^^^^^^^.*
-                        //^^^^^^^.&mut
-                        //^^^^^^^.<unsize>
+                        //^^^^^^^).*.&mut.<unsize>
     let _: &mut [u32] = unsafe { &mut [] };
                                //^^^^^^^(
-                               //^^^^^^^)
-                               //^^^^^^^.*
-                               //^^^^^^^.&mut
-                               //^^^^^^^.<unsize>
+                               //^^^^^^^).*.&mut.<unsize>
     let _: &mut [u32] = if true {
         &mut []
       //^^^^^^^(
-      //^^^^^^^)
-      //^^^^^^^.*
-      //^^^^^^^.&mut
-      //^^^^^^^.<unsize>
+      //^^^^^^^).*.&mut.<unsize>
     } else {
         loop {}
       //^^^^^^^.<never-to-any>
     };
     let _: &mut [u32] = match () { () => &mut [] };
                                        //^^^^^^^(
-                                       //^^^^^^^)
-                                       //^^^^^^^.*
-                                       //^^^^^^^.&mut
-                                       //^^^^^^^.<unsize>
+                                       //^^^^^^^).*.&mut.<unsize>
 
     let _: &mut dyn Fn() = &mut || ();
                          //^^^^^^^^^^(
-                         //^^^^^^^^^^)
-                         //^^^^^^^^^^.*
-                         //^^^^^^^^^^.&mut
-                         //^^^^^^^^^^.<unsize>
+                         //^^^^^^^^^^).*.&mut.<unsize>
     () == ();
  // ^^.&
        // ^^.&
     (()) == {()};
   // ^^.&
          // ^^^^.&
+    let closure: &dyn Fn = &|| ();
+                         //^^^^^^(
+                         //^^^^^^).*.&.<unsize>
+    closure();
+    Struct[0];
+  //^^^^^^.&
+    &mut Struct[0];
+       //^^^^^^.&mut
+    let _: (&mut (),) = (&mut (),);
+                       //^^^^^^^(
+                       //^^^^^^^).*.&mut
 }
 
 #[derive(Copy, Clone)]
@@ -466,6 +543,11 @@ impl Struct {
     fn by_ref(&self) {}
     fn by_ref_mut(&mut self) {}
 }
+struct StructMut;
+impl core::ops::Index<usize> for Struct {
+    type Output = ();
+}
+impl core::ops::IndexMut for Struct {}
 "#,
         );
     }
@@ -550,9 +632,7 @@ fn or_else() {
             r#"
 unsafe fn enabled() {
     f(&&());
-    //^^^^&
-    //^^^^*
-    //^^^^*
+    //^^^^&**
 }
 
 fn disabled() {
@@ -564,9 +644,7 @@ fn mixed() {
 
     unsafe {
         f(&&());
-        //^^^^&
-        //^^^^*
-        //^^^^*
+        //^^^^&**
     }
 }
 
@@ -575,9 +653,7 @@ const _: () = {
 
     unsafe {
         f(&&());
-        //^^^^&
-        //^^^^*
-        //^^^^*
+        //^^^^&**
     }
 };
 
@@ -586,18 +662,14 @@ static STATIC: () = {
 
     unsafe {
         f(&&());
-        //^^^^&
-        //^^^^*
-        //^^^^*
+        //^^^^&**
     }
 };
 
 enum E {
     Disable = { f(&&()); 0 },
     Enable = unsafe { f(&&()); 1 },
-                      //^^^^&
-                      //^^^^*
-                      //^^^^*
+                      //^^^^&**
 }
 
 const fn f(_: &()) {}
@@ -623,8 +695,7 @@ fn a() {
     _ = Struct.by_ref();
 
     _ = unsafe { Struct.by_ref() };
-               //^^^^^^(
-               //^^^^^^&
+               //^^^^^^(&
                //^^^^^^)
 }
             "#,
@@ -644,5 +715,55 @@ fn main() {
 }
             "#,
         )
+    }
+
+    // regression test for a stackoverflow in hir display code
+    #[test]
+    fn adjustment_hints_method_call_on_impl_trait_self() {
+        check_with_config(
+            InlayHintsConfig { adjustment_hints: AdjustmentHints::Always, ..DISABLED_CONFIG },
+            r#"
+//- minicore: slice, coerce_unsized
+trait T<RHS = Self> {}
+
+fn hello(it: &&[impl T]) {
+    it.len();
+  //^^(&**
+  //^^)
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn disable_reborrows() {
+        check_with_config(
+            InlayHintsConfig {
+                adjustment_hints: AdjustmentHints::Always,
+                adjustment_hints_disable_reborrows: true,
+                ..DISABLED_CONFIG
+            },
+            r#"
+#![rustc_coherence_is_core]
+
+trait ToOwned {
+    type Owned;
+    fn to_owned(&self) -> Self::Owned;
+}
+
+struct String;
+impl ToOwned for str {
+    type Owned = String;
+    fn to_owned(&self) -> Self::Owned { String }
+}
+
+fn a(s: &String) {}
+
+fn main() {
+    let s = "".to_owned();
+    a(&s)
+}
+"#,
+        );
     }
 }

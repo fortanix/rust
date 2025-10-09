@@ -2,8 +2,7 @@
 
 use std::any::Any;
 use std::io::Write;
-use std::num::NonZeroU32;
-use std::str;
+use std::num::NonZero;
 
 pub(super) type Writer = super::buffer::Buffer;
 
@@ -12,10 +11,6 @@ pub(super) trait Encode<S>: Sized {
 }
 
 pub(super) type Reader<'a> = &'a [u8];
-
-pub(super) trait Decode<'a, 's, S>: Sized {
-    fn decode(r: &mut Reader<'a>, s: &'s S) -> Self;
-}
 
 pub(super) trait DecodeMut<'a, 's, S>: Sized {
     fn decode(r: &mut Reader<'a>, s: &'s mut S) -> Self;
@@ -31,7 +26,7 @@ macro_rules! rpc_encode_decode {
 
         impl<S> DecodeMut<'_, '_, S> for $ty {
             fn decode(r: &mut Reader<'_>, _: &mut S) -> Self {
-                const N: usize = ::std::mem::size_of::<$ty>();
+                const N: usize = size_of::<$ty>();
 
                 let mut bytes = [0; N];
                 bytes.copy_from_slice(&r[..N]);
@@ -67,7 +62,7 @@ macro_rules! rpc_encode_decode {
                 mod tag {
                     #[repr(u8)] enum Tag { $($variant),* }
 
-                    $(pub const $variant: u8 = Tag::$variant as u8;)*
+                    $(pub(crate) const $variant: u8 = Tag::$variant as u8;)*
                 }
 
                 match self {
@@ -89,7 +84,7 @@ macro_rules! rpc_encode_decode {
                 mod tag {
                     #[repr(u8)] enum Tag { $($variant),* }
 
-                    $(pub const $variant: u8 = Tag::$variant as u8;)*
+                    $(pub(crate) const $variant: u8 = Tag::$variant as u8;)*
                 }
 
                 match u8::decode(r, s) {
@@ -157,13 +152,13 @@ impl<S> DecodeMut<'_, '_, S> for char {
     }
 }
 
-impl<S> Encode<S> for NonZeroU32 {
+impl<S> Encode<S> for NonZero<u32> {
     fn encode(self, w: &mut Writer, s: &mut S) {
         self.get().encode(w, s);
     }
 }
 
-impl<S> DecodeMut<'_, '_, S> for NonZeroU32 {
+impl<S> DecodeMut<'_, '_, S> for NonZero<u32> {
     fn decode(r: &mut Reader<'_>, s: &mut S) -> Self {
         Self::new(u32::decode(r, s)).unwrap()
     }
@@ -264,9 +259,9 @@ impl From<Box<dyn Any + Send>> for PanicMessage {
     }
 }
 
-impl Into<Box<dyn Any + Send>> for PanicMessage {
-    fn into(self) -> Box<dyn Any + Send> {
-        match self {
+impl From<PanicMessage> for Box<dyn Any + Send> {
+    fn from(val: PanicMessage) -> Self {
+        match val {
             PanicMessage::StaticStr(s) => Box::new(s),
             PanicMessage::String(s) => Box::new(s),
             PanicMessage::Unknown => {

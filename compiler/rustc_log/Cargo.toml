@@ -1,16 +1,16 @@
 [package]
 name = "rustc_log"
 version = "0.0.0"
-edition = "2021"
+edition = "2024"
 
 [dependencies]
-tracing = "0.1.28"
+# tidy-alphabetical-start
+tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.3", default-features = false, features = ["fmt", "env-filter", "smallvec", "parking_lot", "ansi"] }
-tracing-tree = "0.2.0"
-tracing-core = "0.1.28"
-
-[dev-dependencies]
-rustc_span = { path = "../rustc_span" }
+tracing-tree = "0.3.1"
+# tidy-alphabetical-end
 
 [features]
-max_level_info = ['tracing/max_level_info']
+# tidy-alphabetical-start
+max_level_info = ['tracing/max_level_info', 'tracing/release_max_level_info']
+# tidy-alphabetical-end

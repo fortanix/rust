@@ -1,19 +1,27 @@
 // Local js definitions:
 /* global getSettingValue, updateLocalStorage, updateTheme */
-/* global addClass, removeClass, onEach, onEachLazy, blurHandler, elemIsInParent */
-/* global MAIN_ID, getVar, getSettingsButton */
+/* global addClass, removeClass, onEach, onEachLazy */
+/* global MAIN_ID, getVar, nonnull */
 
 "use strict";
 
 (function() {
     const isSettingsPage = window.location.pathname.endsWith("/settings.html");
 
+    /**
+     * @overload {"theme"|"preferred-dark-theme"|"preferred-light-theme"}
+     * @param {string} settingName
+     * @param {string} value
+     * @returns
+     * @param {string} settingName
+     * @param {string|boolean} value
+     */
     function changeSetting(settingName, value) {
         if (settingName === "theme") {
             const useSystem = value === "system preference" ? "true" : "false";
             updateLocalStorage("use-system-theme", useSystem);
         }
-        updateLocalStorage(settingName, value);
+        updateLocalStorage(settingName, "" + value);
 
         switch (settingName) {
             case "theme":
@@ -24,9 +32,50 @@
                 break;
             case "line-numbers":
                 if (value === true) {
-                    window.rustdoc_add_line_numbers_to_examples();
+                    const f = window.rustdoc_add_line_numbers_to_examples;
+                    if (f !== undefined) {
+                        f();
+                    }
                 } else {
-                    window.rustdoc_remove_line_numbers_from_examples();
+                    const f = window.rustdoc_remove_line_numbers_from_examples;
+                    if (f !== undefined) {
+                        f();
+                    }
+                }
+                break;
+            case "hide-sidebar":
+                if (value === true) {
+                    addClass(document.documentElement, "hide-sidebar");
+                } else {
+                    removeClass(document.documentElement, "hide-sidebar");
+                }
+                break;
+            case "hide-toc":
+                if (value === true) {
+                    addClass(document.documentElement, "hide-toc");
+                } else {
+                    removeClass(document.documentElement, "hide-toc");
+                }
+                break;
+            case "hide-modnav":
+                if (value === true) {
+                    addClass(document.documentElement, "hide-modnav");
+                } else {
+                    removeClass(document.documentElement, "hide-modnav");
+                }
+                break;
+            case "sans-serif-fonts":
+                if (value === true) {
+                    addClass(document.documentElement, "sans-serif");
+                } else {
+                    removeClass(document.documentElement, "sans-serif");
+                }
+                break;
+            case "word-wrap-source-code":
+                if (value === true) {
+                    addClass(document.documentElement, "word-wrap-source-code");
+                } else {
+                    removeClass(document.documentElement, "word-wrap-source-code");
                 }
                 break;
         }
@@ -51,6 +100,9 @@
         }
     }
 
+    /**
+     * @param {HTMLElement} settingsElement
+     */
     function setEvents(settingsElement) {
         updateLightAndDark();
         onEachLazy(settingsElement.querySelectorAll("input[type=\"checkbox\"]"), toggle => {
@@ -59,27 +111,31 @@
             if (settingValue !== null) {
                 toggle.checked = settingValue === "true";
             }
-            toggle.onchange = function() {
-                changeSetting(this.id, this.checked);
+            toggle.onchange = () => {
+                changeSetting(toggle.id, toggle.checked);
             };
         });
-        onEachLazy(settingsElement.querySelectorAll("input[type=\"radio\"]"), elem => {
-            const settingId = elem.name;
-            let settingValue = getSettingValue(settingId);
-            if (settingId === "theme") {
-                const useSystem = getSettingValue("use-system-theme");
-                if (useSystem === "true" || settingValue === null) {
-                    // "light" is the default theme
-                    settingValue = useSystem === "false" ? "light" : "system preference";
+        onEachLazy(
+            settingsElement.querySelectorAll("input[type=\"radio\"]"),
+            /** @param {HTMLInputElement} elem */
+            elem => {
+                const settingId = elem.name;
+                let settingValue = getSettingValue(settingId);
+                if (settingId === "theme") {
+                    const useSystem = getSettingValue("use-system-theme");
+                    if (useSystem === "true" || settingValue === null) {
+                        // "light" is the default theme
+                        settingValue = useSystem === "false" ? "light" : "system preference";
+                    }
                 }
-            }
-            if (settingValue !== null && settingValue !== "null") {
-                elem.checked = settingValue === elem.value;
-            }
-            elem.addEventListener("change", ev => {
-                changeSetting(ev.target.name, ev.target.value);
-            });
-        });
+                if (settingValue !== null && settingValue !== "null") {
+                    elem.checked = settingValue === elem.value;
+                }
+                elem.addEventListener("change", () => {
+                    changeSetting(elem.name, elem.value);
+                });
+            },
+        );
     }
 
     /**
@@ -87,7 +143,7 @@
      * as argument which describes each setting and how to render it. It returns a string
      * representing the raw HTML.
      *
-     * @param {Array<Object>} settings
+     * @param {Array<rustdoc.Setting>} settings
      *
      * @return {string}
      */
@@ -139,7 +195,9 @@
      * @return {HTMLElement}
      */
     function buildSettingsPage() {
-        const theme_names = getVar("themes").split(",").filter(t => t);
+        const theme_list = getVar("themes");
+        const theme_names = (theme_list === null ? "" : theme_list)
+              .split(",").filter(t => t);
         theme_names.push("light", "dark", "ayu");
 
         const settings = [
@@ -187,8 +245,33 @@
                 "default": false,
             },
             {
+                "name": "Hide persistent navigation bar",
+                "js_name": "hide-sidebar",
+                "default": false,
+            },
+            {
+                "name": "Hide table of contents",
+                "js_name": "hide-toc",
+                "default": false,
+            },
+            {
+                "name": "Hide module navigation",
+                "js_name": "hide-modnav",
+                "default": false,
+            },
+            {
                 "name": "Disable keyboard shortcuts",
                 "js_name": "disable-shortcuts",
+                "default": false,
+            },
+            {
+                "name": "Use sans serif fonts",
+                "js_name": "sans-serif-fonts",
+                "default": false,
+            },
+            {
+                "name": "Word wrap source code",
+                "js_name": "word-wrap-source-code",
                 "default": false,
             },
         ];
@@ -204,10 +287,18 @@
         el.innerHTML = innerHTML;
 
         if (isSettingsPage) {
-            document.getElementById(MAIN_ID).appendChild(el);
+            const mainElem = document.getElementById(MAIN_ID);
+            if (mainElem !== null) {
+                mainElem.appendChild(el);
+            }
         } else {
             el.setAttribute("tabindex", "-1");
-            getSettingsButton().appendChild(el);
+            onEachLazy(document.querySelectorAll(".settings-menu"), menu => {
+                if (menu.offsetWidth !== 0) {
+                    menu.appendChild(el);
+                    return true;
+                }
+            });
         }
         return el;
     }
@@ -216,35 +307,59 @@
 
     function displaySettings() {
         settingsMenu.style.display = "";
+        onEachLazy(document.querySelectorAll(".settings-menu"), menu => {
+            if (menu.offsetWidth !== 0) {
+                if (!menu.contains(settingsMenu) && settingsMenu.parentElement) {
+                    settingsMenu.parentElement.removeChild(settingsMenu);
+                    menu.appendChild(settingsMenu);
+                }
+                return true;
+            }
+        });
+        onEachLazy(settingsMenu.querySelectorAll("input[type='checkbox']"), el => {
+            const val = getSettingValue(el.id);
+            const checked = val === "true";
+            if (checked !== el.checked && val !== null) {
+                el.checked = checked;
+            }
+        });
     }
 
+    /**
+     * @param {FocusEvent} event
+     */
     function settingsBlurHandler(event) {
-        blurHandler(event, getSettingsButton(), window.hidePopoverMenus);
+        const isInPopover = onEachLazy(
+            document.querySelectorAll(".settings-menu, .help-menu"),
+            menu => {
+                return menu.contains(document.activeElement) || menu.contains(event.relatedTarget);
+            },
+        );
+        if (!isInPopover) {
+            window.hidePopoverMenus();
+        }
     }
 
-    if (isSettingsPage) {
-        // We replace the existing "onclick" callback to do nothing if clicked.
-        getSettingsButton().onclick = function(event) {
-            event.preventDefault();
-        };
-    } else {
+    if (!isSettingsPage) {
         // We replace the existing "onclick" callback.
-        const settingsButton = getSettingsButton();
-        const settingsMenu = document.getElementById("settings");
-        settingsButton.onclick = function(event) {
-            if (elemIsInParent(event.target, settingsMenu)) {
-                return;
-            }
-            event.preventDefault();
-            const shouldDisplaySettings = settingsMenu.style.display === "none";
+        const settingsMenu = nonnull(document.getElementById("settings"));
+        onEachLazy(document.querySelectorAll(".settings-menu"), settingsButton => {
+            /** @param {MouseEvent} event */
+            settingsButton.querySelector("a").onclick = event => {
+                if (!(event.target instanceof Element) || settingsMenu.contains(event.target)) {
+                    return;
+                }
+                event.preventDefault();
+                const shouldDisplaySettings = settingsMenu.style.display === "none";
 
-            window.hideAllModals();
-            if (shouldDisplaySettings) {
-                displaySettings();
-            }
-        };
-        settingsButton.onblur = settingsBlurHandler;
-        settingsButton.querySelector("a").onblur = settingsBlurHandler;
+                window.hideAllModals(false);
+                if (shouldDisplaySettings) {
+                    displaySettings();
+                }
+            };
+            settingsButton.onblur = settingsBlurHandler;
+            settingsButton.querySelector("a").onblur = settingsBlurHandler;
+        });
         onEachLazy(settingsMenu.querySelectorAll("input"), el => {
             el.onblur = settingsBlurHandler;
         });
@@ -258,6 +373,8 @@
         if (!isSettingsPage) {
             displaySettings();
         }
-        removeClass(getSettingsButton(), "rotate");
+        onEachLazy(document.querySelectorAll(".settings-menu"), settingsButton => {
+            removeClass(settingsButton, "rotate");
+        });
     }, 0);
 })();

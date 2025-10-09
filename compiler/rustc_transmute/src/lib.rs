@@ -1,17 +1,14 @@
-#![feature(alloc_layout_extra, decl_macro, iterator_try_reduce, never_type)]
-#![allow(dead_code, unused_variables)]
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-
-#[macro_use]
-extern crate tracing;
+// tidy-alphabetical-start
+#![cfg_attr(test, feature(test))]
+#![feature(never_type)]
+// tidy-alphabetical-end
 
 pub(crate) use rustc_data_structures::fx::{FxIndexMap as Map, FxIndexSet as Set};
 
-pub(crate) mod layout;
-pub(crate) mod maybe_transmutable;
+pub mod layout;
+mod maybe_transmutable;
 
-#[derive(Default)]
+#[derive(Copy, Clone, Debug, Default)]
 pub struct Assume {
     pub alignment: bool,
     pub lifetimes: bool,
@@ -19,58 +16,85 @@ pub struct Assume {
     pub validity: bool,
 }
 
-/// The type encodes answers to the question: "Are these types transmutable?"
-#[derive(Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Clone)]
-pub enum Answer<R>
-where
-    R: layout::Ref,
-{
-    /// `Src` is transmutable into `Dst`.
+/// Either transmutation is allowed, we have an error, or we have an optional
+/// Condition that must hold.
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub enum Answer<R, T> {
     Yes,
-
-    /// `Src` is NOT transmutable into `Dst`.
-    No(Reason),
-
-    /// `Src` is transmutable into `Dst`, if `src` is transmutable into `dst`.
-    IfTransmutable { src: R, dst: R },
-
-    /// `Src` is transmutable into `Dst`, if all of the enclosed requirements are met.
-    IfAll(Vec<Answer<R>>),
-
-    /// `Src` is transmutable into `Dst` if any of the enclosed requirements are met.
-    IfAny(Vec<Answer<R>>),
+    No(Reason<T>),
+    If(Condition<R, T>),
 }
 
-/// Answers: Why wasn't the source type transmutable into the destination type?
+/// A condition which must hold for safe transmutation to be possible.
+#[derive(Debug, Hash, Eq, PartialEq, Clone)]
+pub enum Condition<R, T> {
+    /// `Src` is transmutable into `Dst`, if `src` is transmutable into `dst`.
+    Transmutable { src: T, dst: T },
+
+    /// The region `long` must outlive `short`.
+    Outlives { long: R, short: R },
+
+    /// The `ty` is immutable.
+    Immutable { ty: T },
+
+    /// `Src` is transmutable into `Dst`, if all of the enclosed requirements are met.
+    IfAll(Vec<Condition<R, T>>),
+
+    /// `Src` is transmutable into `Dst` if any of the enclosed requirements are met.
+    IfAny(Vec<Condition<R, T>>),
+}
+
+/// Answers "why wasn't the source type transmutable into the destination type?"
 #[derive(Debug, Hash, Eq, PartialEq, PartialOrd, Ord, Clone)]
-pub enum Reason {
-    /// The layout of the source type is unspecified.
-    SrcIsUnspecified,
-    /// The layout of the destination type is unspecified.
-    DstIsUnspecified,
+pub enum Reason<T> {
+    /// The layout of the source type is not yet supported.
+    SrcIsNotYetSupported,
+    /// The layout of the destination type is not yet supported.
+    DstIsNotYetSupported,
     /// The layout of the destination type is bit-incompatible with the source type.
     DstIsBitIncompatible,
-    /// There aren't any public constructors for `Dst`.
-    DstIsPrivate,
+    /// The destination type is uninhabited.
+    DstUninhabited,
+    /// The destination type may carry safety invariants.
+    DstMayHaveSafetyInvariants,
     /// `Dst` is larger than `Src`, and the excess bytes were not exclusively uninitialized.
     DstIsTooBig,
+    /// `Dst` is larger `Src`.
+    DstRefIsTooBig {
+        /// The referent of the source type.
+        src: T,
+        /// The size of the source type's referent.
+        src_size: usize,
+        /// The too-large referent of the destination type.
+        dst: T,
+        /// The size of the destination type's referent.
+        dst_size: usize,
+    },
+    /// Src should have a stricter alignment than Dst, but it does not.
+    DstHasStricterAlignment { src_min_align: usize, dst_min_align: usize },
+    /// Can't go from shared pointer to unique pointer
+    DstIsMoreUnique,
+    /// Encountered a type error
+    TypeError,
+    /// The layout of src is unknown
+    SrcLayoutUnknown,
+    /// The layout of dst is unknown
+    DstLayoutUnknown,
+    /// The size of src is overflow
+    SrcSizeOverflow,
+    /// The size of dst is overflow
+    DstSizeOverflow,
 }
 
 #[cfg(feature = "rustc")]
 mod rustc {
+    use rustc_hir::lang_items::LangItem;
+    use rustc_middle::ty::{Const, Region, Ty, TyCtxt};
+
     use super::*;
 
-    use rustc_hir::lang_items::LangItem;
-    use rustc_infer::infer::InferCtxt;
-    use rustc_macros::TypeVisitable;
-    use rustc_middle::traits::ObligationCause;
-    use rustc_middle::ty::Const;
-    use rustc_middle::ty::ParamEnv;
-    use rustc_middle::ty::Ty;
-    use rustc_middle::ty::TyCtxt;
-
     /// The source and destination types of a transmutation.
-    #[derive(TypeVisitable, Debug, Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     pub struct Types<'tcx> {
         /// The source type.
         pub src: Ty<'tcx>,
@@ -78,29 +102,22 @@ mod rustc {
         pub dst: Ty<'tcx>,
     }
 
-    pub struct TransmuteTypeEnv<'cx, 'tcx> {
-        infcx: &'cx InferCtxt<'tcx>,
+    pub struct TransmuteTypeEnv<'tcx> {
+        tcx: TyCtxt<'tcx>,
     }
 
-    impl<'cx, 'tcx> TransmuteTypeEnv<'cx, 'tcx> {
-        pub fn new(infcx: &'cx InferCtxt<'tcx>) -> Self {
-            Self { infcx }
+    impl<'tcx> TransmuteTypeEnv<'tcx> {
+        pub fn new(tcx: TyCtxt<'tcx>) -> Self {
+            Self { tcx }
         }
 
-        #[allow(unused)]
         pub fn is_transmutable(
             &mut self,
-            cause: ObligationCause<'tcx>,
             types: Types<'tcx>,
-            scope: Ty<'tcx>,
             assume: crate::Assume,
-        ) -> crate::Answer<crate::layout::rustc::Ref<'tcx>> {
+        ) -> crate::Answer<Region<'tcx>, Ty<'tcx>> {
             crate::maybe_transmutable::MaybeTransmutableQuery::new(
-                types.src,
-                types.dst,
-                scope,
-                assume,
-                self.infcx.tcx,
+                types.src, types.dst, assume, self.tcx,
             )
             .answer()
         }
@@ -108,18 +125,21 @@ mod rustc {
 
     impl Assume {
         /// Constructs an `Assume` from a given const-`Assume`.
-        pub fn from_const<'tcx>(
-            tcx: TyCtxt<'tcx>,
-            param_env: ParamEnv<'tcx>,
-            c: Const<'tcx>,
-        ) -> Option<Self> {
+        pub fn from_const<'tcx>(tcx: TyCtxt<'tcx>, ct: Const<'tcx>) -> Option<Self> {
             use rustc_middle::ty::ScalarInt;
-            use rustc_middle::ty::TypeVisitableExt;
-            use rustc_span::symbol::sym;
+            use rustc_span::sym;
 
-            let c = c.eval(tcx, param_env);
+            let Some(cv) = ct.try_to_value() else {
+                return None;
+            };
 
-            if let Err(err) = c.error_reported() {
+            let adt_def = cv.ty.ty_adt_def()?;
+
+            if !tcx.is_lang_item(adt_def.did(), LangItem::TransmuteOpts) {
+                tcx.dcx().delayed_bug(format!(
+                    "The given `const` was not marked with the `{}` lang item.",
+                    LangItem::TransmuteOpts.name()
+                ));
                 return Some(Self {
                     alignment: true,
                     lifetimes: true,
@@ -128,17 +148,8 @@ mod rustc {
                 });
             }
 
-            let adt_def = c.ty().ty_adt_def()?;
-
-            assert_eq!(
-                tcx.require_lang_item(LangItem::TransmuteOpts, None),
-                adt_def.did(),
-                "The given `Const` was not marked with the `{}` lang item.",
-                LangItem::TransmuteOpts.name(),
-            );
-
             let variant = adt_def.non_enum_variant();
-            let fields = c.to_valtree().unwrap_branch();
+            let fields = cv.valtree.unwrap_branch();
 
             let get_field = |name| {
                 let (field_idx, _) = variant

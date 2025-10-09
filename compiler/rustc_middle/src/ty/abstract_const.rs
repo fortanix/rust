@@ -1,10 +1,12 @@
 //! A subset of a mir body used for const evaluability checking.
+
+use rustc_errors::ErrorGuaranteed;
+use rustc_macros::{HashStable, TyDecodable, TyEncodable, TypeVisitable};
+
 use crate::ty::{
     self, Const, EarlyBinder, Ty, TyCtxt, TypeFoldable, TypeFolder, TypeSuperFoldable,
     TypeVisitableExt,
 };
-use rustc_errors::ErrorGuaranteed;
-use rustc_hir::def_id::DefId;
 
 #[derive(Hash, Debug, Clone, Copy, Ord, PartialOrd, PartialEq, Eq)]
 #[derive(TyDecodable, TyEncodable, HashStable, TypeVisitable, TypeFoldable)]
@@ -28,26 +30,17 @@ impl From<ErrorGuaranteed> for NotConstEvaluatable {
     }
 }
 
-TrivialTypeTraversalAndLiftImpls! {
-    NotConstEvaluatable,
-}
-
-pub type BoundAbstractConst<'tcx> = Result<Option<EarlyBinder<ty::Const<'tcx>>>, ErrorGuaranteed>;
+pub type BoundAbstractConst<'tcx> =
+    Result<Option<EarlyBinder<'tcx, ty::Const<'tcx>>>, ErrorGuaranteed>;
 
 impl<'tcx> TyCtxt<'tcx> {
-    /// Returns a const without substs applied
-    pub fn bound_abstract_const(self, uv: DefId) -> BoundAbstractConst<'tcx> {
-        let ac = self.thir_abstract_const(uv);
-        Ok(ac?.map(|ac| EarlyBinder(ac)))
-    }
-
     pub fn expand_abstract_consts<T: TypeFoldable<TyCtxt<'tcx>>>(self, ac: T) -> T {
         struct Expander<'tcx> {
             tcx: TyCtxt<'tcx>,
         }
 
         impl<'tcx> TypeFolder<TyCtxt<'tcx>> for Expander<'tcx> {
-            fn interner(&self) -> TyCtxt<'tcx> {
+            fn cx(&self) -> TyCtxt<'tcx> {
                 self.tcx
             }
             fn fold_ty(&mut self, ty: Ty<'tcx>) -> Ty<'tcx> {
@@ -59,11 +52,11 @@ impl<'tcx> TyCtxt<'tcx> {
             }
             fn fold_const(&mut self, c: Const<'tcx>) -> Const<'tcx> {
                 let ct = match c.kind() {
-                    ty::ConstKind::Unevaluated(uv) => match self.tcx.bound_abstract_const(uv.def) {
-                        Err(e) => self.tcx.const_error_with_guaranteed(c.ty(), e),
+                    ty::ConstKind::Unevaluated(uv) => match self.tcx.thir_abstract_const(uv.def) {
+                        Err(e) => ty::Const::new_error(self.tcx, e),
                         Ok(Some(bac)) => {
-                            let substs = self.tcx.erase_regions(uv.substs);
-                            let bac = bac.subst(self.tcx, substs);
+                            let args = self.tcx.erase_and_anonymize_regions(uv.args);
+                            let bac = bac.instantiate(self.tcx, args);
                             return bac.fold_with(self);
                         }
                         Ok(None) => c,

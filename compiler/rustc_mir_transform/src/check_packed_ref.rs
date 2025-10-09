@@ -1,26 +1,25 @@
-use rustc_errors::struct_span_err;
 use rustc_middle::mir::visit::{PlaceContext, Visitor};
 use rustc_middle::mir::*;
+use rustc_middle::span_bug;
 use rustc_middle::ty::{self, TyCtxt};
 
-use crate::util;
-use crate::MirLint;
+use crate::{errors, util};
 
-pub struct CheckPackedRef;
+pub(super) struct CheckPackedRef;
 
-impl<'tcx> MirLint<'tcx> for CheckPackedRef {
+impl<'tcx> crate::MirLint<'tcx> for CheckPackedRef {
     fn run_lint(&self, tcx: TyCtxt<'tcx>, body: &Body<'tcx>) {
-        let param_env = tcx.param_env(body.source.def_id());
+        let typing_env = body.typing_env(tcx);
         let source_info = SourceInfo::outermost(body.span);
-        let mut checker = PackedRefChecker { body, tcx, param_env, source_info };
-        checker.visit_body(&body);
+        let mut checker = PackedRefChecker { body, tcx, typing_env, source_info };
+        checker.visit_body(body);
     }
 }
 
 struct PackedRefChecker<'a, 'tcx> {
     body: &'a Body<'tcx>,
     tcx: TyCtxt<'tcx>,
-    param_env: ty::ParamEnv<'tcx>,
+    typing_env: ty::TypingEnv<'tcx>,
     source_info: SourceInfo,
 }
 
@@ -38,37 +37,18 @@ impl<'tcx> Visitor<'tcx> for PackedRefChecker<'_, 'tcx> {
     }
 
     fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
-        if context.is_borrow() {
-            if util::is_disaligned(self.tcx, self.body, self.param_env, *place) {
-                let def_id = self.body.source.instance.def_id();
-                if let Some(impl_def_id) = self.tcx.impl_of_method(def_id)
-                    && self.tcx.is_builtin_derived(impl_def_id)
-                {
-                    // If we ever reach here it means that the generated derive
-                    // code is somehow doing an unaligned reference, which it
-                    // shouldn't do.
-                    span_bug!(self.source_info.span, "builtin derive created an unaligned reference");
-                } else {
-                    struct_span_err!(
-                        self.tcx.sess,
-                        self.source_info.span,
-                        E0793,
-                        "reference to packed field is unaligned"
-                    )
-                    .note(
-                        "packed structs are only aligned by one byte, and many modern architectures \
-                        penalize unaligned field accesses"
-                    )
-                    .note(
-                        "creating a misaligned reference is undefined behavior (even if that \
-                        reference is never dereferenced)",
-                    ).help(
-                        "copy the field contents to a local variable, or replace the \
-                        reference with a raw pointer and use `read_unaligned`/`write_unaligned` \
-                        (loads and stores via `*p` must be properly aligned even when using raw pointers)"
-                    )
-                    .emit();
-                }
+        if context.is_borrow() && util::is_disaligned(self.tcx, self.body, self.typing_env, *place)
+        {
+            let def_id = self.body.source.instance.def_id();
+            if let Some(impl_def_id) = self.tcx.trait_impl_of_assoc(def_id)
+                && self.tcx.is_builtin_derived(impl_def_id)
+            {
+                // If we ever reach here it means that the generated derive
+                // code is somehow doing an unaligned reference, which it
+                // shouldn't do.
+                span_bug!(self.source_info.span, "builtin derive created an unaligned reference");
+            } else {
+                self.tcx.dcx().emit_err(errors::UnalignedPackedRef { span: self.source_info.span });
             }
         }
     }

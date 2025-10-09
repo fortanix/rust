@@ -1,18 +1,20 @@
 //! The "main crate" of the Rust compiler. This crate contains common
 //! type definitions that are used by the other crates in the rustc
-//! "family". Some prominent examples (note that each of these modules
-//! has their own README with further details).
+//! "family". The following are some prominent examples.
 //!
 //! - **HIR.** The "high-level (H) intermediate representation (IR)" is
-//!   defined in the `hir` module.
+//!   defined in the [`hir`] module.
+//! - **THIR.** The "typed high-level (H) intermediate representation (IR)"
+//!   is defined in the [`thir`] module.
 //! - **MIR.** The "mid-level (M) intermediate representation (IR)" is
-//!   defined in the `mir` module. This module contains only the
+//!   defined in the [`mir`] module. This module contains only the
 //!   *definition* of the MIR; the passes that transform and operate
 //!   on MIR are found in `rustc_const_eval` crate.
 //! - **Types.** The internal representation of types used in rustc is
-//!   defined in the `ty` module. This includes the **type context**
-//!   (or `tcx`), which is the central context during most of
-//!   compilation, containing the interners and other things.
+//!   defined in the [`ty`] module. This includes the
+//!   [**type context**][ty::TyCtxt] (or `tcx`), which is the central
+//!   context during most of compilation, containing the interners and
+//!   other things.
 //!
 //! For more information about how rustc works, see the [rustc dev guide].
 //!
@@ -22,61 +24,45 @@
 //!
 //! This API is completely unstable and subject to change.
 
+// tidy-alphabetical-start
+#![allow(internal_features)]
+#![allow(rustc::diagnostic_outside_of_impl)]
+#![allow(rustc::direct_use_of_rustc_type_ir)]
+#![allow(rustc::untranslatable_diagnostic)]
 #![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![doc(rust_logo)]
 #![feature(allocator_api)]
 #![feature(array_windows)]
 #![feature(assert_matches)]
+#![feature(associated_type_defaults)]
+#![feature(box_as_ptr)]
 #![feature(box_patterns)]
+#![feature(closure_track_caller)]
 #![feature(core_intrinsics)]
+#![feature(debug_closure_helpers)]
+#![feature(decl_macro)]
 #![feature(discriminant_kind)]
-#![feature(exhaustive_patterns)]
-#![feature(generators)]
-#![feature(get_mut_unchecked)]
+#![feature(extern_types)]
+#![feature(file_buffered)]
+#![feature(gen_blocks)]
 #![feature(if_let_guard)]
-#![feature(inline_const)]
-#![feature(iter_from_generator)]
-#![feature(local_key_cell_methods)]
+#![feature(intra_doc_pointers)]
+#![feature(min_specialization)]
 #![feature(negative_impls)]
 #![feature(never_type)]
-#![feature(extern_types)]
-#![feature(new_uninit)]
-#![feature(let_chains)]
-#![feature(min_specialization)]
-#![feature(trusted_len)]
-#![feature(type_alias_impl_trait)]
-#![feature(strict_provenance)]
-#![feature(associated_type_bounds)]
-#![feature(rustc_attrs)]
-#![feature(control_flow_enum)]
-#![feature(trusted_step)]
-#![feature(try_blocks)]
-#![feature(try_reserve_kind)]
-#![feature(nonzero_ops)]
-#![feature(decl_macro)]
-#![feature(drain_filter)]
-#![feature(intra_doc_pointers)]
-#![feature(yeet_expr)]
-#![feature(result_option_inspect)]
-#![feature(const_option)]
-#![feature(trait_alias)]
 #![feature(ptr_alignment_type)]
-#![feature(macro_metavar_expr)]
-#![recursion_limit = "512"]
-#![allow(rustc::potential_query_instability)]
-
-#[macro_use]
-extern crate bitflags;
-#[macro_use]
-extern crate rustc_macros;
-#[macro_use]
-extern crate rustc_data_structures;
-#[macro_use]
-extern crate tracing;
-#[macro_use]
-extern crate smallvec;
-
-use rustc_errors::{DiagnosticMessage, SubdiagnosticMessage};
-use rustc_fluent_macro::fluent_messages;
+#![feature(rustc_attrs)]
+#![feature(rustdoc_internals)]
+#![feature(sized_hierarchy)]
+#![feature(try_blocks)]
+#![feature(try_trait_v2)]
+#![feature(try_trait_v2_residual)]
+#![feature(try_trait_v2_yeet)]
+#![feature(type_alias_impl_trait)]
+#![feature(unwrap_infallible)]
+#![feature(yeet_expr)]
+#![recursion_limit = "256"]
+// tidy-alphabetical-end
 
 #[cfg(test)]
 mod tests;
@@ -85,14 +71,10 @@ mod tests;
 mod macros;
 
 #[macro_use]
-pub mod query;
-
-#[macro_use]
 pub mod arena;
-#[macro_use]
-pub mod dep_graph;
-pub(crate) mod error;
+pub mod error;
 pub mod hir;
+pub mod hooks;
 pub mod infer;
 pub mod lint;
 pub mod metadata;
@@ -104,7 +86,12 @@ pub mod ty;
 pub mod util;
 mod values;
 
+#[macro_use]
+pub mod query;
+#[macro_use]
+pub mod dep_graph;
+
 // Allows macros to refer to this crate as `::rustc_middle`
 extern crate self as rustc_middle;
 
-fluent_messages! { "../messages.ftl" }
+rustc_fluent_macro::fluent_messages! { "../messages.ftl" }

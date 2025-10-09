@@ -1,11 +1,12 @@
-// check-pass
-// edition:2018
+//@ check-pass
+//@ edition:2018
 
 #![feature(ptr_metadata)]
 #![feature(type_alias_impl_trait)]
 
-type Opaque = impl std::future::Future;
+pub type Opaque = impl std::future::Future;
 
+#[define_opaque(Opaque)]
 fn opaque() -> Opaque {
     async {}
 }

@@ -13,11 +13,70 @@ macro_rules! column {() => {}}
 
 fn main() { column!(); }
 "#,
-        expect![[r##"
+        expect![[r#"
 #[rustc_builtin_macro]
 macro_rules! column {() => {}}
 
-fn main() { 0; }
+fn main() { 0u32; }
+"#]],
+    );
+}
+
+#[test]
+fn test_asm_expand() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+macro_rules! asm {() => {}}
+#[rustc_builtin_macro]
+macro_rules! global_asm {() => {}}
+#[rustc_builtin_macro]
+macro_rules! naked_asm {() => {}}
+
+global_asm! {
+    ""
+}
+
+#[unsafe(naked)]
+extern "C" fn foo() {
+    naked_asm!("");
+}
+
+fn main() {
+    let i: u64 = 3;
+    let o: u64;
+    unsafe {
+        asm!(
+            "mov {0}, {1}",
+            "add {0}, 5",
+            out(reg) o,
+            in(reg) i,
+        );
+    }
+}
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+macro_rules! asm {() => {}}
+#[rustc_builtin_macro]
+macro_rules! global_asm {() => {}}
+#[rustc_builtin_macro]
+macro_rules! naked_asm {() => {}}
+
+builtin #global_asm ("")
+
+#[unsafe(naked)]
+extern "C" fn foo() {
+    builtin #naked_asm ("");
+}
+
+fn main() {
+    let i: u64 = 3;
+    let o: u64;
+    unsafe {
+        builtin #asm ("mov {0}, {1}", "add {0}, 5", out (reg)o, in (reg)i, );
+    }
+}
 "##]],
     );
 }
@@ -31,12 +90,12 @@ macro_rules! line {() => {}}
 
 fn main() { line!() }
 "#,
-        expect![[r##"
+        expect![[r#"
 #[rustc_builtin_macro]
 macro_rules! line {() => {}}
 
-fn main() { 0 }
-"##]],
+fn main() { 0u32 }
+"#]],
     );
 }
 
@@ -79,7 +138,7 @@ fn main() { env!("TEST_ENV_VAR"); }
 #[rustc_builtin_macro]
 macro_rules! env {() => {}}
 
-fn main() { "__RA_UNIMPLEMENTED__"; }
+fn main() { "UNRESOLVED_ENV_VAR"; }
 "##]],
     );
 }
@@ -115,7 +174,7 @@ fn main() { file!(); }
 #[rustc_builtin_macro]
 macro_rules! file {() => {}}
 
-fn main() { ""; }
+fn main() { "file"; }
 "##]],
     );
 }
@@ -124,31 +183,43 @@ fn main() { ""; }
 fn test_assert_expand() {
     check(
         r#"
-#[rustc_builtin_macro]
-macro_rules! assert {
-    ($cond:expr) => ({ /* compiler built-in */ });
-    ($cond:expr, $($args:tt)*) => ({ /* compiler built-in */ })
-}
-
+//- minicore: assert
 fn main() {
     assert!(true, "{} {:?}", arg1(a, b, c), arg2);
 }
 "#,
-        expect![[r##"
-#[rustc_builtin_macro]
-macro_rules! assert {
-    ($cond:expr) => ({ /* compiler built-in */ });
-    ($cond:expr, $($args:tt)*) => ({ /* compiler built-in */ })
-}
-
+        expect![[r#"
 fn main() {
      {
         if !(true ) {
-            $crate::panic!("{} {:?}", arg1(a, b, c), arg2);
+            $crate::panic::panic_2021!("{} {:?}", arg1(a, b, c), arg2);
         }
     };
 }
-"##]],
+"#]],
+    );
+}
+
+// FIXME: This is the wrong expansion, see FIXME on `builtin_fn_macro::use_panic_2021`
+#[test]
+fn test_assert_expand_2015() {
+    check(
+        r#"
+//- minicore: assert
+//- /main.rs edition:2015
+fn main() {
+    assert!(true, "{} {:?}", arg1(a, b, c), arg2);
+}
+"#,
+        expect![[r#"
+fn main() {
+     {
+        if !(true ) {
+            $crate::panic::panic_2021!("{} {:?}", arg1(a, b, c), arg2);
+        }
+    };
+}
+"#]],
     );
 }
 
@@ -193,7 +264,7 @@ fn main() {
     format_args!("{} {:?}", arg1(a, b, c), arg2);
 }
 "#,
-        expect![[r#"
+        expect![[r##"
 #[rustc_builtin_macro]
 macro_rules! format_args {
     ($fmt:expr) => ({ /* compiler built-in */ });
@@ -201,9 +272,52 @@ macro_rules! format_args {
 }
 
 fn main() {
-    $crate::fmt::Arguments::new_v1(&[], &[$crate::fmt::Argument::new(&(arg1(a, b, c)), $crate::fmt::Display::fmt), $crate::fmt::Argument::new(&(arg2), $crate::fmt::Display::fmt), ]);
+    builtin #format_args ("{} {:?}", arg1(a, b, c), arg2);
 }
-"#]],
+"##]],
+    );
+}
+
+#[test]
+fn regression_15002() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    format_args!(x = 2);
+    format_args!/*+errors*/(x =);
+    format_args!/*+errors*/(x =, x = 2);
+    format_args!/*+errors*/("{}", x =);
+    format_args!/*+errors*/(=, "{}", x =);
+    format_args!(x = 2, "{}", 5);
+}
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    builtin #format_args (x = 2);
+    /* parse error: expected expression */
+builtin #format_args (x = );
+    /* parse error: expected expression */
+builtin #format_args (x = , x = 2);
+    /* parse error: expected expression */
+builtin #format_args ("{}", x = );
+    /* parse error: expected expression */
+/* parse error: expected expression */
+builtin #format_args ( = , "{}", x = );
+    builtin #format_args (x = 2, "{}", 5);
+}
+"##]],
     );
 }
 
@@ -221,7 +335,7 @@ fn main() {
     format_args!("{} {:?}", a::<A,B>(), b);
 }
 "#,
-        expect![[r#"
+        expect![[r##"
 #[rustc_builtin_macro]
 macro_rules! format_args {
     ($fmt:expr) => ({ /* compiler built-in */ });
@@ -229,9 +343,76 @@ macro_rules! format_args {
 }
 
 fn main() {
-    $crate::fmt::Arguments::new_v1(&[], &[$crate::fmt::Argument::new(&(a::<A, B>()), $crate::fmt::Display::fmt), $crate::fmt::Argument::new(&(b), $crate::fmt::Display::fmt), ]);
+    builtin #format_args ("{} {:?}", a::<A, B>(), b);
 }
-"#]],
+"##]],
+    );
+}
+
+#[test]
+fn test_format_args_expand_with_raw_strings() {
+    check(
+        r##"
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    format_args!(
+        r#"{},mismatch,"{}","{}""#,
+        location_csv_pat(db, &analysis, vfs, &sm, pat_id),
+        mismatch.expected.display(db),
+        mismatch.actual.display(db)
+    );
+}
+"##,
+        expect![[r##"
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    builtin #format_args (r#"{},mismatch,"{}","{}""#, location_csv_pat(db, &analysis, vfs, &sm, pat_id), mismatch.expected.display(db), mismatch.actual.display(db));
+}
+"##]],
+    );
+}
+
+#[test]
+fn test_format_args_expand_eager() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+macro_rules! concat {}
+
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    format_args!(concat!("xxx{}y", "{:?}zzz"), 2, b);
+}
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+macro_rules! concat {}
+
+#[rustc_builtin_macro]
+macro_rules! format_args {
+    ($fmt:expr) => ({ /* compiler built-in */ });
+    ($fmt:expr, $($args:tt)*) => ({ /* compiler built-in */ })
+}
+
+fn main() {
+    builtin #format_args (concat!("xxx{}y", "{:?}zzz"), 2, b);
+}
+"##]],
     );
 }
 
@@ -250,7 +431,7 @@ fn main() {
         format_args!/*+errors*/("{} {:?}", a.);
 }
 "#,
-        expect![[r#"
+        expect![[r##"
 #[rustc_builtin_macro]
 macro_rules! format_args {
     ($fmt:expr) => ({ /* compiler built-in */ });
@@ -260,9 +441,9 @@ macro_rules! format_args {
 fn main() {
     let _ =
         /* parse error: expected field name or number */
-$crate::fmt::Arguments::new_v1(&[], &[$crate::fmt::Argument::new(&(a.), $crate::fmt::Display::fmt), ]);
+builtin #format_args ("{} {:?}", a.);
 }
-"#]],
+"##]],
     );
 }
 
@@ -276,7 +457,7 @@ macro_rules! include_bytes {
     ($file:expr,) => {{ /* compiler built-in */ }};
 }
 
-fn main() { include_bytes("foo"); }
+fn main() { include_bytes("foo");include_bytes(r"foo"); }
 "#,
         expect![[r##"
 #[rustc_builtin_macro]
@@ -285,7 +466,7 @@ macro_rules! include_bytes {
     ($file:expr,) => {{ /* compiler built-in */ }};
 }
 
-fn main() { include_bytes("foo"); }
+fn main() { include_bytes("foo");include_bytes(r"foo"); }
 "##]],
     );
 }
@@ -297,13 +478,13 @@ fn test_concat_expand() {
 #[rustc_builtin_macro]
 macro_rules! concat {}
 
-fn main() { concat!("foo", "r", 0, r#"bar"#, "\n", false, '"', '\0'); }
+fn main() { concat!("fo", "o", 0, r#""bar""#, "\n", false, '"', -4, - 4, '\0'); }
 "##,
         expect![[r##"
 #[rustc_builtin_macro]
 macro_rules! concat {}
 
-fn main() { "foor0bar\nfalse\"\u{0}"; }
+fn main() { "foo0\"bar\"\nfalse\"-4-4\u{0}"; }
 "##]],
     );
 }
@@ -315,14 +496,14 @@ fn test_concat_bytes_expand() {
 #[rustc_builtin_macro]
 macro_rules! concat_bytes {}
 
-fn main() { concat_bytes!(b'A', b"BC", [68, b'E', 70]); }
+fn main() { concat_bytes!(b'A', b"BC\"", [68, b'E', 70], br#"G""#,b'\0'); }
 "##,
-        expect![[r##"
+        expect![[r#"
 #[rustc_builtin_macro]
 macro_rules! concat_bytes {}
 
-fn main() { [b'A', 66, 67, 68, b'E', 70]; }
-"##]],
+fn main() { b"ABC\"DEFG\"\x00"; }
+"#]],
     );
 }
 
@@ -337,10 +518,6 @@ macro_rules! surprise {
     () => { "s" };
 }
 
-macro_rules! stuff {
-    ($string:expr) => { concat!($string) };
-}
-
 fn main() { concat!(surprise!()); }
 "##,
         expect![[r##"
@@ -351,29 +528,73 @@ macro_rules! surprise {
     () => { "s" };
 }
 
-macro_rules! stuff {
-    ($string:expr) => { concat!($string) };
-}
-
 fn main() { "s"; }
 "##]],
     );
 }
 
 #[test]
-fn test_concat_idents_expand() {
+fn test_quote_string() {
     check(
         r##"
 #[rustc_builtin_macro]
-macro_rules! concat_idents {}
+macro_rules! stringify {}
 
-fn main() { concat_idents!(foo, bar); }
+fn main() { stringify!("hello"); }
 "##,
         expect![[r##"
 #[rustc_builtin_macro]
-macro_rules! concat_idents {}
+macro_rules! stringify {}
 
-fn main() { foobar; }
+fn main() { "\"hello\""; }
 "##]],
+    );
+}
+
+#[test]
+fn cfg_select() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+pub macro cfg_select($($tt:tt)*) {}
+
+cfg_select! {
+    false => { fn false_1() {} }
+    any(false, true) => { fn true_1() {} }
+}
+
+cfg_select! {
+    false => { fn false_2() {} }
+    _ => { fn true_2() {} }
+}
+
+cfg_select! {
+    false => { fn false_3() {} }
+}
+
+cfg_select! {
+    false
+}
+
+cfg_select! {
+    false =>
+}
+
+    "#,
+        expect![[r#"
+#[rustc_builtin_macro]
+pub macro cfg_select($($tt:tt)*) {}
+
+fn true_1() {}
+
+fn true_2() {}
+
+/* error: none of the predicates in this `cfg_select` evaluated to true */
+
+/* error: expected `=>` after cfg expression */
+
+/* error: expected a token tree after `=>` */
+
+    "#]],
     );
 }

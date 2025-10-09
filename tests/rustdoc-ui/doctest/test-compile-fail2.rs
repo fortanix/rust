@@ -1,3 +1,4 @@
-// compile-flags:--test
+//@ compile-flags:--test
 
 fail
+//~^ ERROR

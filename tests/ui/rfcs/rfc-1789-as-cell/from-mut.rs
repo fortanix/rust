@@ -1,6 +1,4 @@
-// run-pass
-
-#![feature(as_array_of_cells)]
+//@ run-pass
 
 use std::cell::Cell;
 

@@ -1,6 +1,6 @@
-// compile-flags: --edition=2021 --crate-type=lib
-// rustc-env:RUST_BACKTRACE=0
-// check-pass
+//@ compile-flags: --crate-type=lib
+//@ edition: 2021
+//@ check-pass
 
 // tracked in https://github.com/rust-lang/rust/issues/96572
 

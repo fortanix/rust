@@ -1,10 +1,11 @@
-// edition:2018
+//@ edition:2018
 
 #![feature(ptr_metadata)]
 #![feature(type_alias_impl_trait)]
 
 type Opaque = impl std::fmt::Debug + ?Sized;
 
+#[define_opaque(Opaque)]
 fn opaque() -> &'static Opaque {
     &[1] as &[i32]
 }

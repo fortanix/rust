@@ -1,15 +1,16 @@
+use rustc_errors::Applicability;
 use rustc_hir::{Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty::layout::LayoutOf;
 use rustc_middle::ty::{self, IntTy, UintTy};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 use rustc_span::Span;
 
 use clippy_utils::comparisons;
 use clippy_utils::comparisons::Rel;
-use clippy_utils::consts::{constant_full_int, FullInt};
+use clippy_utils::consts::{ConstEvalCtxt, FullInt};
 use clippy_utils::diagnostics::span_lint;
-use clippy_utils::source::snippet;
+use clippy_utils::source::snippet_with_context;
 
 declare_clippy_lint! {
     /// ### What it does
@@ -22,11 +23,8 @@ declare_clippy_lint! {
     /// will mistakenly imply that it is possible for `x` to be outside the range of
     /// `u8`.
     ///
-    /// ### Known problems
-    /// https://github.com/rust-lang/rust-clippy/issues/886
-    ///
     /// ### Example
-    /// ```rust
+    /// ```no_run
     /// let x: u8 = 1;
     /// (x as u32) > 300;
     /// ```
@@ -72,13 +70,21 @@ fn numeric_cast_precast_bounds(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<
 
 fn err_upcast_comparison(cx: &LateContext<'_>, span: Span, expr: &Expr<'_>, always: bool) {
     if let ExprKind::Cast(cast_val, _) = expr.kind {
+        let mut applicability = Applicability::MachineApplicable;
+        let (cast_val_snip, _) = snippet_with_context(
+            cx,
+            cast_val.span,
+            expr.span.ctxt(),
+            "the expression",
+            &mut applicability,
+        );
         span_lint(
             cx,
             INVALID_UPCAST_COMPARISONS,
             span,
-            &format!(
+            format!(
                 "because of the numeric bounds on `{}` prior to casting, this expression is always {}",
-                snippet(cx, cast_val.span, "the expression"),
+                cast_val_snip,
                 if always { "true" } else { "false" },
             ),
         );
@@ -88,55 +94,55 @@ fn err_upcast_comparison(cx: &LateContext<'_>, span: Span, expr: &Expr<'_>, alwa
 fn upcast_comparison_bounds_err<'tcx>(
     cx: &LateContext<'tcx>,
     span: Span,
-    rel: comparisons::Rel,
+    rel: Rel,
     lhs_bounds: Option<(FullInt, FullInt)>,
     lhs: &'tcx Expr<'_>,
     rhs: &'tcx Expr<'_>,
     invert: bool,
 ) {
-    if let Some((lb, ub)) = lhs_bounds {
-        if let Some(norm_rhs_val) = constant_full_int(cx, cx.typeck_results(), rhs) {
-            if rel == Rel::Eq || rel == Rel::Ne {
-                if norm_rhs_val < lb || norm_rhs_val > ub {
-                    err_upcast_comparison(cx, span, lhs, rel == Rel::Ne);
-                }
-            } else if match rel {
-                Rel::Lt => {
-                    if invert {
-                        norm_rhs_val < lb
-                    } else {
-                        ub < norm_rhs_val
-                    }
-                },
-                Rel::Le => {
-                    if invert {
-                        norm_rhs_val <= lb
-                    } else {
-                        ub <= norm_rhs_val
-                    }
-                },
-                Rel::Eq | Rel::Ne => unreachable!(),
-            } {
-                err_upcast_comparison(cx, span, lhs, true);
-            } else if match rel {
-                Rel::Lt => {
-                    if invert {
-                        norm_rhs_val >= ub
-                    } else {
-                        lb >= norm_rhs_val
-                    }
-                },
-                Rel::Le => {
-                    if invert {
-                        norm_rhs_val > ub
-                    } else {
-                        lb > norm_rhs_val
-                    }
-                },
-                Rel::Eq | Rel::Ne => unreachable!(),
-            } {
-                err_upcast_comparison(cx, span, lhs, false);
+    if let Some((lb, ub)) = lhs_bounds
+        && let Some(norm_rhs_val) = ConstEvalCtxt::new(cx).eval_full_int(rhs, span.ctxt())
+    {
+        if rel == Rel::Eq || rel == Rel::Ne {
+            if norm_rhs_val < lb || norm_rhs_val > ub {
+                err_upcast_comparison(cx, span, lhs, rel == Rel::Ne);
             }
+        } else if match rel {
+            Rel::Lt => {
+                if invert {
+                    norm_rhs_val < lb
+                } else {
+                    ub < norm_rhs_val
+                }
+            },
+            Rel::Le => {
+                if invert {
+                    norm_rhs_val <= lb
+                } else {
+                    ub <= norm_rhs_val
+                }
+            },
+            Rel::Eq | Rel::Ne => unreachable!(),
+        } {
+            err_upcast_comparison(cx, span, lhs, true);
+        } else if match rel {
+            Rel::Lt => {
+                if invert {
+                    norm_rhs_val >= ub
+                } else {
+                    lb >= norm_rhs_val
+                }
+            },
+            Rel::Le => {
+                if invert {
+                    norm_rhs_val > ub
+                } else {
+                    lb > norm_rhs_val
+                }
+            },
+            Rel::Eq | Rel::Ne => unreachable!(),
+        } {
+            err_upcast_comparison(cx, span, lhs, false);
         }
     }
 }

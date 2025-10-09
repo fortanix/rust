@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 // Regression test for issue #67844
 // Ensures that we properly handle nested TAIT occurrences
 // with generic parameters
@@ -22,6 +22,7 @@ impl WithAssoc for MyStruct {
     type AssocType = MyParam;
 }
 
+#[define_opaque(Return)]
 fn my_fun<A>() -> Return<A> {
     MyStruct
 }

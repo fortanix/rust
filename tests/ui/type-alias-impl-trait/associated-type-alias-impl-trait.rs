@@ -1,5 +1,5 @@
 #![feature(type_alias_impl_trait)]
-// build-pass (FIXME(62277): could be check-pass?)
+//@ build-pass (FIXME(62277): could be check-pass?)
 
 trait Bar {}
 struct Dummy;
@@ -15,9 +15,11 @@ type Helper = impl Bar;
 
 impl Foo for i32 {
     type Assoc = Helper;
+    #[define_opaque(Helper)]
     fn foo() -> Helper {
         Dummy
     }
+    #[define_opaque(Helper)]
     fn bar() -> Helper {
         Dummy
     }

@@ -1,6 +1,6 @@
-// run-pass
-// compile-flags: -C codegen-units=3
-// aux-build:sepcomp-extern-lib.rs
+//@ run-pass
+//@ compile-flags: -C codegen-units=3
+//@ aux-build:sepcomp-extern-lib.rs
 
 // Test accessing external items from multiple compilation units.
 
@@ -16,13 +16,13 @@ fn call1() -> usize {
 
 mod a {
     pub fn call2() -> usize {
-        unsafe { ::foo() }
+        unsafe { crate::foo() }
     }
 }
 
 mod b {
     pub fn call3() -> usize {
-        unsafe { ::foo() }
+        unsafe { crate::foo() }
     }
 }
 

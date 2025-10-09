@@ -49,13 +49,14 @@ if [ ! -f "config.toml" ]; then
     # This version of llvm is too old to be downloaded. We'll need to compile it ourselves.
     # We also need an older version of `cargo` that doesn't add unknown flags when it calls `rustc`
     ./configure \
-        --target=x86_64-unknown-linux-fortanixvme,x86_64-unknown-linux-fortanixvme \
+        --target=x86_64-unknown-linux-fortanixvme,x86_64-unknown-linux-gnu \
         --musl-root-fortanixvme=${install_dir}/x86_64-linux-musl/ \
         --set target.x86_64-unknown-linux-fortanixvme.crt-static=true \
         --set install.prefix=${workdir}/rust/toolchain \
+        --set install.sysconfdir=etc \
         --set llvm.targets=X86 \
         --set llvm.download-ci-llvm=false \
-	--set rust.verbose-tests=true \
+        --set rust.verbose-tests=true \
         --enable-extended \
         --tools=cargo
 fi
@@ -71,6 +72,19 @@ export CFLAGS_x86_64_unknown_linux_fortanixvme="-Wa,-mrelax-relocations=no -Wa,-
 export CC_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-gcc
 export CXX_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-g++
 export LD_x86_64_unknown_linux_fortanixvme=${install_dir}/bin/x86_64-linux-musl-ld
+# The recent versions of `cc` crate parses all fragments of the target identifier (arch, vendor, os, abi) passed
+# within the toolchain related env variables (such as `CC_`, `CXX_` etc).
+# All those target related fragments must be fully recognized by the `cc` crate.
+# The `fortanixvme` target environment fails this check.
+# The `cc` crate also supports interpreting CARGO related env variables for building target info.
+# Here we provide each target fragment via CARGO env variables so that `cc` crate can create a valid target info.
+export TARGET="x86_64-unknown-linux-fortanixvme"
+export CARGO_CFG_TARGET_ARCH="x86_64"
+export CARGO_CFG_TARGET_VENDOR="unknown"
+export CARGO_CFG_TARGET_OS="linux"
+export CARGO_CFG_TARGET_ENV="fortanixvme"
+export CARGO_CFG_TARGET_ABI=""
+
 
 if [ "${arg}" == "test" ]; then
     RUST_TEST_THREADS=1 nice -n 19 ionice -c idle ./x.py test --stage=1 --target=x86_64-unknown-linux-fortanixvme library/std --host='' --no-doc --exclude src/tools/linkchecker ${testname}

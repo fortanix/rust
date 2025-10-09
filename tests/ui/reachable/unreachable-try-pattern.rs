@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 #![feature(never_type, exhaustive_patterns)]
 #![warn(unreachable_code)]
 #![warn(unreachable_patterns)]
@@ -18,7 +18,7 @@ fn bar(x: Result<!, i32>) -> Result<u32, i32> {
 fn foo(x: Result<!, i32>) -> Result<u32, i32> {
     let y = (match x { Ok(n) => Ok(n as u32), Err(e) => Err(e) })?;
     //~^ WARN unreachable pattern
-    //~| WARN unreachable expression
+    //~| WARN unreachable call
     Ok(y)
 }
 

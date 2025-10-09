@@ -1,47 +1,51 @@
 //! Code for applying replacement templates for matches that have previously been found.
 
+use ide_db::text_edit::TextEdit;
 use ide_db::{FxHashMap, FxHashSet};
 use itertools::Itertools;
+use parser::Edition;
 use syntax::{
-    ast::{self, AstNode, AstToken},
     SyntaxElement, SyntaxKind, SyntaxNode, SyntaxToken, TextRange, TextSize,
+    ast::{self, AstNode, AstToken},
 };
-use text_edit::TextEdit;
 
-use crate::{fragments, resolving::ResolvedRule, Match, SsrMatches};
+use crate::{Match, SsrMatches, fragments, resolving::ResolvedRule};
 
 /// Returns a text edit that will replace each match in `matches` with its corresponding replacement
 /// template. Placeholders in the template will have been substituted with whatever they matched to
 /// in the original code.
-pub(crate) fn matches_to_edit(
+pub(crate) fn matches_to_edit<'db>(
+    db: &'db dyn hir::db::ExpandDatabase,
     matches: &SsrMatches,
     file_src: &str,
-    rules: &[ResolvedRule],
+    rules: &[ResolvedRule<'db>],
 ) -> TextEdit {
-    matches_to_edit_at_offset(matches, file_src, 0.into(), rules)
+    matches_to_edit_at_offset(db, matches, file_src, 0.into(), rules)
 }
 
-fn matches_to_edit_at_offset(
+fn matches_to_edit_at_offset<'db>(
+    db: &'db dyn hir::db::ExpandDatabase,
     matches: &SsrMatches,
     file_src: &str,
     relative_start: TextSize,
-    rules: &[ResolvedRule],
+    rules: &[ResolvedRule<'db>],
 ) -> TextEdit {
     let mut edit_builder = TextEdit::builder();
     for m in &matches.matches {
         edit_builder.replace(
             m.range.range.checked_sub(relative_start).unwrap(),
-            render_replace(m, file_src, rules),
+            render_replace(db, m, file_src, rules, m.range.file_id.edition(db)),
         );
     }
     edit_builder.finish()
 }
 
-struct ReplacementRenderer<'a> {
+struct ReplacementRenderer<'a, 'db> {
+    db: &'db dyn hir::db::ExpandDatabase,
     match_info: &'a Match,
     file_src: &'a str,
-    rules: &'a [ResolvedRule],
-    rule: &'a ResolvedRule,
+    rules: &'a [ResolvedRule<'db>],
+    rule: &'a ResolvedRule<'db>,
     out: String,
     // Map from a range within `out` to a token in `template` that represents a placeholder. This is
     // used to validate that the generated source code doesn't split any placeholder expansions (see
@@ -51,15 +55,23 @@ struct ReplacementRenderer<'a> {
     // is parsed, placeholders don't get split. e.g. if a template of `$a.to_string()` results in `1
     // + 2.to_string()` then the placeholder value `1 + 2` was split and needs parenthesis.
     placeholder_tokens_requiring_parenthesis: FxHashSet<SyntaxToken>,
+    edition: Edition,
 }
 
-fn render_replace(match_info: &Match, file_src: &str, rules: &[ResolvedRule]) -> String {
+fn render_replace<'db>(
+    db: &'db dyn hir::db::ExpandDatabase,
+    match_info: &Match,
+    file_src: &str,
+    rules: &[ResolvedRule<'db>],
+    edition: Edition,
+) -> String {
     let rule = &rules[match_info.rule_index];
     let template = rule
         .template
         .as_ref()
         .expect("You called MatchFinder::edits after calling MatchFinder::add_search_pattern");
     let mut renderer = ReplacementRenderer {
+        db,
         match_info,
         file_src,
         rules,
@@ -67,6 +79,7 @@ fn render_replace(match_info: &Match, file_src: &str, rules: &[ResolvedRule]) ->
         out: String::new(),
         placeholder_tokens_requiring_parenthesis: FxHashSet::default(),
         placeholder_tokens_by_range: FxHashMap::default(),
+        edition,
     };
     renderer.render_node(&template.node);
     renderer.maybe_rerender_with_extra_parenthesis(&template.node);
@@ -76,7 +89,7 @@ fn render_replace(match_info: &Match, file_src: &str, rules: &[ResolvedRule]) ->
     renderer.out
 }
 
-impl ReplacementRenderer<'_> {
+impl<'db> ReplacementRenderer<'_, 'db> {
     fn render_node_children(&mut self, node: &SyntaxNode) {
         for node_or_token in node.children_with_tokens() {
             self.render_node_or_token(&node_or_token);
@@ -96,15 +109,15 @@ impl ReplacementRenderer<'_> {
 
     fn render_node(&mut self, node: &SyntaxNode) {
         if let Some(mod_path) = self.match_info.rendered_template_paths.get(node) {
-            self.out.push_str(&mod_path.to_string());
+            self.out.push_str(&mod_path.display(self.db, self.edition).to_string());
             // Emit everything except for the segment's name-ref, since we already effectively
             // emitted that as part of `mod_path`.
-            if let Some(path) = ast::Path::cast(node.clone()) {
-                if let Some(segment) = path.segment() {
-                    for node_or_token in segment.syntax().children_with_tokens() {
-                        if node_or_token.kind() != SyntaxKind::NAME_REF {
-                            self.render_node_or_token(&node_or_token);
-                        }
+            if let Some(path) = ast::Path::cast(node.clone())
+                && let Some(segment) = path.segment()
+            {
+                for node_or_token in segment.syntax().children_with_tokens() {
+                    if node_or_token.kind() != SyntaxKind::NAME_REF {
+                        self.render_node_or_token(&node_or_token);
                     }
                 }
             }
@@ -144,6 +157,7 @@ impl ReplacementRenderer<'_> {
                     );
                 }
                 let edit = matches_to_edit_at_offset(
+                    self.db,
                     &placeholder_value.inner_matches,
                     self.file_src,
                     range.start(),
@@ -228,15 +242,15 @@ fn token_is_method_call_receiver(token: &SyntaxToken) -> bool {
 }
 
 fn parse_as_kind(code: &str, kind: SyntaxKind) -> Option<SyntaxNode> {
-    if ast::Expr::can_cast(kind) {
-        if let Ok(expr) = fragments::expr(code) {
-            return Some(expr);
-        }
+    if ast::Expr::can_cast(kind)
+        && let Ok(expr) = fragments::expr(code)
+    {
+        return Some(expr);
     }
-    if ast::Item::can_cast(kind) {
-        if let Ok(item) = fragments::item(code) {
-            return Some(item);
-        }
+    if ast::Item::can_cast(kind)
+        && let Ok(item) = fragments::item(code)
+    {
+        return Some(item);
     }
     None
 }

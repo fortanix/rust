@@ -1,3 +1,5 @@
-// compile-flags: --cfg a{
-// error-pattern: invalid `--cfg` argument: `a{` (expected `key` or `key="value"`)
+//@ compile-flags: --cfg a{
+
 fn main() {}
+
+//~? ERROR invalid `--cfg` argument: `a{` (expected `key` or `key="value"`)

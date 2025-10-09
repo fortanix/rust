@@ -1,8 +1,16 @@
-error: expected one of `=>`, `if`, or `|`, found `+`
-  --> $DIR/range_pat_interactions1.rs:19:17
+error: expected a pattern range bound, found an expression
+  --> $DIR/range_pat_interactions1.rs:17:16
    |
 LL |             0..5+1 => errors_only.push(x),
-   |                 ^ expected one of `=>`, `if`, or `|`
+   |                ^^^ not a pattern
+   |
+   = note: arbitrary expressions are not allowed in patterns: <https://doc.rust-lang.org/book/ch19-00-patterns.html>
+help: consider extracting the expression into a `const`
+   |
+LL +         const VAL: /* Type */ = 5+1;
+LL ~         match x as i32 {
+LL ~             0..VAL => errors_only.push(x),
+   |
 
 error[E0408]: variable `n` is not bound in all patterns
   --> $DIR/range_pat_interactions1.rs:10:25
@@ -12,25 +20,6 @@ LL |         if let n @ 2..3|4 = x {
    |                |
    |                variable not in all patterns
 
-error[E0658]: exclusive range pattern syntax is experimental
-  --> $DIR/range_pat_interactions1.rs:10:20
-   |
-LL |         if let n @ 2..3|4 = x {
-   |                    ^^^^
-   |
-   = note: see issue #37854 <https://github.com/rust-lang/rust/issues/37854> for more information
-   = help: add `#![feature(exclusive_range_pattern)]` to the crate attributes to enable
+error: aborting due to 2 previous errors
 
-error[E0658]: exclusive range pattern syntax is experimental
-  --> $DIR/range_pat_interactions1.rs:14:23
-   |
-LL |         } else if let 2..3 | 4 = x {
-   |                       ^^^^
-   |
-   = note: see issue #37854 <https://github.com/rust-lang/rust/issues/37854> for more information
-   = help: add `#![feature(exclusive_range_pattern)]` to the crate attributes to enable
-
-error: aborting due to 4 previous errors
-
-Some errors have detailed explanations: E0408, E0658.
-For more information about an error, try `rustc --explain E0408`.
+For more information about this error, try `rustc --explain E0408`.

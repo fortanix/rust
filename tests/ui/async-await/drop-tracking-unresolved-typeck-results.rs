@@ -1,6 +1,9 @@
-// compile-flags: -Zdrop-tracking
-// incremental
-// edition: 2021
+//@ incremental
+//@ edition: 2021
+//@ revisions: assumptions no_assumptions
+//@[assumptions] compile-flags: -Zhigher-ranked-assumptions
+//@[assumptions] check-pass
+//@[no_assumptions] known-bug: #110338
 
 use std::future::*;
 use std::marker::PhantomData;
@@ -97,10 +100,6 @@ impl<St: ?Sized + Stream + Unpin> Future for Next<'_, St> {
 
 fn main() {
     send(async {
-        //~^ ERROR implementation of `FnOnce` is not general enough
-        //~| ERROR implementation of `FnOnce` is not general enough
-        //~| ERROR implementation of `FnOnce` is not general enough
-        //~| ERROR implementation of `FnOnce` is not general enough
         Next(&Buffered(Map(Empty(PhantomData), ready::<&()>), FuturesOrdered(PhantomData), 0)).await
     });
 }

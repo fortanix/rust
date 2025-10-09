@@ -1,6 +1,6 @@
 //@revisions: stack tree
-//@[tree]compile-flags: -Zmiri-tree-borrows
 //@compile-flags: -Zmiri-strict-provenance
+//@[tree]compile-flags: -Zmiri-tree-borrows
 #![feature(iter_advance_by, iter_next_chunk)]
 
 // Gather all references from a mutable iterator and make sure Miri notices if
@@ -99,7 +99,7 @@ fn vec_push_ptr_stable() {
     v.push(0);
     let v0 = unsafe { &mut *(&mut v[0] as *mut _) }; // laundering the lifetime -- we take care that `v` does not reallocate, so that's okay.
     v.push(1);
-    let _val = *v0;
+    *v0 = *v0;
 }
 
 fn vec_extend_ptr_stable() {
@@ -108,23 +108,23 @@ fn vec_extend_ptr_stable() {
     let v0 = unsafe { &mut *(&mut v[0] as *mut _) }; // laundering the lifetime -- we take care that `v` does not reallocate, so that's okay.
     // `slice::Iter` (with `T: Copy`) specialization
     v.extend(&[1]);
-    let _val = *v0;
+    *v0 = *v0;
     // `vec::IntoIter` specialization
     v.extend(vec![2]);
-    let _val = *v0;
+    *v0 = *v0;
     // `TrustedLen` specialization
     v.extend(std::iter::once(3));
-    let _val = *v0;
+    *v0 = *v0;
     // base case
     v.extend(std::iter::once(3).filter(|_| true));
-    let _val = *v0;
+    *v0 = *v0;
 }
 
 fn vec_truncate_ptr_stable() {
     let mut v = vec![0; 10];
     let v0 = unsafe { &mut *(&mut v[0] as *mut _) }; // laundering the lifetime -- we take care that `v` does not reallocate, so that's okay.
     v.truncate(5);
-    let _val = *v0;
+    *v0 = *v0;
 }
 
 fn push_str_ptr_stable() {
@@ -169,6 +169,15 @@ fn miri_issue_2759() {
     input.replace_range(0..0, "0");
 }
 
+/// This was skirting the edge of UB, let's make sure it remains on the sound side.
+/// Context: <https://github.com/rust-lang/rust/pull/141032>.
+fn extract_if() {
+    let mut v = vec![Box::new(0u64), Box::new(1u64)];
+    for item in v.extract_if(.., |x| **x == 0) {
+        drop(item);
+    }
+}
+
 fn main() {
     assert_eq!(vec_reallocate().len(), 5);
 
@@ -199,4 +208,5 @@ fn main() {
     swap_remove();
     reverse();
     miri_issue_2759();
+    extract_if();
 }

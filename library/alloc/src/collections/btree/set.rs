@@ -1,4 +1,3 @@
-use crate::vec::Vec;
 use core::borrow::Borrow;
 use core::cmp::Ordering::{self, Equal, Greater, Less};
 use core::cmp::{max, min};
@@ -6,14 +5,18 @@ use core::fmt::{self, Debug};
 use core::hash::{Hash, Hasher};
 use core::iter::{FusedIterator, Peekable};
 use core::mem::ManuallyDrop;
-use core::ops::{BitAnd, BitOr, BitXor, RangeBounds, Sub};
+use core::ops::{BitAnd, BitOr, BitXor, Bound, RangeBounds, Sub};
 
-use super::map::{BTreeMap, Keys};
+use super::map::{self, BTreeMap, Keys};
 use super::merge_iter::MergeIterInner;
 use super::set_val::SetValZST;
-use super::Recover;
-
 use crate::alloc::{Allocator, Global};
+use crate::vec::Vec;
+
+mod entry;
+
+#[unstable(feature = "btree_set_entry", issue = "133549")]
+pub use self::entry::{Entry, OccupiedEntry, VacantEntry};
 
 /// An ordered set based on a B-Tree.
 ///
@@ -27,7 +30,7 @@ use crate::alloc::{Allocator, Global};
 /// `BTreeSet` that observed the logic error and not result in undefined behavior. This could
 /// include panics, incorrect results, aborts, memory leaks, and non-termination.
 ///
-/// Iterators returned by [`BTreeSet::iter`] produce their items in order, and take worst-case
+/// Iterators returned by [`BTreeSet::iter`] and [`BTreeSet::into_iter`] produce their items in order, and take worst-case
 /// logarithmic and amortized constant time per item returned.
 ///
 /// [`Cell`]: core::cell::Cell
@@ -116,8 +119,8 @@ impl<T: Clone, A: Allocator + Clone> Clone for BTreeSet<T, A> {
         BTreeSet { map: self.map.clone() }
     }
 
-    fn clone_from(&mut self, other: &Self) {
-        self.map.clone_from(&other.map);
+    fn clone_from(&mut self, source: &Self) {
+        self.map.clone_from(&source.map);
     }
 }
 
@@ -136,11 +139,11 @@ pub struct Iter<'a, T: 'a> {
 #[stable(feature = "collection_debug", since = "1.17.0")]
 impl<T: fmt::Debug> fmt::Debug for Iter<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("Iter").field(&self.iter.clone()).finish()
+        f.debug_tuple("Iter").field(&self.iter).finish()
     }
 }
 
-/// An owning iterator over the items of a `BTreeSet`.
+/// An owning iterator over the items of a `BTreeSet` in ascending order.
 ///
 /// This `struct` is created by the [`into_iter`] method on [`BTreeSet`]
 /// (provided by the [`IntoIterator`] trait). See its documentation for more.
@@ -358,7 +361,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// let mut set: BTreeSet<i32> = BTreeSet::new_in(Global);
     /// ```
     #[unstable(feature = "btreemap_alloc", issue = "32838")]
-    pub fn new_in(alloc: A) -> BTreeSet<T, A> {
+    pub const fn new_in(alloc: A) -> BTreeSet<T, A> {
         BTreeSet { map: BTreeMap::new_in(alloc) }
     }
 
@@ -636,7 +639,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
         T: Borrow<Q> + Ord,
         Q: Ord,
     {
-        Recover::get(&self.map, value)
+        self.map.get_key_value(value).map(|(k, _)| k)
     }
 
     /// Returns `true` if `self` has no elements in common with `other`.
@@ -790,6 +793,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// ```
     #[must_use]
     #[stable(feature = "map_first_last", since = "1.66.0")]
+    #[rustc_confusables("front")]
     pub fn first(&self) -> Option<&T>
     where
         T: Ord,
@@ -816,6 +820,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// ```
     #[must_use]
     #[stable(feature = "map_first_last", since = "1.66.0")]
+    #[rustc_confusables("back")]
     pub fn last(&self) -> Option<&T>
     where
         T: Ord,
@@ -896,6 +901,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// assert_eq!(set.len(), 1);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_confusables("push", "put")]
     pub fn insert(&mut self, value: T) -> bool
     where
         T: Ord,
@@ -919,11 +925,115 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// assert_eq!(set.get(&[][..]).unwrap().capacity(), 10);
     /// ```
     #[stable(feature = "set_recovery", since = "1.9.0")]
+    #[rustc_confusables("swap")]
     pub fn replace(&mut self, value: T) -> Option<T>
     where
         T: Ord,
     {
-        Recover::replace(&mut self.map, value)
+        self.map.replace(value)
+    }
+
+    /// Inserts the given `value` into the set if it is not present, then
+    /// returns a reference to the value in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_set_entry)]
+    ///
+    /// use std::collections::BTreeSet;
+    ///
+    /// let mut set = BTreeSet::from([1, 2, 3]);
+    /// assert_eq!(set.len(), 3);
+    /// assert_eq!(set.get_or_insert(2), &2);
+    /// assert_eq!(set.get_or_insert(100), &100);
+    /// assert_eq!(set.len(), 4); // 100 was inserted
+    /// ```
+    #[inline]
+    #[unstable(feature = "btree_set_entry", issue = "133549")]
+    pub fn get_or_insert(&mut self, value: T) -> &T
+    where
+        T: Ord,
+    {
+        self.map.entry(value).insert_entry(SetValZST).into_key()
+    }
+
+    /// Inserts a value computed from `f` into the set if the given `value` is
+    /// not present, then returns a reference to the value in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_set_entry)]
+    ///
+    /// use std::collections::BTreeSet;
+    ///
+    /// let mut set: BTreeSet<String> = ["cat", "dog", "horse"]
+    ///     .iter().map(|&pet| pet.to_owned()).collect();
+    ///
+    /// assert_eq!(set.len(), 3);
+    /// for &pet in &["cat", "dog", "fish"] {
+    ///     let value = set.get_or_insert_with(pet, str::to_owned);
+    ///     assert_eq!(value, pet);
+    /// }
+    /// assert_eq!(set.len(), 4); // a new "fish" was inserted
+    /// ```
+    #[inline]
+    #[unstable(feature = "btree_set_entry", issue = "133549")]
+    pub fn get_or_insert_with<Q: ?Sized, F>(&mut self, value: &Q, f: F) -> &T
+    where
+        T: Borrow<Q> + Ord,
+        Q: Ord,
+        F: FnOnce(&Q) -> T,
+    {
+        self.map.get_or_insert_with(value, f)
+    }
+
+    /// Gets the given value's corresponding entry in the set for in-place manipulation.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_set_entry)]
+    ///
+    /// use std::collections::BTreeSet;
+    /// use std::collections::btree_set::Entry::*;
+    ///
+    /// let mut singles = BTreeSet::new();
+    /// let mut dupes = BTreeSet::new();
+    ///
+    /// for ch in "a short treatise on fungi".chars() {
+    ///     if let Vacant(dupe_entry) = dupes.entry(ch) {
+    ///         // We haven't already seen a duplicate, so
+    ///         // check if we've at least seen it once.
+    ///         match singles.entry(ch) {
+    ///             Vacant(single_entry) => {
+    ///                 // We found a new character for the first time.
+    ///                 single_entry.insert()
+    ///             }
+    ///             Occupied(single_entry) => {
+    ///                 // We've already seen this once, "move" it to dupes.
+    ///                 single_entry.remove();
+    ///                 dupe_entry.insert();
+    ///             }
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// assert!(!singles.contains(&'t') && dupes.contains(&'t'));
+    /// assert!(singles.contains(&'u') && !dupes.contains(&'u'));
+    /// assert!(!singles.contains(&'v') && !dupes.contains(&'v'));
+    /// ```
+    #[inline]
+    #[unstable(feature = "btree_set_entry", issue = "133549")]
+    pub fn entry(&mut self, value: T) -> Entry<'_, T, A>
+    where
+        T: Ord,
+    {
+        match self.map.entry(value) {
+            map::Entry::Occupied(entry) => Entry::Occupied(OccupiedEntry { inner: entry }),
+            map::Entry::Vacant(entry) => Entry::Vacant(VacantEntry { inner: entry }),
+        }
     }
 
     /// If the set contains an element equal to the value, removes it from the
@@ -975,7 +1085,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
         T: Borrow<Q> + Ord,
         Q: Ord,
     {
-        Recover::take(&mut self.map, value)
+        self.map.remove_entry(value).map(|(k, _)| k)
     }
 
     /// Retains only the elements specified by the predicate.
@@ -999,7 +1109,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
         T: Ord,
         F: FnMut(&T) -> bool,
     {
-        self.drain_filter(|v| !f(v));
+        self.extract_if(.., |v| !f(v)).for_each(drop);
     }
 
     /// Moves all elements from `other` into `self`, leaving `other` empty.
@@ -1077,62 +1187,52 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
         BTreeSet { map: self.map.split_off(value) }
     }
 
-    /// Creates an iterator that visits all elements in ascending order and
+    /// Creates an iterator that visits elements in the specified range in ascending order and
     /// uses a closure to determine if an element should be removed.
     ///
     /// If the closure returns `true`, the element is removed from the set and
     /// yielded. If the closure returns `false`, or panics, the element remains
     /// in the set and will not be yielded.
     ///
-    /// If the iterator is only partially consumed or not consumed at all, each
-    /// of the remaining elements is still subjected to the closure and removed
-    /// and dropped if it returns `true`.
+    /// If the returned `ExtractIf` is not exhausted, e.g. because it is dropped without iterating
+    /// or the iteration short-circuits, then the remaining elements will be retained.
+    /// Use [`retain`] with a negated predicate if you do not need the returned iterator.
     ///
-    /// It is unspecified how many more elements will be subjected to the
-    /// closure if a panic occurs in the closure, or if a panic occurs while
-    /// dropping an element, or if the `DrainFilter` itself is leaked.
-    ///
+    /// [`retain`]: BTreeSet::retain
     /// # Examples
     ///
-    /// Splitting a set into even and odd values, reusing the original set:
-    ///
     /// ```
-    /// #![feature(btree_drain_filter)]
     /// use std::collections::BTreeSet;
     ///
+    /// // Splitting a set into even and odd values, reusing the original set:
     /// let mut set: BTreeSet<i32> = (0..8).collect();
-    /// let evens: BTreeSet<_> = set.drain_filter(|v| v % 2 == 0).collect();
+    /// let evens: BTreeSet<_> = set.extract_if(.., |v| v % 2 == 0).collect();
     /// let odds = set;
     /// assert_eq!(evens.into_iter().collect::<Vec<_>>(), vec![0, 2, 4, 6]);
     /// assert_eq!(odds.into_iter().collect::<Vec<_>>(), vec![1, 3, 5, 7]);
+    ///
+    /// // Splitting a set into low and high halves, reusing the original set:
+    /// let mut set: BTreeSet<i32> = (0..8).collect();
+    /// let low: BTreeSet<_> = set.extract_if(0..4, |_v| true).collect();
+    /// let high = set;
+    /// assert_eq!(low.into_iter().collect::<Vec<_>>(), [0, 1, 2, 3]);
+    /// assert_eq!(high.into_iter().collect::<Vec<_>>(), [4, 5, 6, 7]);
     /// ```
-    #[unstable(feature = "btree_drain_filter", issue = "70530")]
-    pub fn drain_filter<'a, F>(&'a mut self, pred: F) -> DrainFilter<'a, T, F, A>
+    #[stable(feature = "btree_extract_if", since = "1.91.0")]
+    pub fn extract_if<F, R>(&mut self, range: R, pred: F) -> ExtractIf<'_, T, R, F, A>
     where
         T: Ord,
-        F: 'a + FnMut(&T) -> bool,
+        R: RangeBounds<T>,
+        F: FnMut(&T) -> bool,
     {
-        let (inner, alloc) = self.map.drain_filter_inner();
-        DrainFilter { pred, inner, alloc }
+        let (inner, alloc) = self.map.extract_if_inner(range);
+        ExtractIf { pred, inner, alloc }
     }
 
     /// Gets an iterator that visits the elements in the `BTreeSet` in ascending
     /// order.
     ///
     /// # Examples
-    ///
-    /// ```
-    /// use std::collections::BTreeSet;
-    ///
-    /// let set = BTreeSet::from([1, 2, 3]);
-    /// let mut set_iter = set.iter();
-    /// assert_eq!(set_iter.next(), Some(&1));
-    /// assert_eq!(set_iter.next(), Some(&2));
-    /// assert_eq!(set_iter.next(), Some(&3));
-    /// assert_eq!(set_iter.next(), None);
-    /// ```
-    ///
-    /// Values returned by the iterator are returned in ascending order:
     ///
     /// ```
     /// use std::collections::BTreeSet;
@@ -1145,6 +1245,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     /// assert_eq!(set_iter.next(), None);
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[cfg_attr(not(test), rustc_diagnostic_item = "btreeset_iter")]
     pub fn iter(&self) -> Iter<'_, T> {
         Iter { iter: self.map.keys() }
     }
@@ -1168,6 +1269,7 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
         issue = "71835",
         implied_by = "const_btree_new"
     )]
+    #[rustc_confusables("length", "size")]
     pub const fn len(&self) -> usize {
         self.map.len()
     }
@@ -1193,6 +1295,178 @@ impl<T, A: Allocator + Clone> BTreeSet<T, A> {
     )]
     pub const fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Returns a [`Cursor`] pointing at the gap before the smallest element
+    /// greater than the given bound.
+    ///
+    /// Passing `Bound::Included(x)` will return a cursor pointing to the
+    /// gap before the smallest element greater than or equal to `x`.
+    ///
+    /// Passing `Bound::Excluded(x)` will return a cursor pointing to the
+    /// gap before the smallest element greater than `x`.
+    ///
+    /// Passing `Bound::Unbounded` will return a cursor pointing to the
+    /// gap before the smallest element in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_cursors)]
+    ///
+    /// use std::collections::BTreeSet;
+    /// use std::ops::Bound;
+    ///
+    /// let set = BTreeSet::from([1, 2, 3, 4]);
+    ///
+    /// let cursor = set.lower_bound(Bound::Included(&2));
+    /// assert_eq!(cursor.peek_prev(), Some(&1));
+    /// assert_eq!(cursor.peek_next(), Some(&2));
+    ///
+    /// let cursor = set.lower_bound(Bound::Excluded(&2));
+    /// assert_eq!(cursor.peek_prev(), Some(&2));
+    /// assert_eq!(cursor.peek_next(), Some(&3));
+    ///
+    /// let cursor = set.lower_bound(Bound::Unbounded);
+    /// assert_eq!(cursor.peek_prev(), None);
+    /// assert_eq!(cursor.peek_next(), Some(&1));
+    /// ```
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn lower_bound<Q: ?Sized>(&self, bound: Bound<&Q>) -> Cursor<'_, T>
+    where
+        T: Borrow<Q> + Ord,
+        Q: Ord,
+    {
+        Cursor { inner: self.map.lower_bound(bound) }
+    }
+
+    /// Returns a [`CursorMut`] pointing at the gap before the smallest element
+    /// greater than the given bound.
+    ///
+    /// Passing `Bound::Included(x)` will return a cursor pointing to the
+    /// gap before the smallest element greater than or equal to `x`.
+    ///
+    /// Passing `Bound::Excluded(x)` will return a cursor pointing to the
+    /// gap before the smallest element greater than `x`.
+    ///
+    /// Passing `Bound::Unbounded` will return a cursor pointing to the
+    /// gap before the smallest element in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_cursors)]
+    ///
+    /// use std::collections::BTreeSet;
+    /// use std::ops::Bound;
+    ///
+    /// let mut set = BTreeSet::from([1, 2, 3, 4]);
+    ///
+    /// let mut cursor = set.lower_bound_mut(Bound::Included(&2));
+    /// assert_eq!(cursor.peek_prev(), Some(&1));
+    /// assert_eq!(cursor.peek_next(), Some(&2));
+    ///
+    /// let mut cursor = set.lower_bound_mut(Bound::Excluded(&2));
+    /// assert_eq!(cursor.peek_prev(), Some(&2));
+    /// assert_eq!(cursor.peek_next(), Some(&3));
+    ///
+    /// let mut cursor = set.lower_bound_mut(Bound::Unbounded);
+    /// assert_eq!(cursor.peek_prev(), None);
+    /// assert_eq!(cursor.peek_next(), Some(&1));
+    /// ```
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn lower_bound_mut<Q: ?Sized>(&mut self, bound: Bound<&Q>) -> CursorMut<'_, T, A>
+    where
+        T: Borrow<Q> + Ord,
+        Q: Ord,
+    {
+        CursorMut { inner: self.map.lower_bound_mut(bound) }
+    }
+
+    /// Returns a [`Cursor`] pointing at the gap after the greatest element
+    /// smaller than the given bound.
+    ///
+    /// Passing `Bound::Included(x)` will return a cursor pointing to the
+    /// gap after the greatest element smaller than or equal to `x`.
+    ///
+    /// Passing `Bound::Excluded(x)` will return a cursor pointing to the
+    /// gap after the greatest element smaller than `x`.
+    ///
+    /// Passing `Bound::Unbounded` will return a cursor pointing to the
+    /// gap after the greatest element in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_cursors)]
+    ///
+    /// use std::collections::BTreeSet;
+    /// use std::ops::Bound;
+    ///
+    /// let set = BTreeSet::from([1, 2, 3, 4]);
+    ///
+    /// let cursor = set.upper_bound(Bound::Included(&3));
+    /// assert_eq!(cursor.peek_prev(), Some(&3));
+    /// assert_eq!(cursor.peek_next(), Some(&4));
+    ///
+    /// let cursor = set.upper_bound(Bound::Excluded(&3));
+    /// assert_eq!(cursor.peek_prev(), Some(&2));
+    /// assert_eq!(cursor.peek_next(), Some(&3));
+    ///
+    /// let cursor = set.upper_bound(Bound::Unbounded);
+    /// assert_eq!(cursor.peek_prev(), Some(&4));
+    /// assert_eq!(cursor.peek_next(), None);
+    /// ```
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn upper_bound<Q: ?Sized>(&self, bound: Bound<&Q>) -> Cursor<'_, T>
+    where
+        T: Borrow<Q> + Ord,
+        Q: Ord,
+    {
+        Cursor { inner: self.map.upper_bound(bound) }
+    }
+
+    /// Returns a [`CursorMut`] pointing at the gap after the greatest element
+    /// smaller than the given bound.
+    ///
+    /// Passing `Bound::Included(x)` will return a cursor pointing to the
+    /// gap after the greatest element smaller than or equal to `x`.
+    ///
+    /// Passing `Bound::Excluded(x)` will return a cursor pointing to the
+    /// gap after the greatest element smaller than `x`.
+    ///
+    /// Passing `Bound::Unbounded` will return a cursor pointing to the
+    /// gap after the greatest element in the set.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(btree_cursors)]
+    ///
+    /// use std::collections::BTreeSet;
+    /// use std::ops::Bound;
+    ///
+    /// let mut set = BTreeSet::from([1, 2, 3, 4]);
+    ///
+    /// let mut cursor = set.upper_bound_mut(Bound::Included(&3));
+    /// assert_eq!(cursor.peek_prev(), Some(&3));
+    /// assert_eq!(cursor.peek_next(), Some(&4));
+    ///
+    /// let mut cursor = set.upper_bound_mut(Bound::Excluded(&3));
+    /// assert_eq!(cursor.peek_prev(), Some(&2));
+    /// assert_eq!(cursor.peek_next(), Some(&3));
+    ///
+    /// let mut cursor = set.upper_bound_mut(Bound::Unbounded);
+    /// assert_eq!(cursor.peek_prev(), Some(&4));
+    /// assert_eq!(cursor.peek_next(), None);
+    /// ```
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn upper_bound_mut<Q: ?Sized>(&mut self, bound: Bound<&Q>) -> CursorMut<'_, T, A>
+    where
+        T: Borrow<Q> + Ord,
+        Q: Ord,
+    {
+        CursorMut { inner: self.map.upper_bound_mut(bound) }
     }
 }
 
@@ -1223,6 +1497,11 @@ impl<T: Ord, A: Allocator + Clone> BTreeSet<T, A> {
 impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
     /// Converts a `[T; N]` into a `BTreeSet<T>`.
     ///
+    /// If the array contains any equal values,
+    /// all but one will be dropped.
+    ///
+    /// # Examples
+    ///
     /// ```
     /// use std::collections::BTreeSet;
     ///
@@ -1237,9 +1516,7 @@ impl<T: Ord, const N: usize> From<[T; N]> for BTreeSet<T> {
 
         // use stable sort to preserve the insertion order.
         arr.sort();
-        let iter = IntoIterator::into_iter(arr).map(|k| (k, SetValZST::default()));
-        let map = BTreeMap::bulk_build_from_sorted_iter(iter, Global);
-        BTreeSet { map }
+        BTreeSet::from_sorted_iter(IntoIterator::into_iter(arr), Global)
     }
 }
 
@@ -1248,7 +1525,7 @@ impl<T, A: Allocator + Clone> IntoIterator for BTreeSet<T, A> {
     type Item = T;
     type IntoIter = IntoIter<T, A>;
 
-    /// Gets an iterator for moving out the `BTreeSet`'s contents.
+    /// Gets an iterator for moving out the `BTreeSet`'s contents in ascending order.
     ///
     /// # Examples
     ///
@@ -1275,48 +1552,41 @@ impl<'a, T, A: Allocator + Clone> IntoIterator for &'a BTreeSet<T, A> {
     }
 }
 
-/// An iterator produced by calling `drain_filter` on BTreeSet.
-#[unstable(feature = "btree_drain_filter", issue = "70530")]
-pub struct DrainFilter<
+/// An iterator produced by calling `extract_if` on BTreeSet.
+#[stable(feature = "btree_extract_if", since = "1.91.0")]
+#[must_use = "iterators are lazy and do nothing unless consumed"]
+pub struct ExtractIf<
     'a,
     T,
+    R,
     F,
     #[unstable(feature = "allocator_api", issue = "32838")] A: Allocator + Clone = Global,
-> where
-    T: 'a,
-    F: 'a + FnMut(&T) -> bool,
-{
+> {
     pred: F,
-    inner: super::map::DrainFilterInner<'a, T, SetValZST>,
+    inner: super::map::ExtractIfInner<'a, T, SetValZST, R>,
     /// The BTreeMap will outlive this IntoIter so we don't care about drop order for `alloc`.
     alloc: A,
 }
 
-#[unstable(feature = "btree_drain_filter", issue = "70530")]
-impl<T, F, A: Allocator + Clone> Drop for DrainFilter<'_, T, F, A>
-where
-    F: FnMut(&T) -> bool,
-{
-    fn drop(&mut self) {
-        self.for_each(drop);
-    }
-}
-
-#[unstable(feature = "btree_drain_filter", issue = "70530")]
-impl<T, F, A: Allocator + Clone> fmt::Debug for DrainFilter<'_, T, F, A>
+#[stable(feature = "btree_extract_if", since = "1.91.0")]
+impl<T, R, F, A> fmt::Debug for ExtractIf<'_, T, R, F, A>
 where
     T: fmt::Debug,
-    F: FnMut(&T) -> bool,
+    A: Allocator + Clone,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("DrainFilter").field(&self.inner.peek().map(|(k, _)| k)).finish()
+        f.debug_struct("ExtractIf")
+            .field("peek", &self.inner.peek().map(|(k, _)| k))
+            .finish_non_exhaustive()
     }
 }
 
-#[unstable(feature = "btree_drain_filter", issue = "70530")]
-impl<'a, T, F, A: Allocator + Clone> Iterator for DrainFilter<'_, T, F, A>
+#[stable(feature = "btree_extract_if", since = "1.91.0")]
+impl<T, R, F, A: Allocator + Clone> Iterator for ExtractIf<'_, T, R, F, A>
 where
-    F: 'a + FnMut(&T) -> bool,
+    T: PartialOrd,
+    R: RangeBounds<T>,
+    F: FnMut(&T) -> bool,
 {
     type Item = T;
 
@@ -1331,9 +1601,12 @@ where
     }
 }
 
-#[unstable(feature = "btree_drain_filter", issue = "70530")]
-impl<T, F, A: Allocator + Clone> FusedIterator for DrainFilter<'_, T, F, A> where
-    F: FnMut(&T) -> bool
+#[stable(feature = "btree_extract_if", since = "1.91.0")]
+impl<T, R, F, A: Allocator + Clone> FusedIterator for ExtractIf<'_, T, R, F, A>
+where
+    T: PartialOrd,
+    R: RangeBounds<T>,
+    F: FnMut(&T) -> bool,
 {
 }
 
@@ -1839,6 +2112,415 @@ impl<'a, T: Ord> Iterator for Union<'a, T> {
 
 #[stable(feature = "fused", since = "1.26.0")]
 impl<T: Ord> FusedIterator for Union<'_, T> {}
+
+/// A cursor over a `BTreeSet`.
+///
+/// A `Cursor` is like an iterator, except that it can freely seek back-and-forth.
+///
+/// Cursors always point to a gap between two elements in the set, and can
+/// operate on the two immediately adjacent elements.
+///
+/// A `Cursor` is created with the [`BTreeSet::lower_bound`] and [`BTreeSet::upper_bound`] methods.
+#[derive(Clone)]
+#[unstable(feature = "btree_cursors", issue = "107540")]
+pub struct Cursor<'a, K: 'a> {
+    inner: super::map::Cursor<'a, K, SetValZST>,
+}
+
+#[unstable(feature = "btree_cursors", issue = "107540")]
+impl<K: Debug> Debug for Cursor<'_, K> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Cursor")
+    }
+}
+
+/// A cursor over a `BTreeSet` with editing operations.
+///
+/// A `Cursor` is like an iterator, except that it can freely seek back-and-forth, and can
+/// safely mutate the set during iteration. This is because the lifetime of its yielded
+/// references is tied to its own lifetime, instead of just the underlying map. This means
+/// cursors cannot yield multiple elements at once.
+///
+/// Cursors always point to a gap between two elements in the set, and can
+/// operate on the two immediately adjacent elements.
+///
+/// A `CursorMut` is created with the [`BTreeSet::lower_bound_mut`] and [`BTreeSet::upper_bound_mut`]
+/// methods.
+#[unstable(feature = "btree_cursors", issue = "107540")]
+pub struct CursorMut<'a, K: 'a, #[unstable(feature = "allocator_api", issue = "32838")] A = Global>
+{
+    inner: super::map::CursorMut<'a, K, SetValZST, A>,
+}
+
+#[unstable(feature = "btree_cursors", issue = "107540")]
+impl<K: Debug, A> Debug for CursorMut<'_, K, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CursorMut")
+    }
+}
+
+/// A cursor over a `BTreeSet` with editing operations, and which allows
+/// mutating elements.
+///
+/// A `Cursor` is like an iterator, except that it can freely seek back-and-forth, and can
+/// safely mutate the set during iteration. This is because the lifetime of its yielded
+/// references is tied to its own lifetime, instead of just the underlying set. This means
+/// cursors cannot yield multiple elements at once.
+///
+/// Cursors always point to a gap between two elements in the set, and can
+/// operate on the two immediately adjacent elements.
+///
+/// A `CursorMutKey` is created from a [`CursorMut`] with the
+/// [`CursorMut::with_mutable_key`] method.
+///
+/// # Safety
+///
+/// Since this cursor allows mutating elements, you must ensure that the
+/// `BTreeSet` invariants are maintained. Specifically:
+///
+/// * The newly inserted element must be unique in the tree.
+/// * All elements in the tree must remain in sorted order.
+#[unstable(feature = "btree_cursors", issue = "107540")]
+pub struct CursorMutKey<
+    'a,
+    K: 'a,
+    #[unstable(feature = "allocator_api", issue = "32838")] A = Global,
+> {
+    inner: super::map::CursorMutKey<'a, K, SetValZST, A>,
+}
+
+#[unstable(feature = "btree_cursors", issue = "107540")]
+impl<K: Debug, A> Debug for CursorMutKey<'_, K, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CursorMutKey")
+    }
+}
+
+impl<'a, K> Cursor<'a, K> {
+    /// Advances the cursor to the next gap, returning the element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the end of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn next(&mut self) -> Option<&'a K> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    /// Advances the cursor to the previous gap, returning the element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the start of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn prev(&mut self) -> Option<&'a K> {
+        self.inner.prev().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to next element without moving the cursor.
+    ///
+    /// If the cursor is at the end of the set then `None` is returned
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_next(&self) -> Option<&'a K> {
+        self.inner.peek_next().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the previous element without moving the cursor.
+    ///
+    /// If the cursor is at the start of the set then `None` is returned.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_prev(&self) -> Option<&'a K> {
+        self.inner.peek_prev().map(|(k, _)| k)
+    }
+}
+
+impl<'a, T, A> CursorMut<'a, T, A> {
+    /// Advances the cursor to the next gap, returning the element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the end of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn next(&mut self) -> Option<&T> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    /// Advances the cursor to the previous gap, returning the element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the start of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn prev(&mut self) -> Option<&T> {
+        self.inner.prev().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the next element without moving the cursor.
+    ///
+    /// If the cursor is at the end of the set then `None` is returned.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_next(&mut self) -> Option<&T> {
+        self.inner.peek_next().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the previous element without moving the cursor.
+    ///
+    /// If the cursor is at the start of the set then `None` is returned.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_prev(&mut self) -> Option<&T> {
+        self.inner.peek_prev().map(|(k, _)| k)
+    }
+
+    /// Returns a read-only cursor pointing to the same location as the
+    /// `CursorMut`.
+    ///
+    /// The lifetime of the returned `Cursor` is bound to that of the
+    /// `CursorMut`, which means it cannot outlive the `CursorMut` and that the
+    /// `CursorMut` is frozen for the lifetime of the `Cursor`.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn as_cursor(&self) -> Cursor<'_, T> {
+        Cursor { inner: self.inner.as_cursor() }
+    }
+
+    /// Converts the cursor into a [`CursorMutKey`], which allows mutating
+    /// elements in the tree.
+    ///
+    /// # Safety
+    ///
+    /// Since this cursor allows mutating elements, you must ensure that the
+    /// `BTreeSet` invariants are maintained. Specifically:
+    ///
+    /// * The newly inserted element must be unique in the tree.
+    /// * All elements in the tree must remain in sorted order.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub unsafe fn with_mutable_key(self) -> CursorMutKey<'a, T, A> {
+        CursorMutKey { inner: unsafe { self.inner.with_mutable_key() } }
+    }
+}
+
+impl<'a, T, A> CursorMutKey<'a, T, A> {
+    /// Advances the cursor to the next gap, returning the  element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the end of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn next(&mut self) -> Option<&mut T> {
+        self.inner.next().map(|(k, _)| k)
+    }
+
+    /// Advances the cursor to the previous gap, returning the element that it
+    /// moved over.
+    ///
+    /// If the cursor is already at the start of the set then `None` is returned
+    /// and the cursor is not moved.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn prev(&mut self) -> Option<&mut T> {
+        self.inner.prev().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the next element without moving the cursor.
+    ///
+    /// If the cursor is at the end of the set then `None` is returned
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_next(&mut self) -> Option<&mut T> {
+        self.inner.peek_next().map(|(k, _)| k)
+    }
+
+    /// Returns a reference to the previous element without moving the cursor.
+    ///
+    /// If the cursor is at the start of the set then `None` is returned.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn peek_prev(&mut self) -> Option<&mut T> {
+        self.inner.peek_prev().map(|(k, _)| k)
+    }
+
+    /// Returns a read-only cursor pointing to the same location as the
+    /// `CursorMutKey`.
+    ///
+    /// The lifetime of the returned `Cursor` is bound to that of the
+    /// `CursorMutKey`, which means it cannot outlive the `CursorMutKey` and that the
+    /// `CursorMutKey` is frozen for the lifetime of the `Cursor`.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn as_cursor(&self) -> Cursor<'_, T> {
+        Cursor { inner: self.inner.as_cursor() }
+    }
+}
+
+impl<'a, T: Ord, A: Allocator + Clone> CursorMut<'a, T, A> {
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap before the
+    /// newly inserted element.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure that the `BTreeSet` invariants are maintained.
+    /// Specifically:
+    ///
+    /// * The newly inserted element must be unique in the tree.
+    /// * All elements in the tree must remain in sorted order.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub unsafe fn insert_after_unchecked(&mut self, value: T) {
+        unsafe { self.inner.insert_after_unchecked(value, SetValZST) }
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap after the
+    /// newly inserted element.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure that the `BTreeSet` invariants are maintained.
+    /// Specifically:
+    ///
+    /// * The newly inserted element must be unique in the tree.
+    /// * All elements in the tree must remain in sorted order.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub unsafe fn insert_before_unchecked(&mut self, value: T) {
+        unsafe { self.inner.insert_before_unchecked(value, SetValZST) }
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap before the
+    /// newly inserted element.
+    ///
+    /// If the inserted element is not greater than the element before the
+    /// cursor (if any), or if it not less than the element after the cursor (if
+    /// any), then an [`UnorderedKeyError`] is returned since this would
+    /// invalidate the [`Ord`] invariant between the elements of the set.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn insert_after(&mut self, value: T) -> Result<(), UnorderedKeyError> {
+        self.inner.insert_after(value, SetValZST)
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap after the
+    /// newly inserted element.
+    ///
+    /// If the inserted element is not greater than the element before the
+    /// cursor (if any), or if it not less than the element after the cursor (if
+    /// any), then an [`UnorderedKeyError`] is returned since this would
+    /// invalidate the [`Ord`] invariant between the elements of the set.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn insert_before(&mut self, value: T) -> Result<(), UnorderedKeyError> {
+        self.inner.insert_before(value, SetValZST)
+    }
+
+    /// Removes the next element from the `BTreeSet`.
+    ///
+    /// The element that was removed is returned. The cursor position is
+    /// unchanged (before the removed element).
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn remove_next(&mut self) -> Option<T> {
+        self.inner.remove_next().map(|(k, _)| k)
+    }
+
+    /// Removes the preceding element from the `BTreeSet`.
+    ///
+    /// The element that was removed is returned. The cursor position is
+    /// unchanged (after the removed element).
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn remove_prev(&mut self) -> Option<T> {
+        self.inner.remove_prev().map(|(k, _)| k)
+    }
+}
+
+impl<'a, T: Ord, A: Allocator + Clone> CursorMutKey<'a, T, A> {
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap before the
+    /// newly inserted element.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure that the `BTreeSet` invariants are maintained.
+    /// Specifically:
+    ///
+    /// * The key of the newly inserted element must be unique in the tree.
+    /// * All elements in the tree must remain in sorted order.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub unsafe fn insert_after_unchecked(&mut self, value: T) {
+        unsafe { self.inner.insert_after_unchecked(value, SetValZST) }
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap after the
+    /// newly inserted element.
+    ///
+    /// # Safety
+    ///
+    /// You must ensure that the `BTreeSet` invariants are maintained.
+    /// Specifically:
+    ///
+    /// * The newly inserted element must be unique in the tree.
+    /// * All elements in the tree must remain in sorted order.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub unsafe fn insert_before_unchecked(&mut self, value: T) {
+        unsafe { self.inner.insert_before_unchecked(value, SetValZST) }
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap before the
+    /// newly inserted element.
+    ///
+    /// If the inserted element is not greater than the element before the
+    /// cursor (if any), or if it not less than the element after the cursor (if
+    /// any), then an [`UnorderedKeyError`] is returned since this would
+    /// invalidate the [`Ord`] invariant between the elements of the set.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn insert_after(&mut self, value: T) -> Result<(), UnorderedKeyError> {
+        self.inner.insert_after(value, SetValZST)
+    }
+
+    /// Inserts a new element into the set in the gap that the
+    /// cursor is currently pointing to.
+    ///
+    /// After the insertion the cursor will be pointing at the gap after the
+    /// newly inserted element.
+    ///
+    /// If the inserted element is not greater than the element before the
+    /// cursor (if any), or if it not less than the element after the cursor (if
+    /// any), then an [`UnorderedKeyError`] is returned since this would
+    /// invalidate the [`Ord`] invariant between the elements of the set.
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn insert_before(&mut self, value: T) -> Result<(), UnorderedKeyError> {
+        self.inner.insert_before(value, SetValZST)
+    }
+
+    /// Removes the next element from the `BTreeSet`.
+    ///
+    /// The element that was removed is returned. The cursor position is
+    /// unchanged (before the removed element).
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn remove_next(&mut self) -> Option<T> {
+        self.inner.remove_next().map(|(k, _)| k)
+    }
+
+    /// Removes the preceding element from the `BTreeSet`.
+    ///
+    /// The element that was removed is returned. The cursor position is
+    /// unchanged (after the removed element).
+    #[unstable(feature = "btree_cursors", issue = "107540")]
+    pub fn remove_prev(&mut self) -> Option<T> {
+        self.inner.remove_prev().map(|(k, _)| k)
+    }
+}
+
+#[unstable(feature = "btree_cursors", issue = "107540")]
+pub use super::map::UnorderedKeyError;
 
 #[cfg(test)]
 mod tests;

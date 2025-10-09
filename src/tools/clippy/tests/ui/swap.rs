@@ -1,16 +1,12 @@
-//@run-rustfix
 //@aux-build: macro_rules.rs
 
-#![warn(clippy::all)]
 #![allow(
     clippy::disallowed_names,
     clippy::no_effect,
     clippy::redundant_clone,
-    redundant_semicolons,
-    dead_code,
-    unused_assignments,
-    unused_variables,
-    clippy::let_and_return
+    clippy::let_and_return,
+    clippy::useless_vec,
+    clippy::redundant_locals
 )]
 
 struct Foo(u32);
@@ -25,6 +21,7 @@ fn field() {
     let mut bar = Bar { a: 1, b: 2 };
 
     let temp = bar.a;
+    //~^ manual_swap
     bar.a = bar.b;
     bar.b = temp;
 
@@ -37,6 +34,7 @@ fn field() {
 fn array() {
     let mut foo = [1, 2];
     let temp = foo[0];
+    //~^ manual_swap
     foo[0] = foo[1];
     foo[1] = temp;
 
@@ -46,6 +44,7 @@ fn array() {
 fn slice() {
     let foo = &mut [1, 2];
     let temp = foo[0];
+    //~^ manual_swap
     foo[0] = foo[1];
     foo[1] = temp;
 
@@ -65,6 +64,7 @@ fn unswappable_slice() {
 fn vec() {
     let mut foo = vec![1, 2];
     let temp = foo[0];
+    //~^ manual_swap
     foo[0] = foo[1];
     foo[1] = temp;
 
@@ -76,6 +76,7 @@ fn xor_swap_locals() {
     let mut a = 0;
     let mut b = 1;
     a ^= b;
+    //~^ manual_swap
     b ^= a;
     a ^= b;
 }
@@ -84,6 +85,7 @@ fn xor_field_swap() {
     // This is an xor-based swap of fields in a struct.
     let mut bar = Bar { a: 0, b: 1 };
     bar.a ^= bar.b;
+    //~^ manual_swap
     bar.b ^= bar.a;
     bar.a ^= bar.b;
 }
@@ -92,6 +94,7 @@ fn xor_slice_swap() {
     // This is an xor-based swap of a slice
     let foo = &mut [1, 2];
     foo[0] ^= foo[1];
+    //~^ manual_swap
     foo[1] ^= foo[0];
     foo[0] ^= foo[1];
 }
@@ -121,6 +124,7 @@ fn distinct_slice() {
     let foo = &mut [vec![1, 2], vec![3, 4]];
     let bar = &mut [vec![1, 2], vec![3, 4]];
     let temp = foo[0][1];
+    //~^ manual_swap
     foo[0][1] = bar[1][0];
     bar[1][0] = temp;
 }
@@ -132,31 +136,38 @@ fn main() {
     let mut b = 1337;
 
     a = b;
+    //~^ almost_swapped
     b = a;
 
     ; let t = a;
+    //~^ manual_swap
     a = b;
     b = t;
 
     let mut c = Foo(42);
 
     c.0 = a;
+    //~^ almost_swapped
     a = c.0;
 
     ; let t = c.0;
+    //~^ manual_swap
     c.0 = a;
     a = t;
 
     let a = b;
+    //~^ almost_swapped
     let b = a;
 
     let mut c = 1;
     let mut d = 2;
     d = c;
+    //~^ almost_swapped
     c = d;
 
     let mut b = 1;
     let a = b;
+    //~^ almost_swapped
     b = a;
 
     let b = 1;
@@ -170,6 +181,7 @@ fn main() {
     let mut a = 2;
 
     let t = b;
+    //~^ manual_swap
     b = a;
     a = t;
 }
@@ -205,6 +217,7 @@ fn issue_8154() {
     let mut s = &mut s;
     let s = S3(&mut s);
     let t = s.0.x;
+    //~^ manual_swap
     s.0.x = s.0.y;
     s.0.y = t;
 }

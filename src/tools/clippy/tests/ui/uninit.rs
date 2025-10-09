@@ -10,6 +10,7 @@ union MyOwnMaybeUninit {
 
 fn main() {
     let _: usize = unsafe { MaybeUninit::uninit().assume_init() };
+    //~^ uninit_assumed_init
 
     // This is OK, because ZSTs do not contain data.
     let _: () = unsafe { MaybeUninit::uninit().assume_init() };
@@ -31,6 +32,7 @@ fn main() {
 
     // Was a false negative.
     let _: usize = unsafe { MaybeUninit::uninit().assume_init() };
+    //~^ uninit_assumed_init
 
     polymorphic::<()>();
     polymorphic_maybe_uninit_array::<10>();
@@ -39,6 +41,7 @@ fn main() {
     fn polymorphic<T>() {
         // We are conservative around polymorphic types.
         let _: T = unsafe { MaybeUninit::uninit().assume_init() };
+        //~^ uninit_assumed_init
     }
 
     fn polymorphic_maybe_uninit_array<const N: usize>() {

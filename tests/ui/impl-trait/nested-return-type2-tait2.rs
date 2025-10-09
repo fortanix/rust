@@ -1,3 +1,5 @@
+//@ check-pass
+
 #![feature(type_alias_impl_trait)]
 
 trait Duh {}
@@ -17,16 +19,16 @@ impl<R: Duh, F: FnMut() -> R> Trait for F {
 
 type Sendable = impl Send;
 type Traitable = impl Trait<Assoc = Sendable>;
+//~^ WARN opaque type `Traitable` does not satisfy its associated type bounds
 
 // The `impl Send` here is then later compared against the inference var
 // created, causing the inference var to be set to `impl Send` instead of
 // the hidden type. We already have obligations registered on the inference
 // var to make it uphold the `: Duh` bound on `Trait::Assoc`. The opaque
 // type does not implement `Duh`, even if its hidden type does. So we error out.
+#[define_opaque(Traitable)]
 fn foo() -> Traitable {
     || 42
-    //~^ ERROR `Sendable: Duh` is not satisfied
 }
 
-fn main() {
-}
+fn main() {}

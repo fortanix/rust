@@ -1,5 +1,10 @@
 use std::str::Chars;
 
+pub enum FrontmatterAllowed {
+    Yes,
+    No,
+}
+
 /// Peekable iterator over a char sequence.
 ///
 /// Next characters can be peeked via `first` method,
@@ -8,6 +13,7 @@ pub struct Cursor<'a> {
     len_remaining: usize,
     /// Iterator over chars. Slightly faster than a &str.
     chars: Chars<'a>,
+    pub(crate) frontmatter_allowed: FrontmatterAllowed,
     #[cfg(debug_assertions)]
     prev: char,
 }
@@ -15,13 +21,18 @@ pub struct Cursor<'a> {
 pub(crate) const EOF_CHAR: char = '\0';
 
 impl<'a> Cursor<'a> {
-    pub fn new(input: &'a str) -> Cursor<'a> {
+    pub fn new(input: &'a str, frontmatter_allowed: FrontmatterAllowed) -> Cursor<'a> {
         Cursor {
             len_remaining: input.len(),
             chars: input.chars(),
+            frontmatter_allowed,
             #[cfg(debug_assertions)]
             prev: EOF_CHAR,
         }
+    }
+
+    pub fn as_str(&self) -> &'a str {
+        self.chars.as_str()
     }
 
     /// Returns the last eaten symbol (or `'\0'` in release builds).
@@ -42,7 +53,7 @@ impl<'a> Cursor<'a> {
     /// If requested position doesn't exist, `EOF_CHAR` is returned.
     /// However, getting `EOF_CHAR` doesn't always mean actual end of file,
     /// it should be checked with `is_eof` method.
-    pub(crate) fn first(&self) -> char {
+    pub fn first(&self) -> char {
         // `.next()` optimizes better than `.nth(0)`
         self.chars.clone().next().unwrap_or(EOF_CHAR)
     }
@@ -51,6 +62,15 @@ impl<'a> Cursor<'a> {
     pub(crate) fn second(&self) -> char {
         // `.next()` optimizes better than `.nth(1)`
         let mut iter = self.chars.clone();
+        iter.next();
+        iter.next().unwrap_or(EOF_CHAR)
+    }
+
+    /// Peeks the third symbol from the input stream without consuming it.
+    pub fn third(&self) -> char {
+        // `.next()` optimizes better than `.nth(2)`
+        let mut iter = self.chars.clone();
+        iter.next();
         iter.next();
         iter.next().unwrap_or(EOF_CHAR)
     }
@@ -82,12 +102,24 @@ impl<'a> Cursor<'a> {
         Some(c)
     }
 
+    /// Moves to a substring by a number of bytes.
+    pub(crate) fn bump_bytes(&mut self, n: usize) {
+        self.chars = self.as_str()[n..].chars();
+    }
+
     /// Eats symbols while predicate returns true or until the end of file is reached.
     pub(crate) fn eat_while(&mut self, mut predicate: impl FnMut(char) -> bool) {
         // It was tried making optimized version of this for eg. line comments, but
         // LLVM can inline all of this and compile it down to fast iteration over bytes.
         while predicate(self.first()) && !self.is_eof() {
             self.bump();
+        }
+    }
+
+    pub(crate) fn eat_until(&mut self, byte: u8) {
+        self.chars = match memchr::memchr(byte, self.as_str().as_bytes()) {
+            Some(index) => self.as_str()[index..].chars(),
+            None => "".chars(),
         }
     }
 }

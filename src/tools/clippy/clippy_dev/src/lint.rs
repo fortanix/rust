@@ -1,36 +1,44 @@
-use crate::{cargo_clippy_path, exit_if_err};
-use std::fs;
-use std::process::{self, Command};
+use crate::utils::{ErrAction, cargo_cmd, expect_action, run_exit_on_err};
+use std::process::Command;
+use std::{env, fs};
 
-pub fn run<'a>(path: &str, args: impl Iterator<Item = &'a String>) {
-    let is_file = match fs::metadata(path) {
-        Ok(metadata) => metadata.is_file(),
-        Err(e) => {
-            eprintln!("Failed to read {path}: {e:?}");
-            process::exit(1);
-        },
-    };
+#[cfg(not(windows))]
+static CARGO_CLIPPY_EXE: &str = "cargo-clippy";
+#[cfg(windows)]
+static CARGO_CLIPPY_EXE: &str = "cargo-clippy.exe";
 
+pub fn run<'a>(path: &str, edition: &str, args: impl Iterator<Item = &'a String>) {
+    let is_file = expect_action(fs::metadata(path), ErrAction::Read, path).is_file();
     if is_file {
-        exit_if_err(
-            Command::new("cargo")
+        run_exit_on_err(
+            "cargo run",
+            cargo_cmd()
                 .args(["run", "--bin", "clippy-driver", "--"])
                 .args(["-L", "./target/debug"])
                 .args(["-Z", "no-codegen"])
-                .args(["--edition", "2021"])
+                .args(["--edition", edition])
                 .arg(path)
                 .args(args)
-                .status(),
+                // Prevent rustc from creating `rustc-ice-*` files the console output is enough.
+                .env("RUSTC_ICE", "0"),
         );
     } else {
-        exit_if_err(Command::new("cargo").arg("build").status());
+        // Ideally this would just be `cargo run`, but the working directory needs to be
+        // set to clippy's directory when building, and the target project's directory
+        // when running clippy. `cargo` can only set a single working directory for both
+        // when using `run`.
+        run_exit_on_err("cargo build", cargo_cmd().arg("build"));
 
-        let status = Command::new(cargo_clippy_path())
-            .arg("clippy")
-            .args(args)
-            .current_dir(path)
-            .status();
-
-        exit_if_err(status);
+        let mut exe = env::current_exe().expect("failed to get current executable name");
+        exe.set_file_name(CARGO_CLIPPY_EXE);
+        run_exit_on_err(
+            "cargo clippy",
+            Command::new(exe)
+                .arg("clippy")
+                .args(args)
+                // Prevent rustc from creating `rustc-ice-*` files the console output is enough.
+                .env("RUSTC_ICE", "0")
+                .current_dir(path),
+        );
     }
 }

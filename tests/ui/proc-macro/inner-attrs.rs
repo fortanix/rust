@@ -1,7 +1,7 @@
 // gate-test-custom_inner_attributes
-// compile-flags: -Z span-debug --error-format human
-// aux-build:test-macros.rs
-// edition:2018
+//@ compile-flags: -Z span-debug
+//@ proc-macro: test-macros.rs
+//@ edition:2018
 
 #![feature(custom_inner_attributes)]
 #![feature(proc_macro_hygiene)]
@@ -61,24 +61,28 @@ fn bar() {
     );
 
     for _ in &[true] {
-        #![print_attr] //~ ERROR expected non-macro inner attribute
+        #![print_attr]
+        //~^ ERROR expected non-macro inner attribute, found attribute macro `print_attr`
     }
 
     let _ = {
-        #![print_attr] //~ ERROR expected non-macro inner attribute
+        #![print_attr]
+        //~^ ERROR expected non-macro inner attribute, found attribute macro `print_attr`
     };
 
     let _ = async {
-        #![print_attr] //~ ERROR expected non-macro inner attribute
+        #![print_attr]
+        //~^ ERROR expected non-macro inner attribute, found attribute macro `print_attr`
     };
 
     {
-        #![print_attr] //~ ERROR expected non-macro inner attribute
+        #![print_attr]
+        //~^ ERROR expected non-macro inner attribute, found attribute macro `print_attr`
     };
 }
 
 
-extern {
+extern { //~ WARN `extern` declarations without an explicit ABI are deprecated
     fn weird_extern() {
         #![print_target_and_args_consume(tenth)]
     }

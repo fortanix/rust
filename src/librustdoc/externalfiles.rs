@@ -1,10 +1,11 @@
-use crate::html::markdown::{ErrorCodes, HeadingOffset, IdMap, Markdown, Playground};
-use crate::rustc_span::edition::Edition;
-use std::fs;
-use std::path::Path;
-use std::str;
+use std::path::{Path, PathBuf};
+use std::{fs, str};
 
+use rustc_errors::DiagCtxtHandle;
+use rustc_span::edition::Edition;
 use serde::Serialize;
+
+use crate::html::markdown::{ErrorCodes, HeadingOffset, IdMap, Markdown, Playground};
 
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct ExternalHtml {
@@ -27,18 +28,17 @@ impl ExternalHtml {
         md_before_content: &[String],
         md_after_content: &[String],
         nightly_build: bool,
-        diag: &rustc_errors::Handler,
+        dcx: DiagCtxtHandle<'_>,
         id_map: &mut IdMap,
         edition: Edition,
         playground: &Option<Playground>,
+        loaded_paths: &mut Vec<PathBuf>,
     ) -> Option<ExternalHtml> {
         let codes = ErrorCodes::from(nightly_build);
-        let ih = load_external_files(in_header, diag)?;
-        let bc = load_external_files(before_content, diag)?;
-        let m_bc = load_external_files(md_before_content, diag)?;
-        let bc = format!(
-            "{}{}",
-            bc,
+        let ih = load_external_files(in_header, dcx, loaded_paths)?;
+        let bc = {
+            let mut bc = load_external_files(before_content, dcx, loaded_paths)?;
+            let m_bc = load_external_files(md_before_content, dcx, loaded_paths)?;
             Markdown {
                 content: &m_bc,
                 links: &[],
@@ -48,13 +48,13 @@ impl ExternalHtml {
                 playground,
                 heading_offset: HeadingOffset::H2,
             }
-            .into_string()
-        );
-        let ac = load_external_files(after_content, diag)?;
-        let m_ac = load_external_files(md_after_content, diag)?;
-        let ac = format!(
-            "{}{}",
-            ac,
+            .write_into(&mut bc)
+            .unwrap();
+            bc
+        };
+        let ac = {
+            let mut ac = load_external_files(after_content, dcx, loaded_paths)?;
+            let m_ac = load_external_files(md_after_content, dcx, loaded_paths)?;
             Markdown {
                 content: &m_ac,
                 links: &[],
@@ -64,8 +64,10 @@ impl ExternalHtml {
                 playground,
                 heading_offset: HeadingOffset::H2,
             }
-            .into_string()
-        );
+            .write_into(&mut ac)
+            .unwrap();
+            ac
+        };
         Some(ExternalHtml { in_header: ih, before_content: bc, after_content: ac })
     }
 }
@@ -77,29 +79,39 @@ pub(crate) enum LoadStringError {
 
 pub(crate) fn load_string<P: AsRef<Path>>(
     file_path: P,
-    diag: &rustc_errors::Handler,
+    dcx: DiagCtxtHandle<'_>,
+    loaded_paths: &mut Vec<PathBuf>,
 ) -> Result<String, LoadStringError> {
     let file_path = file_path.as_ref();
+    loaded_paths.push(file_path.to_owned());
     let contents = match fs::read(file_path) {
         Ok(bytes) => bytes,
         Err(e) => {
-            diag.struct_err(format!("error reading `{}`: {}", file_path.display(), e)).emit();
+            dcx.struct_err(format!(
+                "error reading `{file_path}`: {e}",
+                file_path = file_path.display()
+            ))
+            .emit();
             return Err(LoadStringError::ReadFail);
         }
     };
     match str::from_utf8(&contents) {
         Ok(s) => Ok(s.to_string()),
         Err(_) => {
-            diag.struct_err(format!("error reading `{}`: not UTF-8", file_path.display())).emit();
+            dcx.err(format!("error reading `{}`: not UTF-8", file_path.display()));
             Err(LoadStringError::BadUtf8)
         }
     }
 }
 
-fn load_external_files(names: &[String], diag: &rustc_errors::Handler) -> Option<String> {
+fn load_external_files(
+    names: &[String],
+    dcx: DiagCtxtHandle<'_>,
+    loaded_paths: &mut Vec<PathBuf>,
+) -> Option<String> {
     let mut out = String::new();
     for name in names {
-        let Ok(s) = load_string(name, diag) else { return None };
+        let Ok(s) = load_string(name, dcx, loaded_paths) else { return None };
         out.push_str(&s);
         out.push('\n');
     }

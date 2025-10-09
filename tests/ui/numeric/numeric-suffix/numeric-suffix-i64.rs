@@ -1,4 +1,4 @@
-// run-rustfix
+//@ run-rustfix
 
 fn foo<N>(_x: N) {}
 //~^ NOTE function defined here
@@ -12,17 +12,6 @@ fn foo<N>(_x: N) {}
 //~| NOTE function defined here
 //~| NOTE function defined here
 //~| NOTE function defined here
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
-//~| NOTE
 
 fn main() {
     foo::<i64>(42_usize);

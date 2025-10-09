@@ -9,6 +9,7 @@ fn main() {
     let unwanted = &tracked_fds - &new_fds;
 
     let foo = &5 - &6;
+    //~^ op_ref
 
     let bar = String::new();
     let bar = "foo" == &bar;
@@ -54,6 +55,7 @@ fn main() {
     let x = Y(1);
     let y = Y(2);
     let z = x & &y;
+    //~^ op_ref
 }
 
 #[derive(Clone, Copy)]
@@ -87,8 +89,58 @@ impl Mul<A> for A {
         let two = 2;
         let three = 3;
         let _ = one * &self;
+        //~^ op_ref
+
         let _ = two + &three;
+        //~^ op_ref
+
         // Removing the reference would lead to unconditional recursion
         self * &rhs
     }
+}
+
+mod issue_2597 {
+    fn ex1() {
+        let a: &str = "abc";
+        let b: String = "abc".to_owned();
+        println!("{}", a > &b);
+    }
+
+    pub fn ex2<T: Ord + PartialOrd>(array: &[T], val: &T, idx: usize) -> bool {
+        &array[idx] < val
+    }
+}
+
+#[allow(clippy::needless_if)]
+fn issue15063() {
+    use std::ops::BitAnd;
+
+    macro_rules! mac {
+        ($e:expr) => {
+            $e.clone()
+        };
+    }
+
+    let x = 1;
+    if &x == &mac!(1) {}
+    //~^ op_ref
+
+    #[derive(Copy, Clone)]
+    struct Y(i32);
+    impl BitAnd for Y {
+        type Output = Y;
+        fn bitand(self, rhs: Y) -> Y {
+            Y(self.0 & rhs.0)
+        }
+    }
+    impl<'a> BitAnd<&'a Y> for Y {
+        type Output = Y;
+        fn bitand(self, rhs: &'a Y) -> Y {
+            Y(self.0 & rhs.0)
+        }
+    }
+    let x = Y(1);
+    let y = Y(2);
+    let z = x & &mac!(y);
+    //~^ op_ref
 }

@@ -1,5 +1,5 @@
-// build-fail
-// normalize-stderr-test: ".nll/" -> "/"
+//@ build-fail
+//@ compile-flags: --diagnostic-width=100 -Zwrite-long-types-to-disk=yes
 
 trait Mirror {
     type Image;
@@ -14,7 +14,8 @@ trait Foo {
 impl<T> Foo for T {
     #[allow(unconditional_recursion)]
     fn recurse(&self) {
-        (self, self).recurse(); //~ ERROR reached the recursion limit
+        (self, self).recurse();
+        //~^ ERROR reached the recursion limit while instantiating
     }
 }
 

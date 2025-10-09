@@ -1,5 +1,3 @@
-// error-pattern: aborting due to previous error
-
 fn main() {
-    2 + +2;
+    2 + +2; //~ ERROR leading `+` is not supported
 }

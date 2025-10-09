@@ -10,7 +10,7 @@ error[E0560]: struct `Foo` has no field named `absent`
 LL |     let _ = Foo { present: (), #[cfg(all())] absent: () };
    |                                              ^^^^^^ `Foo` does not have this field
    |
-   = note: available fields are: `present`
+   = note: all struct fields are already assigned
 
 error[E0027]: pattern does not mention field `present`
   --> $DIR/struct-field-cfg.rs:13:9
@@ -20,12 +20,19 @@ LL |     let Foo { #[cfg(any())] present: () } = foo;
    |
 help: include the missing field in the pattern
    |
-LL |     let Foo { present } = foo;
-   |             ~~~~~~~~~~~
+LL -     let Foo { #[cfg(any())] present: () } = foo;
+LL +     let Foo { present } = foo;
+   |
 help: if you don't care about this missing field, you can explicitly ignore it
    |
-LL |     let Foo { .. } = foo;
-   |             ~~~~~~
+LL -     let Foo { #[cfg(any())] present: () } = foo;
+LL +     let Foo { present: _ } = foo;
+   |
+help: or always ignore missing fields here
+   |
+LL -     let Foo { #[cfg(any())] present: () } = foo;
+LL +     let Foo { .. } = foo;
+   |
 
 error[E0026]: struct `Foo` does not have a field named `absent`
   --> $DIR/struct-field-cfg.rs:16:42

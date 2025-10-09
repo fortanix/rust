@@ -1,10 +1,10 @@
-// ignore-wasm32 compiled with panic=abort by default
-// compile-flags: -Zmir-enable-passes=-NormalizeArrayLen
+// skip-filecheck
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
 // Check that we do not insert StorageDead at each target if StorageDead was never seen
 
-// EMIT_MIR issue_76432.test.SimplifyComparisonIntegral.diff
 use std::fmt::Debug;
 
+// EMIT_MIR issue_76432.test.SimplifyComparisonIntegral.diff
 fn test<T: Copy + Debug + PartialEq>(x: T) {
     let v: &[T] = &[x, x, x];
     match v {

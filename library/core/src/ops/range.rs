@@ -11,7 +11,7 @@ use crate::hash::Hash;
 /// The `..` syntax is a `RangeFull`:
 ///
 /// ```
-/// assert_eq!((..), std::ops::RangeFull);
+/// assert_eq!(.., std::ops::RangeFull);
 /// ```
 ///
 /// It does not have an [`IntoIterator`] implementation, so you can't use it in
@@ -115,6 +115,7 @@ impl<Idx: PartialOrd<Idx>> Range<Idx> {
     /// assert!(!(0.0..f32::NAN).contains(&0.5));
     /// assert!(!(f32::NAN..1.0).contains(&0.5));
     /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
     where
@@ -141,6 +142,7 @@ impl<Idx: PartialOrd<Idx>> Range<Idx> {
     /// assert!( (3.0..f32::NAN).is_empty());
     /// assert!( (f32::NAN..5.0).is_empty());
     /// ```
+    #[inline]
     #[stable(feature = "range_is_empty", since = "1.47.0")]
     pub fn is_empty(&self) -> bool {
         !(self.start < self.end)
@@ -213,6 +215,7 @@ impl<Idx: PartialOrd<Idx>> RangeFrom<Idx> {
     /// assert!(!(0.0..).contains(&f32::NAN));
     /// assert!(!(f32::NAN..).contains(&0.5));
     /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
     where
@@ -294,6 +297,7 @@ impl<Idx: PartialOrd<Idx>> RangeTo<Idx> {
     /// assert!(!(..1.0).contains(&f32::NAN));
     /// assert!(!(..f32::NAN).contains(&0.5));
     /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
     where
@@ -500,6 +504,7 @@ impl<Idx: PartialOrd<Idx>> RangeInclusive<Idx> {
     /// // Precise field values are unspecified here
     /// assert!(!r.contains(&3) && !r.contains(&5));
     /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
     where
@@ -613,6 +618,7 @@ impl<Idx: PartialOrd<Idx>> RangeToInclusive<Idx> {
     /// assert!(!(..=1.0).contains(&f32::NAN));
     /// assert!(!(..=f32::NAN).contains(&0.5));
     /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     pub fn contains<U>(&self, item: &U) -> bool
     where
@@ -704,7 +710,6 @@ impl<T> Bound<T> {
     /// # Examples
     ///
     /// ```
-    /// #![feature(bound_map)]
     /// use std::ops::Bound::*;
     ///
     /// let bound_string = Included("Hello, World!");
@@ -713,7 +718,6 @@ impl<T> Bound<T> {
     /// ```
     ///
     /// ```
-    /// #![feature(bound_map)]
     /// use std::ops::Bound;
     /// use Bound::*;
     ///
@@ -722,12 +726,37 @@ impl<T> Bound<T> {
     /// assert_eq!(unbounded_string.map(|s| s.len()), Unbounded);
     /// ```
     #[inline]
-    #[unstable(feature = "bound_map", issue = "86026")]
+    #[stable(feature = "bound_map", since = "1.77.0")]
     pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> Bound<U> {
         match self {
             Unbounded => Unbounded,
             Included(x) => Included(f(x)),
             Excluded(x) => Excluded(f(x)),
+        }
+    }
+}
+
+impl<T: Copy> Bound<&T> {
+    /// Map a `Bound<&T>` to a `Bound<T>` by copying the contents of the bound.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(bound_copied)]
+    ///
+    /// use std::ops::Bound::*;
+    /// use std::ops::RangeBounds;
+    ///
+    /// assert_eq!((1..12).start_bound(), Included(&1));
+    /// assert_eq!((1..12).start_bound().copied(), Included(1));
+    /// ```
+    #[unstable(feature = "bound_copied", issue = "145966")]
+    #[must_use]
+    pub fn copied(self) -> Bound<T> {
+        match self {
+            Bound::Unbounded => Bound::Unbounded,
+            Bound::Included(x) => Bound::Included(*x),
+            Bound::Excluded(x) => Bound::Excluded(*x),
         }
     }
 }
@@ -741,8 +770,11 @@ impl<T: Clone> Bound<&T> {
     /// use std::ops::Bound::*;
     /// use std::ops::RangeBounds;
     ///
-    /// assert_eq!((1..12).start_bound(), Included(&1));
-    /// assert_eq!((1..12).start_bound().cloned(), Included(1));
+    /// let a1 = String::from("a");
+    /// let (a2, a3, a4) = (a1.clone(), a1.clone(), a1.clone());
+    ///
+    /// assert_eq!(Included(&a1), (a2..).start_bound());
+    /// assert_eq!(Included(a3), (a4..).start_bound().cloned());
     /// ```
     #[must_use = "`self` will be dropped if the result is not used"]
     #[stable(feature = "bound_cloned", since = "1.55.0")]
@@ -758,6 +790,7 @@ impl<T: Clone> Bound<&T> {
 /// `RangeBounds` is implemented by Rust's built-in range types, produced
 /// by range syntax like `..`, `a..`, `..b`, `..=c`, `d..e`, or `f..=g`.
 #[stable(feature = "collections_range", since = "1.28.0")]
+#[rustc_diagnostic_item = "RangeBounds"]
 pub trait RangeBounds<T: ?Sized> {
     /// Start index bound.
     ///
@@ -766,13 +799,11 @@ pub trait RangeBounds<T: ?Sized> {
     /// # Examples
     ///
     /// ```
-    /// # fn main() {
     /// use std::ops::Bound::*;
     /// use std::ops::RangeBounds;
     ///
     /// assert_eq!((..10).start_bound(), Unbounded);
     /// assert_eq!((3..10).start_bound(), Included(&3));
-    /// # }
     /// ```
     #[stable(feature = "collections_range", since = "1.28.0")]
     fn start_bound(&self) -> Bound<&T>;
@@ -784,13 +815,11 @@ pub trait RangeBounds<T: ?Sized> {
     /// # Examples
     ///
     /// ```
-    /// # fn main() {
     /// use std::ops::Bound::*;
     /// use std::ops::RangeBounds;
     ///
     /// assert_eq!((3..).end_bound(), Unbounded);
     /// assert_eq!((3..10).end_bound(), Excluded(&10));
-    /// # }
     /// ```
     #[stable(feature = "collections_range", since = "1.28.0")]
     fn end_bound(&self) -> Bound<&T>;
@@ -807,6 +836,8 @@ pub trait RangeBounds<T: ?Sized> {
     /// assert!(!(0.0..1.0).contains(&f32::NAN));
     /// assert!(!(0.0..f32::NAN).contains(&0.5));
     /// assert!(!(f32::NAN..1.0).contains(&0.5));
+    /// ```
+    #[inline]
     #[stable(feature = "range_contains", since = "1.35.0")]
     fn contains<U>(&self, item: &U) -> bool
     where
@@ -823,6 +854,164 @@ pub trait RangeBounds<T: ?Sized> {
             Unbounded => true,
         })
     }
+
+    /// Returns `true` if the range contains no items.
+    /// One-sided ranges (`RangeFrom`, etc) always return `false`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_bounds_is_empty)]
+    /// use std::ops::RangeBounds;
+    ///
+    /// assert!(!(3..).is_empty());
+    /// assert!(!(..2).is_empty());
+    /// assert!(!RangeBounds::is_empty(&(3..5)));
+    /// assert!( RangeBounds::is_empty(&(3..3)));
+    /// assert!( RangeBounds::is_empty(&(3..2)));
+    /// ```
+    ///
+    /// The range is empty if either side is incomparable:
+    ///
+    /// ```
+    /// #![feature(range_bounds_is_empty)]
+    /// use std::ops::RangeBounds;
+    ///
+    /// assert!(!RangeBounds::is_empty(&(3.0..5.0)));
+    /// assert!( RangeBounds::is_empty(&(3.0..f32::NAN)));
+    /// assert!( RangeBounds::is_empty(&(f32::NAN..5.0)));
+    /// ```
+    ///
+    /// But never empty if either side is unbounded:
+    ///
+    /// ```
+    /// #![feature(range_bounds_is_empty)]
+    /// use std::ops::RangeBounds;
+    ///
+    /// assert!(!(..0).is_empty());
+    /// assert!(!(i32::MAX..).is_empty());
+    /// assert!(!RangeBounds::<u8>::is_empty(&(..)));
+    /// ```
+    ///
+    /// `(Excluded(a), Excluded(b))` is only empty if `a >= b`:
+    ///
+    /// ```
+    /// #![feature(range_bounds_is_empty)]
+    /// use std::ops::Bound::*;
+    /// use std::ops::RangeBounds;
+    ///
+    /// assert!(!(Excluded(1), Excluded(3)).is_empty());
+    /// assert!(!(Excluded(1), Excluded(2)).is_empty());
+    /// assert!( (Excluded(1), Excluded(1)).is_empty());
+    /// assert!( (Excluded(2), Excluded(1)).is_empty());
+    /// assert!( (Excluded(3), Excluded(1)).is_empty());
+    /// ```
+    #[unstable(feature = "range_bounds_is_empty", issue = "137300")]
+    fn is_empty(&self) -> bool
+    where
+        T: PartialOrd,
+    {
+        !match (self.start_bound(), self.end_bound()) {
+            (Unbounded, _) | (_, Unbounded) => true,
+            (Included(start), Excluded(end))
+            | (Excluded(start), Included(end))
+            | (Excluded(start), Excluded(end)) => start < end,
+            (Included(start), Included(end)) => start <= end,
+        }
+    }
+}
+
+/// Used to convert a range into start and end bounds, consuming the
+/// range by value.
+///
+/// `IntoBounds` is implemented by Rust’s built-in range types, produced
+/// by range syntax like `..`, `a..`, `..b`, `..=c`, `d..e`, or `f..=g`.
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+pub trait IntoBounds<T>: RangeBounds<T> {
+    /// Convert this range into the start and end bounds.
+    /// Returns `(start_bound, end_bound)`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_into_bounds)]
+    /// use std::ops::Bound::*;
+    /// use std::ops::IntoBounds;
+    ///
+    /// assert_eq!((0..5).into_bounds(), (Included(0), Excluded(5)));
+    /// assert_eq!((..=7).into_bounds(), (Unbounded, Included(7)));
+    /// ```
+    fn into_bounds(self) -> (Bound<T>, Bound<T>);
+
+    /// Compute the intersection of  `self` and `other`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// #![feature(range_into_bounds)]
+    /// use std::ops::Bound::*;
+    /// use std::ops::IntoBounds;
+    ///
+    /// assert_eq!((3..).intersect(..5), (Included(3), Excluded(5)));
+    /// assert_eq!((-12..387).intersect(0..256), (Included(0), Excluded(256)));
+    /// assert_eq!((1..5).intersect(..), (Included(1), Excluded(5)));
+    /// assert_eq!((1..=9).intersect(0..10), (Included(1), Included(9)));
+    /// assert_eq!((7..=13).intersect(8..13), (Included(8), Excluded(13)));
+    /// ```
+    ///
+    /// Combine with `is_empty` to determine if two ranges overlap.
+    ///
+    /// ```
+    /// #![feature(range_into_bounds)]
+    /// #![feature(range_bounds_is_empty)]
+    /// use std::ops::{RangeBounds, IntoBounds};
+    ///
+    /// assert!(!(3..).intersect(..5).is_empty());
+    /// assert!(!(-12..387).intersect(0..256).is_empty());
+    /// assert!((1..5).intersect(6..).is_empty());
+    /// ```
+    fn intersect<R>(self, other: R) -> (Bound<T>, Bound<T>)
+    where
+        Self: Sized,
+        T: Ord,
+        R: Sized + IntoBounds<T>,
+    {
+        let (self_start, self_end) = IntoBounds::into_bounds(self);
+        let (other_start, other_end) = IntoBounds::into_bounds(other);
+
+        let start = match (self_start, other_start) {
+            (Included(a), Included(b)) => Included(Ord::max(a, b)),
+            (Excluded(a), Excluded(b)) => Excluded(Ord::max(a, b)),
+            (Unbounded, Unbounded) => Unbounded,
+
+            (x, Unbounded) | (Unbounded, x) => x,
+
+            (Included(i), Excluded(e)) | (Excluded(e), Included(i)) => {
+                if i > e {
+                    Included(i)
+                } else {
+                    Excluded(e)
+                }
+            }
+        };
+        let end = match (self_end, other_end) {
+            (Included(a), Included(b)) => Included(Ord::min(a, b)),
+            (Excluded(a), Excluded(b)) => Excluded(Ord::min(a, b)),
+            (Unbounded, Unbounded) => Unbounded,
+
+            (x, Unbounded) | (Unbounded, x) => x,
+
+            (Included(i), Excluded(e)) | (Excluded(e), Included(i)) => {
+                if i < e {
+                    Included(i)
+                } else {
+                    Excluded(e)
+                }
+            }
+        };
+
+        (start, end)
+    }
 }
 
 use self::Bound::{Excluded, Included, Unbounded};
@@ -837,6 +1026,13 @@ impl<T: ?Sized> RangeBounds<T> for RangeFull {
     }
 }
 
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for RangeFull {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (Unbounded, Unbounded)
+    }
+}
+
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeFrom<T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -844,6 +1040,13 @@ impl<T> RangeBounds<T> for RangeFrom<T> {
     }
     fn end_bound(&self) -> Bound<&T> {
         Unbounded
+    }
+}
+
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for RangeFrom<T> {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (Included(self.start), Unbounded)
     }
 }
 
@@ -857,6 +1060,13 @@ impl<T> RangeBounds<T> for RangeTo<T> {
     }
 }
 
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for RangeTo<T> {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (Unbounded, Excluded(self.end))
+    }
+}
+
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for Range<T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -864,6 +1074,13 @@ impl<T> RangeBounds<T> for Range<T> {
     }
     fn end_bound(&self) -> Bound<&T> {
         Excluded(&self.end)
+    }
+}
+
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for Range<T> {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (Included(self.start), Excluded(self.end))
     }
 }
 
@@ -883,6 +1100,22 @@ impl<T> RangeBounds<T> for RangeInclusive<T> {
     }
 }
 
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for RangeInclusive<T> {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (
+            Included(self.start),
+            if self.exhausted {
+                // When the iterator is exhausted, we usually have start == end,
+                // but we want the range to appear empty, containing nothing.
+                Excluded(self.end)
+            } else {
+                Included(self.end)
+            },
+        )
+    }
+}
+
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeToInclusive<T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -890,6 +1123,13 @@ impl<T> RangeBounds<T> for RangeToInclusive<T> {
     }
     fn end_bound(&self) -> Bound<&T> {
         Included(&self.end)
+    }
+}
+
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for RangeToInclusive<T> {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        (Unbounded, Included(self.end))
     }
 }
 
@@ -912,6 +1152,13 @@ impl<T> RangeBounds<T> for (Bound<T>, Bound<T>) {
     }
 }
 
+#[unstable(feature = "range_into_bounds", issue = "136903")]
+impl<T> IntoBounds<T> for (Bound<T>, Bound<T>) {
+    fn into_bounds(self) -> (Bound<T>, Bound<T>) {
+        self
+    }
+}
+
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<'a, T: ?Sized + 'a> RangeBounds<T> for (Bound<&'a T>, Bound<&'a T>) {
     fn start_bound(&self) -> Bound<&T> {
@@ -923,6 +1170,12 @@ impl<'a, T: ?Sized + 'a> RangeBounds<T> for (Bound<&'a T>, Bound<&'a T>) {
     }
 }
 
+// This impl intentionally does not have `T: ?Sized`;
+// see https://github.com/rust-lang/rust/pull/61584 for discussion of why.
+//
+/// If you need to use this implementation where `T` is unsized,
+/// consider using the `RangeBounds` impl for a 2-tuple of [`Bound<&T>`][Bound],
+/// i.e. replace `start..` with `(Bound::Included(start), Bound::Unbounded)`.
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeFrom<&T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -933,6 +1186,12 @@ impl<T> RangeBounds<T> for RangeFrom<&T> {
     }
 }
 
+// This impl intentionally does not have `T: ?Sized`;
+// see https://github.com/rust-lang/rust/pull/61584 for discussion of why.
+//
+/// If you need to use this implementation where `T` is unsized,
+/// consider using the `RangeBounds` impl for a 2-tuple of [`Bound<&T>`][Bound],
+/// i.e. replace `..end` with `(Bound::Unbounded, Bound::Excluded(end))`.
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeTo<&T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -943,6 +1202,12 @@ impl<T> RangeBounds<T> for RangeTo<&T> {
     }
 }
 
+// This impl intentionally does not have `T: ?Sized`;
+// see https://github.com/rust-lang/rust/pull/61584 for discussion of why.
+//
+/// If you need to use this implementation where `T` is unsized,
+/// consider using the `RangeBounds` impl for a 2-tuple of [`Bound<&T>`][Bound],
+/// i.e. replace `start..end` with `(Bound::Included(start), Bound::Excluded(end))`.
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for Range<&T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -953,6 +1218,12 @@ impl<T> RangeBounds<T> for Range<&T> {
     }
 }
 
+// This impl intentionally does not have `T: ?Sized`;
+// see https://github.com/rust-lang/rust/pull/61584 for discussion of why.
+//
+/// If you need to use this implementation where `T` is unsized,
+/// consider using the `RangeBounds` impl for a 2-tuple of [`Bound<&T>`][Bound],
+/// i.e. replace `start..=end` with `(Bound::Included(start), Bound::Included(end))`.
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeInclusive<&T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -963,6 +1234,12 @@ impl<T> RangeBounds<T> for RangeInclusive<&T> {
     }
 }
 
+// This impl intentionally does not have `T: ?Sized`;
+// see https://github.com/rust-lang/rust/pull/61584 for discussion of why.
+//
+/// If you need to use this implementation where `T` is unsized,
+/// consider using the `RangeBounds` impl for a 2-tuple of [`Bound<&T>`][Bound],
+/// i.e. replace `..=end` with `(Bound::Unbounded, Bound::Included(end))`.
 #[stable(feature = "collections_range", since = "1.28.0")]
 impl<T> RangeBounds<T> for RangeToInclusive<&T> {
     fn start_bound(&self) -> Bound<&T> {
@@ -973,6 +1250,19 @@ impl<T> RangeBounds<T> for RangeToInclusive<&T> {
     }
 }
 
+/// An internal helper for `split_off` functions indicating
+/// which end a `OneSidedRange` is bounded on.
+#[unstable(feature = "one_sided_range", issue = "69780")]
+#[allow(missing_debug_implementations)]
+pub enum OneSidedRangeBound {
+    /// The range is bounded inclusively from below and is unbounded above.
+    StartInclusive,
+    /// The range is bounded exclusively from above and is unbounded below.
+    End,
+    /// The range is bounded inclusively from above and is unbounded below.
+    EndInclusive,
+}
+
 /// `OneSidedRange` is implemented for built-in range types that are unbounded
 /// on one side. For example, `a..`, `..b` and `..=c` implement `OneSidedRange`,
 /// but `..`, `d..e`, and `f..=g` do not.
@@ -980,13 +1270,38 @@ impl<T> RangeBounds<T> for RangeToInclusive<&T> {
 /// Types that implement `OneSidedRange<T>` must return `Bound::Unbounded`
 /// from one of `RangeBounds::start_bound` or `RangeBounds::end_bound`.
 #[unstable(feature = "one_sided_range", issue = "69780")]
-pub trait OneSidedRange<T: ?Sized>: RangeBounds<T> {}
+pub trait OneSidedRange<T>: RangeBounds<T> {
+    /// An internal-only helper function for `split_off` and
+    /// `split_off_mut` that returns the bound of the one-sided range.
+    fn bound(self) -> (OneSidedRangeBound, T);
+}
 
 #[unstable(feature = "one_sided_range", issue = "69780")]
-impl<T> OneSidedRange<T> for RangeTo<T> where Self: RangeBounds<T> {}
+impl<T> OneSidedRange<T> for RangeTo<T>
+where
+    Self: RangeBounds<T>,
+{
+    fn bound(self) -> (OneSidedRangeBound, T) {
+        (OneSidedRangeBound::End, self.end)
+    }
+}
 
 #[unstable(feature = "one_sided_range", issue = "69780")]
-impl<T> OneSidedRange<T> for RangeFrom<T> where Self: RangeBounds<T> {}
+impl<T> OneSidedRange<T> for RangeFrom<T>
+where
+    Self: RangeBounds<T>,
+{
+    fn bound(self) -> (OneSidedRangeBound, T) {
+        (OneSidedRangeBound::StartInclusive, self.start)
+    }
+}
 
 #[unstable(feature = "one_sided_range", issue = "69780")]
-impl<T> OneSidedRange<T> for RangeToInclusive<T> where Self: RangeBounds<T> {}
+impl<T> OneSidedRange<T> for RangeToInclusive<T>
+where
+    Self: RangeBounds<T>,
+{
+    fn bound(self) -> (OneSidedRangeBound, T) {
+        (OneSidedRangeBound::EndInclusive, self.end)
+    }
+}

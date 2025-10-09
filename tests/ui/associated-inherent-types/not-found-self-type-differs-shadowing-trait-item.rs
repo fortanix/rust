@@ -7,7 +7,7 @@
 // anyway if the IAT didn't exist.
 // FIXME(inherent_associated_types): Figure out which error would be more helpful here.
 
-// revisions: shadowed uncovered
+//@ revisions: shadowed uncovered
 
 struct S<T>(T);
 
@@ -27,5 +27,5 @@ impl S<()> {
 fn main() {
     let _: S::<bool>::Pr = ();
     //[shadowed]~^ ERROR associated type `Pr` not found
-    //[uncovered]~^^ ERROR ambiguous associated type
+    //[uncovered]~^^ ERROR associated type `Pr` not found
 }

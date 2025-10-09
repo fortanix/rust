@@ -1,5 +1,6 @@
 // Issue 22443: Reject code using non-regular types that would
 // otherwise cause dropck to loop infinitely.
+//@ compile-flags: -Zwrite-long-types-to-disk=yes
 
 use std::marker::PhantomData;
 
@@ -21,6 +22,6 @@ enum FingerTree<T:'static> {
 }
 
 fn main() {
-    let ft = //~ ERROR overflow while adding drop-check rules for FingerTree
+    let ft = //~ ERROR overflow while adding drop-check rules for `FingerTree
         FingerTree::Single(1);
 }

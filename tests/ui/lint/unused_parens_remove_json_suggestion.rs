@@ -1,5 +1,5 @@
-// compile-flags: --error-format json
-// run-rustfix
+//@ compile-flags: --error-format json
+//@ run-rustfix
 
 // The output for humans should just highlight the whole span without showing
 // the suggested replacement, but we also want to test that suggested
@@ -8,13 +8,14 @@
 // test of the JSON error format.
 
 #![deny(unused_parens)]
-#![allow(unreachable_code)]
+#![allow(unreachable_code, unused_braces)]
 
 fn main() {
 
     let _b = false;
 
-    if (_b) { //~ ERROR unnecessary parentheses
+    if (_b) {
+    //~^ ERROR unnecessary parentheses around `if` condition
         println!("hello");
     }
 
@@ -25,29 +26,37 @@ fn main() {
 fn f() -> bool {
     let c = false;
 
-    if(c) { //~ ERROR unnecessary parentheses
+    if(c) {
+     //~^ ERROR unnecessary parentheses around `if` condition
         println!("next");
     }
 
-    if (c){ //~ ERROR unnecessary parentheses
+    if (c){
+     //~^ ERROR unnecessary parentheses around `if` condition
         println!("prev");
     }
 
     while (false && true){
-        if (c) { //~ ERROR unnecessary parentheses
+    //~^ ERROR unnecessary parentheses around `while` condition
+        if (c) {
+        //~^ ERROR unnecessary parentheses around `if` condition
             println!("norm");
         }
 
     }
 
-    while(true && false) { //~ ERROR unnecessary parentheses
-        for _ in (0 .. 3){ //~ ERROR unnecessary parentheses
+    while(true && false) {
+    //~^ ERROR unnecessary parentheses around `while` condition
+        for _ in (0 .. 3){
+        //~^ ERROR unnecessary parentheses around `for` iterator expression
             println!("e~")
         }
     }
 
-    for _ in (0 .. 3) { //~ ERROR unnecessary parentheses
-        while (true && false) { //~ ERROR unnecessary parentheses
+    for _ in (0 .. 3) {
+    //~^ ERROR unnecessary parentheses around `for` iterator expression
+        while (true && false) {
+        //~^ ERROR unnecessary parentheses around `while` condition
             println!("e~")
         }
     }

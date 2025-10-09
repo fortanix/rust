@@ -1,4 +1,7 @@
-// check-pass
+//@ revisions: current next
+//@ ignore-compare-mode-next-solver (explicit revisions)
+//@[next] compile-flags: -Znext-solver
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 #![allow(dead_code)]
@@ -7,7 +10,12 @@ pub trait MyTrait {}
 
 impl MyTrait for bool {}
 
-type Foo = impl MyTrait;
+pub type Foo = impl MyTrait;
+
+#[define_opaque(Foo)]
+pub fn make_foo() -> Foo {
+    true
+}
 
 struct Blah {
     my_foo: Foo,
@@ -21,10 +29,6 @@ impl Blah {
     fn into_inner(self) -> (Foo, u8, Foo) {
         (self.my_foo, self.my_u8, make_foo())
     }
-}
-
-fn make_foo() -> Foo {
-    true
 }
 
 fn main() {}

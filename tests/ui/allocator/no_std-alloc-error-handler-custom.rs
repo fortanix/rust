@@ -1,19 +1,20 @@
-// run-pass
-// ignore-android no libc
-// ignore-emscripten no libc
-// ignore-sgx no libc
-// ignore-wasm32 no libc
-// only-linux
-// compile-flags:-C panic=abort
-// aux-build:helper.rs
+//@ run-pass
+//@ ignore-android no libc
+//@ ignore-emscripten no libc
+//@ ignore-sgx no libc
+//@ ignore-backends: gcc
+//@ only-linux
+//@ compile-flags:-C panic=abort
+//@ aux-build:helper.rs
 
-#![feature(rustc_private, lang_items)]
+#![feature(rustc_private, lang_items, panic_unwind)]
 #![feature(alloc_error_handler)]
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 extern crate libc;
+extern crate unwind; // For _Unwind_Resume
 
 // ARM targets need these symbols
 #[no_mangle]
@@ -71,10 +72,18 @@ fn panic(panic_info: &core::panic::PanicInfo) -> ! {
 // in these libraries will refer to `rust_eh_personality` if LLVM can not *prove* the contents won't
 // unwind. So, for this test case we will define the symbol.
 #[lang = "eh_personality"]
-extern "C" fn rust_eh_personality() {}
+extern "C" fn rust_eh_personality(
+    _version: i32,
+    _actions: i32,
+    _exception_class: u64,
+    _exception_object: *mut (),
+    _context: *mut (),
+) -> i32 {
+    loop {}
+}
 
 #[derive(Default, Debug)]
-struct Page(#[allow(unused_tuple_struct_fields)] [[u64; 32]; 16]);
+struct Page(#[allow(dead_code)] [[u64; 32]; 16]);
 
 #[no_mangle]
 fn main(_argc: i32, _argv: *const *const u8) -> isize {

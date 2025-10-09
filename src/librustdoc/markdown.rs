@@ -1,18 +1,24 @@
-use std::fmt::Write as _;
-use std::fs::{create_dir_all, read_to_string, File};
+//! Standalone markdown rendering.
+//!
+//! For the (much more common) case of rendering markdown in doc-comments, see
+//! [crate::html::markdown].
+//!
+//! This is used when [rendering a markdown file to an html file][docs], without processing
+//! rust source code.
+//!
+//! [docs]: https://doc.rust-lang.org/stable/rustdoc/#using-standalone-markdown-files
+
+use std::fmt::{self, Write as _};
+use std::fs::{File, create_dir_all, read_to_string};
 use std::io::prelude::*;
 use std::path::Path;
 
 use rustc_span::edition::Edition;
-use rustc_span::source_map::DUMMY_SP;
 
-use crate::config::{Options, RenderOptions};
-use crate::doctest::{Collector, GlobalTestOptions};
+use crate::config::RenderOptions;
 use crate::html::escape::Escape;
 use crate::html::markdown;
-use crate::html::markdown::{
-    find_testable_code, ErrorCodes, HeadingOffset, IdMap, Markdown, MarkdownWithToc,
-};
+use crate::html::markdown::{ErrorCodes, HeadingOffset, IdMap, Markdown, MarkdownWithToc};
 
 /// Separate any lines at the start of the file that begin with `# ` or `%`.
 fn extract_leading_metadata(s: &str) -> (Vec<&str>, &str) {
@@ -37,13 +43,13 @@ fn extract_leading_metadata(s: &str) -> (Vec<&str>, &str) {
 /// (e.g., output = "bar" => "bar/foo.html").
 ///
 /// Requires session globals to be available, for symbol interning.
-pub(crate) fn render<P: AsRef<Path>>(
+pub(crate) fn render_and_write<P: AsRef<Path>>(
     input: P,
     options: RenderOptions,
     edition: Edition,
 ) -> Result<(), String> {
     if let Err(e) = create_dir_all(&options.output) {
-        return Err(format!("{}: {}", options.output.display(), e));
+        return Err(format!("{output}: {e}", output = options.output.display()));
     }
 
     let input = input.as_ref();
@@ -57,11 +63,13 @@ pub(crate) fn render<P: AsRef<Path>>(
             .expect("Writing to a String can't fail");
     }
 
-    let input_str = read_to_string(input).map_err(|err| format!("{}: {}", input.display(), err))?;
+    let input_str =
+        read_to_string(input).map_err(|err| format!("{input}: {err}", input = input.display()))?;
     let playground_url = options.markdown_playground_url.or(options.playground_url);
     let playground = playground_url.map(|url| markdown::Playground { crate_name: None, url });
 
-    let mut out = File::create(&output).map_err(|e| format!("{}: {}", output.display(), e))?;
+    let mut out =
+        File::create(&output).map_err(|e| format!("{output}: {e}", output = output.display()))?;
 
     let (metadata, text) = extract_leading_metadata(&input_str);
     if metadata.is_empty() {
@@ -69,31 +77,33 @@ pub(crate) fn render<P: AsRef<Path>>(
     }
     let title = metadata[0];
 
-    let mut ids = IdMap::new();
     let error_codes = ErrorCodes::from(options.unstable_features.is_nightly_build());
-    let text = if !options.markdown_no_toc {
-        MarkdownWithToc {
-            content: text,
-            ids: &mut ids,
-            error_codes,
-            edition,
-            playground: &playground,
+    let text = fmt::from_fn(|f| {
+        if !options.markdown_no_toc {
+            MarkdownWithToc {
+                content: text,
+                links: &[],
+                ids: &mut IdMap::new(),
+                error_codes,
+                edition,
+                playground: &playground,
+            }
+            .write_into(f)
+        } else {
+            Markdown {
+                content: text,
+                links: &[],
+                ids: &mut IdMap::new(),
+                error_codes,
+                edition,
+                playground: &playground,
+                heading_offset: HeadingOffset::H1,
+            }
+            .write_into(f)
         }
-        .into_string()
-    } else {
-        Markdown {
-            content: text,
-            links: &[],
-            ids: &mut ids,
-            error_codes,
-            edition,
-            playground: &playground,
-            heading_offset: HeadingOffset::H1,
-        }
-        .into_string()
-    };
+    });
 
-    let err = write!(
+    let res = write!(
         &mut out,
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -121,39 +131,10 @@ pub(crate) fn render<P: AsRef<Path>>(
 </body>
 </html>"#,
         title = Escape(title),
-        css = css,
         in_header = options.external_html.in_header,
         before_content = options.external_html.before_content,
-        text = text,
         after_content = options.external_html.after_content,
     );
 
-    match err {
-        Err(e) => Err(format!("cannot write to `{}`: {}", output.display(), e)),
-        Ok(_) => Ok(()),
-    }
-}
-
-/// Runs any tests/code examples in the markdown file `input`.
-pub(crate) fn test(options: Options) -> Result<(), String> {
-    let input_str = read_to_string(&options.input)
-        .map_err(|err| format!("{}: {}", options.input.display(), err))?;
-    let mut opts = GlobalTestOptions::default();
-    opts.no_crate_inject = true;
-    let mut collector = Collector::new(
-        options.input.display().to_string(),
-        options.clone(),
-        true,
-        opts,
-        None,
-        Some(options.input),
-        options.enable_per_target_ignores,
-    );
-    collector.set_position(DUMMY_SP);
-    let codes = ErrorCodes::from(options.unstable_features.is_nightly_build());
-
-    find_testable_code(&input_str, &mut collector, codes, options.enable_per_target_ignores, None);
-
-    crate::doctest::run_tests(options.test_args, options.nocapture, collector.tests);
-    Ok(())
+    res.map_err(|e| format!("cannot write to `{output}`: {e}", output = output.display()))
 }

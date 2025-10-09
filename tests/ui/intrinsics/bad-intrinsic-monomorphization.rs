@@ -1,22 +1,18 @@
-// build-fail
+//@ build-fail
 
-#![feature(repr_simd, platform_intrinsics, core_intrinsics)]
+#![feature(repr_simd, intrinsics, core_intrinsics)]
 #![allow(warnings)]
 #![crate_type = "rlib"]
 
 // Bad monomorphizations could previously cause LLVM asserts even though the
 // error was caught in the compiler.
 
-extern "platform-intrinsic" {
-    fn simd_add<T>(x: T, y: T) -> T;
-}
-
 use std::intrinsics;
 
 #[derive(Copy, Clone)]
 pub struct Foo(i64);
 
-pub fn test_cttz(v: Foo) -> Foo {
+pub fn test_cttz(v: Foo) -> u32 {
     intrinsics::cttz(v)
     //~^ ERROR `cttz` intrinsic: expected basic integer type, found `Foo`
 }
@@ -27,6 +23,6 @@ pub unsafe fn test_fadd_fast(a: Foo, b: Foo) -> Foo {
 }
 
 pub unsafe fn test_simd_add(a: Foo, b: Foo) -> Foo {
-    simd_add(a, b)
+    intrinsics::simd::simd_add(a, b)
     //~^ ERROR `simd_add` intrinsic: expected SIMD input type, found non-SIMD `Foo`
 }

@@ -1,6 +1,5 @@
 //@aux-build:option_helpers.rs
 
-#![warn(clippy::all, clippy::pedantic)]
 #![allow(
     clippy::disallowed_names,
     clippy::default_trait_access,
@@ -11,6 +10,7 @@
     clippy::new_without_default,
     clippy::needless_pass_by_value,
     clippy::needless_lifetimes,
+    clippy::elidable_lifetime_names,
     clippy::print_stdout,
     clippy::must_use_candidate,
     clippy::use_self,
@@ -18,16 +18,13 @@
     clippy::wrong_self_convention,
     clippy::unused_async,
     clippy::unused_self,
-    unused
+    clippy::useless_vec
 )]
 
 #[macro_use]
 extern crate option_helpers;
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ops::Mul;
 use std::rc::{self, Rc};
 use std::sync::{self, Arc};
@@ -52,7 +49,7 @@ struct Lt2<'a> {
 
 impl<'a> Lt2<'a> {
     // The lifetime is different, but that’s irrelevant; see issue #734.
-    pub fn new(s: &str) -> Lt2 {
+    pub fn new(s: &str) -> Lt2<'_> {
         unimplemented!()
     }
 }
@@ -103,6 +100,7 @@ struct BadNew;
 
 impl BadNew {
     fn new() -> i32 {
+        //~^ new_ret_no_self
         0
     }
 }
@@ -124,6 +122,7 @@ fn filter_next() {
 
     // Multi-line case.
     let _ = v.iter().filter(|&x| {
+    //~^ filter_next
                                 *x < 0
                             }
                    ).next();
@@ -136,6 +135,26 @@ fn filter_next() {
     let _ = foo.filter(42).next();
 }
 
+#[rustfmt::skip]
+fn filter_next_back() {
+    let v = vec![3, 2, 1, 0, -1, -2, -3];
+
+    // Multi-line case.
+    let _ = v.iter().filter(|&x| {
+    //~^ filter_next
+                                *x < 0
+                            }
+                   ).next_back();
+    
+    // Check that we don't lint if the caller is not an `Iterator`.
+    let foo = IteratorFalsePositives { foo: 0 };
+    let _ = foo.filter().next_back();
+
+    let foo = IteratorMethodFalsePositives {};
+    let _ = foo.filter(42).next_back();
+}
+
 fn main() {
     filter_next();
+    filter_next_back();
 }

@@ -8,6 +8,7 @@ mod tests;
 pub const VERSION_PLACEHOLDER: &str = "CURRENT_RUSTC_VERSION";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[cfg_attr(feature = "build-metrics", derive(serde::Serialize))]
 pub enum Version {
     Explicit { parts: [u32; 3] },
     CurrentPlaceholder,
@@ -19,7 +20,7 @@ impl fmt::Display for Version {
             Version::Explicit { parts } => {
                 f.pad(&format!("{}.{}.{}", parts[0], parts[1], parts[2]))
             }
-            Version::CurrentPlaceholder => f.pad(&format!("CURRENT")),
+            Version::CurrentPlaceholder => f.pad("CURRENT"),
         }
     }
 }

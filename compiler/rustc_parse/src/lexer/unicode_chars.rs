@@ -1,15 +1,14 @@
 //! Characters and their corresponding confusables were collected from
 //! <https://www.unicode.org/Public/security/10.0.0/confusables.txt>
 
-use super::StringReader;
-use crate::{
-    errors::TokenSubstitution,
-    token::{self, Delimiter},
-};
-use rustc_span::{symbol::kw, BytePos, Pos, Span};
+use rustc_span::{BytePos, Pos, Span, kw};
+
+use super::Lexer;
+use crate::errors::TokenSubstitution;
+use crate::token;
 
 #[rustfmt::skip] // for line breaks
-pub(crate) const UNICODE_ARRAY: &[(char, &str, &str)] = &[
+pub(super) static UNICODE_ARRAY: &[(char, &str, &str)] = &[
     (' ', "Line Separator", " "),
     (' ', "Paragraph Separator", " "),
     (' ', "Ogham Space mark", " "),
@@ -129,42 +128,42 @@ pub(crate) const UNICODE_ARRAY: &[(char, &str, &str)] = &[
     ('。', "Ideographic Full Stop", "."),
     ('︒', "Presentation Form For Vertical Ideographic Full Stop", "."),
 
-    ('՝', "Armenian Comma", "\'"),
-    ('＇', "Fullwidth Apostrophe", "\'"),
-    ('‘', "Left Single Quotation Mark", "\'"),
-    ('’', "Right Single Quotation Mark", "\'"),
-    ('‛', "Single High-Reversed-9 Quotation Mark", "\'"),
-    ('′', "Prime", "\'"),
-    ('‵', "Reversed Prime", "\'"),
-    ('՚', "Armenian Apostrophe", "\'"),
-    ('׳', "Hebrew Punctuation Geresh", "\'"),
-    ('`', "Grave Accent", "\'"),
-    ('`', "Greek Varia", "\'"),
-    ('｀', "Fullwidth Grave Accent", "\'"),
-    ('´', "Acute Accent", "\'"),
-    ('΄', "Greek Tonos", "\'"),
-    ('´', "Greek Oxia", "\'"),
-    ('᾽', "Greek Koronis", "\'"),
-    ('᾿', "Greek Psili", "\'"),
-    ('῾', "Greek Dasia", "\'"),
-    ('ʹ', "Modifier Letter Prime", "\'"),
-    ('ʹ', "Greek Numeral Sign", "\'"),
-    ('ˈ', "Modifier Letter Vertical Line", "\'"),
-    ('ˊ', "Modifier Letter Acute Accent", "\'"),
-    ('ˋ', "Modifier Letter Grave Accent", "\'"),
-    ('˴', "Modifier Letter Middle Grave Accent", "\'"),
-    ('ʻ', "Modifier Letter Turned Comma", "\'"),
-    ('ʽ', "Modifier Letter Reversed Comma", "\'"),
-    ('ʼ', "Modifier Letter Apostrophe", "\'"),
-    ('ʾ', "Modifier Letter Right Half Ring", "\'"),
-    ('ꞌ', "Latin Small Letter Saltillo", "\'"),
-    ('י', "Hebrew Letter Yod", "\'"),
-    ('ߴ', "Nko High Tone Apostrophe", "\'"),
-    ('ߵ', "Nko Low Tone Apostrophe", "\'"),
-    ('ᑊ', "Canadian Syllabics West-Cree P", "\'"),
-    ('ᛌ', "Runic Letter Short-Twig-Sol S", "\'"),
-    ('𖽑', "Miao Sign Aspiration", "\'"),
-    ('𖽒', "Miao Sign Reformed Voicing", "\'"),
+    ('՝', "Armenian Comma", "'"),
+    ('＇', "Fullwidth Apostrophe", "'"),
+    ('‘', "Left Single Quotation Mark", "'"),
+    ('’', "Right Single Quotation Mark", "'"),
+    ('‛', "Single High-Reversed-9 Quotation Mark", "'"),
+    ('′', "Prime", "'"),
+    ('‵', "Reversed Prime", "'"),
+    ('՚', "Armenian Apostrophe", "'"),
+    ('׳', "Hebrew Punctuation Geresh", "'"),
+    ('`', "Grave Accent", "'"),
+    ('`', "Greek Varia", "'"),
+    ('｀', "Fullwidth Grave Accent", "'"),
+    ('´', "Acute Accent", "'"),
+    ('΄', "Greek Tonos", "'"),
+    ('´', "Greek Oxia", "'"),
+    ('᾽', "Greek Koronis", "'"),
+    ('᾿', "Greek Psili", "'"),
+    ('῾', "Greek Dasia", "'"),
+    ('ʹ', "Modifier Letter Prime", "'"),
+    ('ʹ', "Greek Numeral Sign", "'"),
+    ('ˈ', "Modifier Letter Vertical Line", "'"),
+    ('ˊ', "Modifier Letter Acute Accent", "'"),
+    ('ˋ', "Modifier Letter Grave Accent", "'"),
+    ('˴', "Modifier Letter Middle Grave Accent", "'"),
+    ('ʻ', "Modifier Letter Turned Comma", "'"),
+    ('ʽ', "Modifier Letter Reversed Comma", "'"),
+    ('ʼ', "Modifier Letter Apostrophe", "'"),
+    ('ʾ', "Modifier Letter Right Half Ring", "'"),
+    ('ꞌ', "Latin Small Letter Saltillo", "'"),
+    ('י', "Hebrew Letter Yod", "'"),
+    ('ߴ', "Nko High Tone Apostrophe", "'"),
+    ('ߵ', "Nko Low Tone Apostrophe", "'"),
+    ('ᑊ', "Canadian Syllabics West-Cree P", "'"),
+    ('ᛌ', "Runic Letter Short-Twig-Sol S", "'"),
+    ('𖽑', "Miao Sign Aspiration", "'"),
+    ('𖽒', "Miao Sign Reformed Voicing", "'"),
 
     ('᳓', "Vedic Sign Nihshvasa", "\""),
     ('＂', "Fullwidth Quotation Mark", "\""),
@@ -298,6 +297,7 @@ pub(crate) const UNICODE_ARRAY: &[(char, &str, &str)] = &[
     ('〉', "Right Angle Bracket", ">"),
     ('》', "Right Double Angle Bracket", ">"),
     ('＞', "Fullwidth Greater-Than Sign", ">"),
+
     ('⩵', "Two Consecutive Equals Signs", "==")
 ];
 
@@ -307,37 +307,37 @@ pub(crate) const UNICODE_ARRAY: &[(char, &str, &str)] = &[
 // fancier error recovery to it, as there will be less overall work to do this way.
 const ASCII_ARRAY: &[(&str, &str, Option<token::TokenKind>)] = &[
     (" ", "Space", None),
-    ("_", "Underscore", Some(token::Ident(kw::Underscore, false))),
-    ("-", "Minus/Hyphen", Some(token::BinOp(token::Minus))),
+    ("_", "Underscore", Some(token::Ident(kw::Underscore, token::IdentIsRaw::No))),
+    ("-", "Minus/Hyphen", Some(token::Minus)),
     (",", "Comma", Some(token::Comma)),
     (";", "Semicolon", Some(token::Semi)),
     (":", "Colon", Some(token::Colon)),
-    ("!", "Exclamation Mark", Some(token::Not)),
+    ("!", "Exclamation Mark", Some(token::Bang)),
     ("?", "Question Mark", Some(token::Question)),
     (".", "Period", Some(token::Dot)),
-    ("(", "Left Parenthesis", Some(token::OpenDelim(Delimiter::Parenthesis))),
-    (")", "Right Parenthesis", Some(token::CloseDelim(Delimiter::Parenthesis))),
-    ("[", "Left Square Bracket", Some(token::OpenDelim(Delimiter::Bracket))),
-    ("]", "Right Square Bracket", Some(token::CloseDelim(Delimiter::Bracket))),
-    ("{", "Left Curly Brace", Some(token::OpenDelim(Delimiter::Brace))),
-    ("}", "Right Curly Brace", Some(token::CloseDelim(Delimiter::Brace))),
-    ("*", "Asterisk", Some(token::BinOp(token::Star))),
-    ("/", "Slash", Some(token::BinOp(token::Slash))),
+    ("(", "Left Parenthesis", Some(token::OpenParen)),
+    (")", "Right Parenthesis", Some(token::CloseParen)),
+    ("[", "Left Square Bracket", Some(token::OpenBracket)),
+    ("]", "Right Square Bracket", Some(token::CloseBracket)),
+    ("{", "Left Curly Brace", Some(token::OpenBrace)),
+    ("}", "Right Curly Brace", Some(token::CloseBrace)),
+    ("*", "Asterisk", Some(token::Star)),
+    ("/", "Slash", Some(token::Slash)),
     ("\\", "Backslash", None),
-    ("&", "Ampersand", Some(token::BinOp(token::And))),
-    ("+", "Plus Sign", Some(token::BinOp(token::Plus))),
+    ("&", "Ampersand", Some(token::And)),
+    ("+", "Plus Sign", Some(token::Plus)),
     ("<", "Less-Than Sign", Some(token::Lt)),
     ("=", "Equals Sign", Some(token::Eq)),
     ("==", "Double Equals Sign", Some(token::EqEq)),
     (">", "Greater-Than Sign", Some(token::Gt)),
     // FIXME: Literals are already lexed by this point, so we can't recover gracefully just by
     // spitting the correct token out.
-    ("\'", "Single Quote", None),
+    ("'", "Single Quote", None),
     ("\"", "Quotation Mark", None),
 ];
 
 pub(super) fn check_for_substitution(
-    reader: &StringReader<'_>,
+    lexer: &Lexer<'_, '_>,
     pos: BytePos,
     ch: char,
     count: usize,
@@ -349,13 +349,12 @@ pub(super) fn check_for_substitution(
     let span = Span::with_root_ctxt(pos, pos + Pos::from_usize(ch.len_utf8() * count));
 
     let Some((_, ascii_name, token)) = ASCII_ARRAY.iter().find(|&&(s, _, _)| s == ascii_str) else {
-        let msg = format!("substitution character not found for '{}'", ch);
-        reader.sess.span_diagnostic.span_bug_no_panic(span, msg);
-        return (None, None);
+        let msg = format!("substitution character not found for '{ch}'");
+        lexer.dcx().span_bug(span, msg);
     };
 
     // special help suggestion for "directed" double quotes
-    let sugg = if let Some(s) = peek_delimited(&reader.src[reader.src_index(pos)..], '“', '”') {
+    let sugg = if let Some(s) = peek_delimited(&lexer.src[lexer.src_index(pos)..], '“', '”') {
         let span = Span::with_root_ctxt(
             pos,
             pos + Pos::from_usize('“'.len_utf8() + s.len() + '”'.len_utf8()),
@@ -377,7 +376,7 @@ pub(super) fn check_for_substitution(
             ascii_name,
         })
     };
-    (token.clone(), sugg)
+    (*token, sugg)
 }
 
 /// Extract string if found at current position with given delimiters

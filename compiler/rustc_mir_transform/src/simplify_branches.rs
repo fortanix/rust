@@ -1,13 +1,16 @@
-use crate::MirPass;
 use rustc_middle::mir::*;
 use rustc_middle::ty::TyCtxt;
+use tracing::trace;
 
-pub enum SimplifyConstCondition {
+use crate::patch::MirPatch;
+
+pub(super) enum SimplifyConstCondition {
     AfterConstProp,
     Final,
 }
+
 /// A pass that replaces a branch with a goto when its condition is known.
-impl<'tcx> MirPass<'tcx> for SimplifyConstCondition {
+impl<'tcx> crate::MirPass<'tcx> for SimplifyConstCondition {
     fn name(&self) -> &'static str {
         match self {
             SimplifyConstCondition::AfterConstProp => "SimplifyConstCondition-after-const-prop",
@@ -16,14 +19,33 @@ impl<'tcx> MirPass<'tcx> for SimplifyConstCondition {
     }
 
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-        let param_env = tcx.param_env_reveal_all_normalized(body.source.def_id());
-        for block in body.basic_blocks_mut() {
-            let terminator = block.terminator_mut();
-            terminator.kind = match terminator.kind {
+        trace!("Running SimplifyConstCondition on {:?}", body.source);
+        let typing_env = body.typing_env(tcx);
+        let mut patch = MirPatch::new(body);
+
+        'blocks: for (bb, block) in body.basic_blocks.iter_enumerated() {
+            for (statement_index, stmt) in block.statements.iter().enumerate() {
+                // Simplify `assume` of a known value: either a NOP or unreachable.
+                if let StatementKind::Intrinsic(box ref intrinsic) = stmt.kind
+                    && let NonDivergingIntrinsic::Assume(discr) = intrinsic
+                    && let Operand::Constant(c) = discr
+                    && let Some(constant) = c.const_.try_eval_bool(tcx, typing_env)
+                {
+                    if constant {
+                        patch.nop_statement(Location { block: bb, statement_index });
+                    } else {
+                        patch.patch_terminator(bb, TerminatorKind::Unreachable);
+                        continue 'blocks;
+                    }
+                }
+            }
+
+            let terminator = block.terminator();
+            let terminator = match terminator.kind {
                 TerminatorKind::SwitchInt {
                     discr: Operand::Constant(ref c), ref targets, ..
                 } => {
-                    let constant = c.literal.try_eval_bits(tcx, param_env, c.ty());
+                    let constant = c.const_.try_eval_bits(tcx, typing_env);
                     if let Some(constant) = constant {
                         let target = targets.target_for_value(constant);
                         TerminatorKind::Goto { target }
@@ -33,12 +55,18 @@ impl<'tcx> MirPass<'tcx> for SimplifyConstCondition {
                 }
                 TerminatorKind::Assert {
                     target, cond: Operand::Constant(ref c), expected, ..
-                } => match c.literal.try_eval_bool(tcx, param_env) {
+                } => match c.const_.try_eval_bool(tcx, typing_env) {
                     Some(v) if v == expected => TerminatorKind::Goto { target },
                     _ => continue,
                 },
                 _ => continue,
             };
+            patch.patch_terminator(bb, terminator);
         }
+        patch.apply(body);
+    }
+
+    fn is_required(&self) -> bool {
+        false
     }
 }

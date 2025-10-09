@@ -1,7 +1,8 @@
-// run-pass
-// compile-flags: -C overflow-checks=on
-// ignore-emscripten no threads support
-// needs-unwind
+//@ run-pass
+//@ compile-flags: -C overflow-checks=on
+//@ needs-threads
+//@ needs-unwind
+//@ ignore-backends: gcc
 
 use std::thread;
 

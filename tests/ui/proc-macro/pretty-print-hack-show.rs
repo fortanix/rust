@@ -1,8 +1,7 @@
-// aux-build:test-macros.rs
-// compile-flags: -Z span-debug
-// revisions: local remapped
-// [local] no-remap-src-base: The hack should work regardless of remapping.
-// [remapped] remap-src-base
+//@ proc-macro: test-macros.rs
+//@ compile-flags: -Z span-debug
+//@ revisions: local remapped
+//@ [remapped] remap-src-base
 
 #![no_std] // Don't load unnecessary hygiene information from std
 extern crate std;
@@ -18,3 +17,5 @@ mod second {
 }
 
 fn main() {}
+
+//~? ERROR using an old version of `rental`

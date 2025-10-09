@@ -135,11 +135,11 @@
 mod convenience;
 mod ring;
 
-use ring::RingBuffer;
 use std::borrow::Cow;
-use std::cmp;
 use std::collections::VecDeque;
-use std::iter;
+use std::{cmp, iter};
+
+use ring::RingBuffer;
 
 /// How to break. Described in more detail in the module docs.
 #[derive(Clone, Copy, PartialEq)]
@@ -165,20 +165,20 @@ enum IndentStyle {
 }
 
 #[derive(Clone, Copy, Default, PartialEq)]
-pub struct BreakToken {
+pub(crate) struct BreakToken {
     offset: isize,
     blank_space: isize,
     pre_break: Option<char>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
-pub struct BeginToken {
+pub(crate) struct BeginToken {
     indent: IndentStyle,
     breaks: Breaks,
 }
 
-#[derive(Clone, PartialEq)]
-pub enum Token {
+#[derive(PartialEq)]
+pub(crate) enum Token {
     // In practice a string token contains either a `&'static str` or a
     // `String`. `Cow` is overkill for this because we never modify the data,
     // but it's more convenient than rolling our own more specialized type.
@@ -229,10 +229,37 @@ pub struct Printer {
     last_printed: Option<Token>,
 }
 
-#[derive(Clone)]
 struct BufEntry {
     token: Token,
     size: isize,
+}
+
+// Boxes opened with methods like `Printer::{cbox,ibox}` must be closed with
+// `Printer::end`. Failure to do so can result in bad indenting, or in extreme
+// cases, cause no output to be produced at all.
+//
+// Box opening and closing used to be entirely implicit, which was hard to
+// understand and easy to get wrong. This marker type is now returned from the
+// box opening methods and forgotten by `Printer::end`. Any marker that isn't
+// forgotten will trigger a panic in `drop`. (Closing a box more than once
+// isn't possible because `BoxMarker` doesn't implement `Copy` or `Clone`.)
+//
+// Note: it would be better to make open/close mismatching impossible and avoid
+// the need for this marker type altogether by having functions like
+// `with_ibox` that open a box, call a closure, and then close the box. That
+// would work for simple cases, but box lifetimes sometimes interact with
+// complex control flow and across function boundaries in ways that are
+// difficult to handle with such a technique.
+#[must_use]
+pub struct BoxMarker;
+
+impl !Clone for BoxMarker {}
+impl !Copy for BoxMarker {}
+
+impl Drop for BoxMarker {
+    fn drop(&mut self) {
+        panic!("BoxMarker not ended with `Printer::end()`");
+    }
 }
 
 impl Printer {
@@ -251,16 +278,16 @@ impl Printer {
         }
     }
 
-    pub fn last_token(&self) -> Option<&Token> {
+    pub(crate) fn last_token(&self) -> Option<&Token> {
         self.last_token_still_buffered().or_else(|| self.last_printed.as_ref())
     }
 
-    pub fn last_token_still_buffered(&self) -> Option<&Token> {
+    pub(crate) fn last_token_still_buffered(&self) -> Option<&Token> {
         self.buf.last().map(|last| &last.token)
     }
 
     /// Be very careful with this!
-    pub fn replace_last_token_still_buffered(&mut self, token: Token) {
+    pub(crate) fn replace_last_token_still_buffered(&mut self, token: Token) {
         self.buf.last_mut().unwrap().token = token;
     }
 
@@ -271,7 +298,8 @@ impl Printer {
         }
     }
 
-    fn scan_begin(&mut self, token: BeginToken) {
+    // This is is where `BoxMarker`s are produced.
+    fn scan_begin(&mut self, token: BeginToken) -> BoxMarker {
         if self.scan_stack.is_empty() {
             self.left_total = 1;
             self.right_total = 1;
@@ -279,15 +307,18 @@ impl Printer {
         }
         let right = self.buf.push(BufEntry { token: Token::Begin(token), size: -self.right_total });
         self.scan_stack.push_back(right);
+        BoxMarker
     }
 
-    fn scan_end(&mut self) {
+    // This is is where `BoxMarker`s are consumed.
+    fn scan_end(&mut self, b: BoxMarker) {
         if self.scan_stack.is_empty() {
             self.print_end();
         } else {
             let right = self.buf.push(BufEntry { token: Token::End, size: -1 });
             self.scan_stack.push_back(right);
         }
+        std::mem::forget(b)
     }
 
     fn scan_break(&mut self, token: BreakToken) {
@@ -314,7 +345,7 @@ impl Printer {
         }
     }
 
-    pub fn offset(&mut self, offset: isize) {
+    pub(crate) fn offset(&mut self, offset: isize) {
         if let Some(BufEntry { token: Token::Break(token), .. }) = &mut self.buf.last_mut() {
             token.offset += offset;
         }

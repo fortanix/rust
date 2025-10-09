@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(unused_imports)]
 // This should resolve fine.
 // Prior to fix, the crossed imports between a and b
@@ -6,16 +6,16 @@
 // because these previous imports were not resolved.
 
 pub mod a {
-    use b::fn_b;
-    use c::*;
+    use crate::b::fn_b;
+    use crate::c::*;
 
     pub fn fn_a(){
     }
 }
 
 pub mod b {
-    use a::fn_a;
-    use c::*;
+    use crate::a::fn_a;
+    use crate::c::*;
 
     pub fn fn_b(){
     }

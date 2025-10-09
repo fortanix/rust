@@ -4,11 +4,13 @@ note: no external requirements
 LL |     expect_sig(|a, b| b); // ought to return `a`
    |                ^^^^^^
    |
-   = note: defining type: test::{closure#0} with closure substs [
+   = note: defining type: test::{closure#0} with closure args [
                i16,
-               for<Region(BrAnon(None)), Region(BrAnon(None))> extern "rust-call" fn((&ReLateBound(DebruijnIndex(0), BoundRegion { var: 0, kind: BrAnon(None) }) i32, &ReLateBound(DebruijnIndex(0), BoundRegion { var: 1, kind: BrAnon(None) }) i32)) -> &ReLateBound(DebruijnIndex(0), BoundRegion { var: 0, kind: BrAnon(None) }) i32,
+               for<Region(BrAnon), Region(BrAnon)> extern "rust-call" fn((&'^0 i32, &'^1 i32)) -> &'^0 i32,
                (),
            ]
+   = note: late-bound region is '?1
+   = note: late-bound region is '?2
 
 error: lifetime may not live long enough
   --> $DIR/return-wrong-bound-region.rs:11:23
@@ -27,5 +29,5 @@ LL | fn test() {
    |
    = note: defining type: test
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 

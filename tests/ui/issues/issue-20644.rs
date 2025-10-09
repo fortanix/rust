@@ -1,4 +1,4 @@
-// build-pass
+//@ build-pass
 #![allow(dead_code)]
 #![allow(unused_imports)]
 #![allow(stable_features)]
@@ -6,7 +6,6 @@
 // A reduced version of the rustbook ice. The problem this encountered
 // had to do with codegen ignoring binders.
 
-// pretty-expanded FIXME #23616
 
 #![feature(os)]
 
@@ -26,7 +25,7 @@ fn foo() {
     let cwd = env::current_dir().unwrap();
     let src = cwd.clone();
     let summary = File::open(&src.join("SUMMARY.md")).unwrap();
-    let _ = parse_summary(summary, &src);
+    parse_summary(summary, &src);
 }
 
 fn main() {}

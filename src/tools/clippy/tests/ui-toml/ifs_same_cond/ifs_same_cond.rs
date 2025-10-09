@@ -1,5 +1,5 @@
 #![warn(clippy::ifs_same_cond)]
-#![allow(clippy::if_same_then_else, clippy::comparison_chain)]
+#![allow(clippy::if_same_then_else, clippy::comparison_chain, clippy::needless_else)]
 
 fn main() {}
 
@@ -11,6 +11,7 @@ fn issue10272() {
     // should trigger warning
     let x = Cell::new(true);
     if x.get() {
+        //~^ ifs_same_cond
     } else if !x.take() {
     } else if x.get() {
     } else {

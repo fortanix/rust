@@ -2,7 +2,8 @@
 // Local variables and labels are hygienic, items are not hygienic.
 // `$crate` refers to the crate that defines `macro_rules` and not the outer transparent macro.
 
-// aux-build:gen-macro-rules-hygiene.rs
+//@ proc-macro: gen-macro-rules-hygiene.rs
+//@ ignore-backends: gcc
 
 #[macro_use]
 extern crate gen_macro_rules_hygiene;

@@ -1,256 +1,143 @@
-//! This modules handles hygiene information.
+//! Machinery for hygienic macros.
 //!
-//! Specifically, `ast` + `Hygiene` allows you to create a `Name`. Note that, at
-//! this moment, this is horribly incomplete and handles only `$crate`.
-use std::sync::Arc;
+//! Inspired by Matthew Flatt et al., “Macros That Work Together: Compile-Time Bindings, Partial
+//! Expansion, and Definition Contexts,” *Journal of Functional Programming* 22, no. 2
+//! (March 1, 2012): 181–216, <https://doi.org/10.1017/S0956796812000093>.
+//!
+//! Also see <https://rustc-dev-guide.rust-lang.org/macro-expansion.html#hygiene-and-hierarchies>
+//!
+//! # The Expansion Order Hierarchy
+//!
+//! `ExpnData` in rustc, rust-analyzer's version is [`MacroCallLoc`]. Traversing the hierarchy
+//! upwards can be achieved by walking up [`MacroCallLoc::kind`]'s contained file id, as
+//! [`MacroFile`]s are interned [`MacroCallLoc`]s.
+//!
+//! # The Macro Definition Hierarchy
+//!
+//! `SyntaxContextData` in rustc and rust-analyzer. Basically the same in both.
+//!
+//! # The Call-site Hierarchy
+//!
+//! `ExpnData::call_site` in rustc, [`MacroCallLoc::call_site`] in rust-analyzer.
+// FIXME: Move this into the span crate? Not quite possible today as that depends on `MacroCallLoc`
+// which contains a bunch of unrelated things
 
-use base_db::CrateId;
-use db::TokenExpander;
-use either::Either;
-use mbe::Origin;
-use syntax::{
-    ast::{self, HasDocComments},
-    AstNode, SyntaxKind, SyntaxNode, TextRange, TextSize,
-};
+use std::convert::identity;
 
-use crate::{
-    db::{self, ExpandDatabase},
-    fixup,
-    name::{AsName, Name},
-    HirFileId, InFile, MacroCallKind, MacroCallLoc, MacroDefKind, MacroFile,
-};
+use span::{Edition, MacroCallId, Span, SyntaxContext};
 
-#[derive(Clone, Debug)]
-pub struct Hygiene {
-    frames: Option<HygieneFrames>,
-}
+use crate::db::ExpandDatabase;
 
-impl Hygiene {
-    pub fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> Hygiene {
-        Hygiene { frames: Some(HygieneFrames::new(db, file_id)) }
-    }
+pub use span::Transparency;
 
-    pub fn new_unhygienic() -> Hygiene {
-        Hygiene { frames: None }
-    }
-
-    // FIXME: this should just return name
-    pub fn name_ref_to_name(
-        &self,
-        db: &dyn ExpandDatabase,
-        name_ref: ast::NameRef,
-    ) -> Either<Name, CrateId> {
-        if let Some(frames) = &self.frames {
-            if name_ref.text() == "$crate" {
-                if let Some(krate) = frames.root_crate(db, name_ref.syntax()) {
-                    return Either::Right(krate);
-                }
-            }
-        }
-
-        Either::Left(name_ref.as_name())
-    }
-
-    pub fn local_inner_macros(&self, db: &dyn ExpandDatabase, path: ast::Path) -> Option<CrateId> {
-        let mut token = path.syntax().first_token()?.text_range();
-        let frames = self.frames.as_ref()?;
-        let mut current = &frames.0;
-
-        loop {
-            let (mapped, origin) = current.expansion.as_ref()?.map_ident_up(db, token)?;
-            if origin == Origin::Def {
-                return if current.local_inner {
-                    frames.root_crate(db, path.syntax())
-                } else {
-                    None
-                };
-            }
-            current = current.call_site.as_ref()?;
-            token = mapped.value;
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-struct HygieneFrames(Arc<HygieneFrame>);
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HygieneFrame {
-    expansion: Option<HygieneInfo>,
-
-    // Indicate this is a local inner macro
-    local_inner: bool,
-    krate: Option<CrateId>,
-
-    call_site: Option<Arc<HygieneFrame>>,
-    def_site: Option<Arc<HygieneFrame>>,
-}
-
-impl HygieneFrames {
-    fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> Self {
-        // Note that this intentionally avoids the `hygiene_frame` query to avoid blowing up memory
-        // usage. The query is only helpful for nested `HygieneFrame`s as it avoids redundant work.
-        HygieneFrames(Arc::new(HygieneFrame::new(db, file_id)))
-    }
-
-    fn root_crate(&self, db: &dyn ExpandDatabase, node: &SyntaxNode) -> Option<CrateId> {
-        let mut token = node.first_token()?.text_range();
-        let mut result = self.0.krate;
-        let mut current = self.0.clone();
-
-        while let Some((mapped, origin)) =
-            current.expansion.as_ref().and_then(|it| it.map_ident_up(db, token))
-        {
-            result = current.krate;
-
-            let site = match origin {
-                Origin::Def => &current.def_site,
-                Origin::Call => &current.call_site,
-            };
-
-            let site = match site {
-                None => break,
-                Some(it) => it,
-            };
-
-            current = site.clone();
-            token = mapped.value;
-        }
-
-        result
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct HygieneInfo {
-    file: MacroFile,
-    /// The start offset of the `macro_rules!` arguments or attribute input.
-    attr_input_or_mac_def_start: Option<InFile<TextSize>>,
-
-    macro_def: Arc<TokenExpander>,
-    macro_arg: Arc<(crate::tt::Subtree, mbe::TokenMap, fixup::SyntaxFixupUndoInfo)>,
-    macro_arg_shift: mbe::Shift,
-    exp_map: Arc<mbe::TokenMap>,
-}
-
-impl HygieneInfo {
-    fn map_ident_up(
-        &self,
-        db: &dyn ExpandDatabase,
-        token: TextRange,
-    ) -> Option<(InFile<TextRange>, Origin)> {
-        let token_id = self.exp_map.token_by_range(token)?;
-        let (mut token_id, origin) = self.macro_def.map_id_up(token_id);
-
-        let loc = db.lookup_intern_macro_call(self.file.macro_call_id);
-
-        let (token_map, tt) = match &loc.kind {
-            MacroCallKind::Attr { attr_args, .. } => match self.macro_arg_shift.unshift(token_id) {
-                Some(unshifted) => {
-                    token_id = unshifted;
-                    (&attr_args.1, self.attr_input_or_mac_def_start?)
-                }
-                None => (
-                    &self.macro_arg.1,
-                    InFile::new(loc.kind.file_id(), loc.kind.arg(db)?.text_range().start()),
-                ),
-            },
-            _ => match origin {
-                mbe::Origin::Call => (
-                    &self.macro_arg.1,
-                    InFile::new(loc.kind.file_id(), loc.kind.arg(db)?.text_range().start()),
-                ),
-                mbe::Origin::Def => match (&*self.macro_def, &self.attr_input_or_mac_def_start) {
-                    (TokenExpander::DeclarativeMacro { def_site_token_map, .. }, Some(tt)) => {
-                        (def_site_token_map, *tt)
-                    }
-                    _ => panic!("`Origin::Def` used with non-`macro_rules!` macro"),
-                },
-            },
-        };
-
-        let range = token_map.first_range_by_token(token_id, SyntaxKind::IDENT)?;
-        Some((tt.with_value(range + tt.value), origin))
-    }
-}
-
-fn make_hygiene_info(
+pub fn span_with_def_site_ctxt(
     db: &dyn ExpandDatabase,
-    macro_file: MacroFile,
-    loc: &MacroCallLoc,
-) -> Option<HygieneInfo> {
-    let def = loc.def.ast_id().left().and_then(|id| {
-        let def_tt = match id.to_node(db) {
-            ast::Macro::MacroRules(mac) => mac.token_tree()?,
-            ast::Macro::MacroDef(mac) => mac.body()?,
-        };
-        Some(InFile::new(id.file_id, def_tt))
-    });
-    let attr_input_or_mac_def = def.or_else(|| match loc.kind {
-        MacroCallKind::Attr { ast_id, invoc_attr_index, .. } => {
-            let tt = ast_id
-                .to_node(db)
-                .doc_comments_and_attrs()
-                .nth(invoc_attr_index.ast_index())
-                .and_then(Either::left)?
-                .token_tree()?;
-            Some(InFile::new(ast_id.file_id, tt))
-        }
-        _ => None,
-    });
-
-    let macro_def = db.macro_def(loc.def).ok()?;
-    let (_, exp_map) = db.parse_macro_expansion(macro_file).value?;
-    let macro_arg = db.macro_arg(macro_file.macro_call_id)?;
-
-    Some(HygieneInfo {
-        file: macro_file,
-        attr_input_or_mac_def_start: attr_input_or_mac_def
-            .map(|it| it.map(|tt| tt.syntax().text_range().start())),
-        macro_arg_shift: mbe::Shift::new(&macro_arg.0),
-        macro_arg,
-        macro_def,
-        exp_map,
-    })
+    span: Span,
+    expn_id: MacroCallId,
+    edition: Edition,
+) -> Span {
+    span_with_ctxt_from_mark(db, span, expn_id, Transparency::Opaque, edition)
 }
 
-impl HygieneFrame {
-    pub(crate) fn new(db: &dyn ExpandDatabase, file_id: HirFileId) -> HygieneFrame {
-        let (info, krate, local_inner) = match file_id.macro_file() {
-            None => (None, None, false),
-            Some(macro_file) => {
-                let loc = db.lookup_intern_macro_call(macro_file.macro_call_id);
-                let info =
-                    make_hygiene_info(db, macro_file, &loc).map(|info| (loc.kind.file_id(), info));
-                match loc.def.kind {
-                    MacroDefKind::Declarative(_) => {
-                        (info, Some(loc.def.krate), loc.def.local_inner)
-                    }
-                    MacroDefKind::BuiltIn(..) => (info, Some(loc.def.krate), false),
-                    MacroDefKind::BuiltInAttr(..) => (info, None, false),
-                    MacroDefKind::BuiltInDerive(..) => (info, None, false),
-                    MacroDefKind::BuiltInEager(..) => (info, None, false),
-                    MacroDefKind::ProcMacro(..) => (info, None, false),
-                }
-            }
-        };
+pub fn span_with_call_site_ctxt(
+    db: &dyn ExpandDatabase,
+    span: Span,
+    expn_id: MacroCallId,
+    edition: Edition,
+) -> Span {
+    span_with_ctxt_from_mark(db, span, expn_id, Transparency::Transparent, edition)
+}
 
-        let (calling_file, info) = match info {
-            None => {
-                return HygieneFrame {
-                    expansion: None,
-                    local_inner,
-                    krate,
-                    call_site: None,
-                    def_site: None,
-                };
-            }
-            Some(it) => it,
-        };
+pub fn span_with_mixed_site_ctxt(
+    db: &dyn ExpandDatabase,
+    span: Span,
+    expn_id: MacroCallId,
+    edition: Edition,
+) -> Span {
+    span_with_ctxt_from_mark(db, span, expn_id, Transparency::SemiTransparent, edition)
+}
 
-        let def_site = info.attr_input_or_mac_def_start.map(|it| db.hygiene_frame(it.file_id));
-        let call_site = Some(db.hygiene_frame(calling_file));
-
-        HygieneFrame { expansion: Some(info), local_inner, krate, call_site, def_site }
+fn span_with_ctxt_from_mark(
+    db: &dyn ExpandDatabase,
+    span: Span,
+    expn_id: MacroCallId,
+    transparency: Transparency,
+    edition: Edition,
+) -> Span {
+    Span {
+        ctx: apply_mark(db, SyntaxContext::root(edition), expn_id, transparency, edition),
+        ..span
     }
+}
+
+pub(super) fn apply_mark(
+    db: &dyn ExpandDatabase,
+    ctxt: span::SyntaxContext,
+    call_id: span::MacroCallId,
+    transparency: Transparency,
+    edition: Edition,
+) -> SyntaxContext {
+    if transparency == Transparency::Opaque {
+        return apply_mark_internal(db, ctxt, call_id, transparency, edition);
+    }
+
+    let call_site_ctxt = db.lookup_intern_macro_call(call_id.into()).ctxt;
+    let mut call_site_ctxt = if transparency == Transparency::SemiTransparent {
+        call_site_ctxt.normalize_to_macros_2_0(db)
+    } else {
+        call_site_ctxt.normalize_to_macro_rules(db)
+    };
+
+    if call_site_ctxt.is_root() {
+        return apply_mark_internal(db, ctxt, call_id, transparency, edition);
+    }
+
+    // Otherwise, `expn_id` is a macros 1.0 definition and the call site is in a
+    // macros 2.0 expansion, i.e., a macros 1.0 invocation is in a macros 2.0 definition.
+    //
+    // In this case, the tokens from the macros 1.0 definition inherit the hygiene
+    // at their invocation. That is, we pretend that the macros 1.0 definition
+    // was defined at its invocation (i.e., inside the macros 2.0 definition)
+    // so that the macros 2.0 definition remains hygienic.
+    //
+    // See the example at `test/ui/hygiene/legacy_interaction.rs`.
+    for (call_id, transparency) in ctxt.marks(db) {
+        call_site_ctxt = apply_mark_internal(db, call_site_ctxt, call_id, transparency, edition);
+    }
+    apply_mark_internal(db, call_site_ctxt, call_id, transparency, edition)
+}
+
+fn apply_mark_internal(
+    db: &dyn ExpandDatabase,
+    ctxt: SyntaxContext,
+    call_id: MacroCallId,
+    transparency: Transparency,
+    edition: Edition,
+) -> SyntaxContext {
+    let call_id = Some(call_id);
+
+    let mut opaque = ctxt.opaque(db);
+    let mut opaque_and_semitransparent = ctxt.opaque_and_semitransparent(db);
+
+    if transparency >= Transparency::Opaque {
+        let parent = opaque;
+        opaque = SyntaxContext::new(db, call_id, transparency, edition, parent, identity, identity);
+    }
+
+    if transparency >= Transparency::SemiTransparent {
+        let parent = opaque_and_semitransparent;
+        opaque_and_semitransparent =
+            SyntaxContext::new(db, call_id, transparency, edition, parent, |_| opaque, identity);
+    }
+
+    let parent = ctxt;
+    SyntaxContext::new(
+        db,
+        call_id,
+        transparency,
+        edition,
+        parent,
+        |_| opaque,
+        |_| opaque_and_semitransparent,
+    )
 }

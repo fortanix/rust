@@ -1,5 +1,4 @@
 #[allow(deprecated, invalid_value)]
 fn main() {
-    unsafe { std::mem::zeroed::<fn()>() };
-    //~^ ERROR: attempted to zero-initialize type `fn()`, which is invalid
+    let _ = unsafe { std::mem::zeroed::<fn()>() }; //~ERROR: constructing invalid value
 }

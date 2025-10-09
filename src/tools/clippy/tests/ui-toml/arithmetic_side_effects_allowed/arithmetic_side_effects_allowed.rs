@@ -1,4 +1,5 @@
 #![warn(clippy::arithmetic_side_effects)]
+#![allow(clippy::unnecessary_literal_unwrap)]
 
 use core::ops::{Add, Neg};
 
@@ -66,6 +67,7 @@ fn lhs_and_rhs_are_equal() {
     let _ = Bar + Bar;
     // not on the list
     let _ = Baz + Baz;
+    //~^ arithmetic_side_effects
 }
 
 fn lhs_is_different() {
@@ -77,13 +79,16 @@ fn lhs_is_different() {
     let _ = 1i32 + Bar;
     // not on the list
     let _ = 1i32 + Baz;
+    //~^ arithmetic_side_effects
 
     // not on the list
     let _ = 1i64 + Foo;
+    //~^ arithmetic_side_effects
     // is implicitly on the list
     let _ = 1i64 + Bar;
     // not on the list
     let _ = 1i64 + Baz;
+    //~^ arithmetic_side_effects
 }
 
 fn rhs_is_different() {
@@ -95,13 +100,16 @@ fn rhs_is_different() {
     let _ = Bar + 1i32;
     // not on the list
     let _ = Baz + 1i32;
+    //~^ arithmetic_side_effects
 
     // not on the list
     let _ = Foo + 1i64;
+    //~^ arithmetic_side_effects
     // is implicitly on the list
     let _ = Bar + 1i64;
     // not on the list
     let _ = Baz + 1i64;
+    //~^ arithmetic_side_effects
 }
 
 fn unary() {
@@ -111,8 +119,10 @@ fn unary() {
     let _ = -Foo;
     // not on the list
     let _ = -Bar;
+    //~^ arithmetic_side_effects
     // not on the list
     let _ = -Baz;
+    //~^ arithmetic_side_effects
 }
 
 fn main() {}

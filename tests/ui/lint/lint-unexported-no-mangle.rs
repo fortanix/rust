@@ -1,4 +1,4 @@
-// compile-flags:-F private_no_mangle_fns -F no_mangle_const_items -F private_no_mangle_statics
+//@ compile-flags:-F private_no_mangle_fns -F no_mangle_const_items -F private_no_mangle_statics
 
 #[no_mangle]
 fn foo() {
@@ -27,3 +27,10 @@ fn main() {
     foo();
     bar();
 }
+
+//~? WARN lint `private_no_mangle_fns` has been removed
+//~? WARN lint `private_no_mangle_statics` has been removed
+//~? WARN lint `private_no_mangle_fns` has been removed
+//~? WARN lint `private_no_mangle_statics` has been removed
+//~? WARN lint `private_no_mangle_fns` has been removed
+//~? WARN lint `private_no_mangle_statics` has been removed

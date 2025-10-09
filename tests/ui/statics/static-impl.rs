@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(non_camel_case_types)]
 
 
@@ -9,12 +9,12 @@ pub trait plus {
 }
 
 mod a {
-    use plus;
+    use crate::plus;
     impl plus for usize { fn plus(&self) -> isize { *self as isize + 20 } }
 }
 
 mod b {
-    use plus;
+    use crate::plus;
     impl plus for String { fn plus(&self) -> isize { 200 } }
 }
 
@@ -35,7 +35,7 @@ impl uint_utils for usize {
 
 trait vec_utils<T> {
     fn length_(&self, ) -> usize;
-    fn iter_<F>(&self, f: F) where F: FnMut(&T);
+    fn iter_<F>(&self, f: F) where F: FnMut(&T); //~ WARN method `iter_` is never used
     fn map_<U, F>(&self, f: F) -> Vec<U> where F: FnMut(&T) -> U;
 }
 

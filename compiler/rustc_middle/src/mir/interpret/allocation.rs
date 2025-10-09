@@ -4,60 +4,81 @@ mod init_mask;
 mod provenance_map;
 
 use std::borrow::Cow;
-use std::fmt;
-use std::hash;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut, Range};
-use std::ptr;
+use std::{fmt, hash, ptr};
 
 use either::{Left, Right};
-
+use init_mask::*;
+pub use init_mask::{InitChunk, InitChunkIter};
+use provenance_map::*;
+use rustc_abi::{Align, HasDataLayout, Size};
 use rustc_ast::Mutability;
 use rustc_data_structures::intern::Interned;
-use rustc_span::DUMMY_SP;
-use rustc_target::abi::{Align, HasDataLayout, Size};
+use rustc_macros::HashStable;
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 
 use super::{
-    read_target_uint, write_target_uint, AllocId, InterpError, InterpResult, Pointer, Provenance,
-    ResourceExhaustionInfo, Scalar, ScalarSizeMismatch, UndefinedBehaviorInfo, UninitBytesAccess,
-    UnsupportedOpInfo,
+    AllocId, BadBytesAccess, CtfeProvenance, InterpErrorKind, InterpResult, Pointer,
+    PointerArithmetic, Provenance, ResourceExhaustionInfo, Scalar, ScalarSizeMismatch,
+    UndefinedBehaviorInfo, UnsupportedOpInfo, interp_ok, read_target_uint, write_target_uint,
 };
 use crate::ty;
-use init_mask::*;
-use provenance_map::*;
-
-pub use init_mask::{InitChunk, InitChunkIter};
 
 /// Functionality required for the bytes of an `Allocation`.
-pub trait AllocBytes:
-    Clone + fmt::Debug + Eq + PartialEq + Hash + Deref<Target = [u8]> + DerefMut<Target = [u8]>
-{
-    /// Adjust the bytes to the specified alignment -- by default, this is a no-op.
-    fn adjust_to_align(self, _align: Align) -> Self;
+pub trait AllocBytes: Clone + fmt::Debug + Deref<Target = [u8]> + DerefMut<Target = [u8]> {
+    /// The type of extra parameters passed in when creating an allocation.
+    /// Can be used by `interpret::Machine` instances to make runtime-configuration-dependent
+    /// decisions about the allocation strategy.
+    type AllocParams;
 
     /// Create an `AllocBytes` from a slice of `u8`.
-    fn from_bytes<'a>(slice: impl Into<Cow<'a, [u8]>>, _align: Align) -> Self;
+    fn from_bytes<'a>(
+        slice: impl Into<Cow<'a, [u8]>>,
+        _align: Align,
+        _params: Self::AllocParams,
+    ) -> Self;
 
-    /// Create a zeroed `AllocBytes` of the specified size and alignment;
-    /// call the callback error handler if there is an error in allocating the memory.
-    fn zeroed(size: Size, _align: Align) -> Option<Self>;
+    /// Create a zeroed `AllocBytes` of the specified size and alignment.
+    /// Returns `None` if we ran out of memory on the host.
+    fn zeroed(size: Size, _align: Align, _params: Self::AllocParams) -> Option<Self>;
+
+    /// Gives direct access to the raw underlying storage.
+    ///
+    /// Crucially this pointer is compatible with:
+    /// - other pointers returned by this method, and
+    /// - references returned from `deref()`, as long as there was no write.
+    fn as_mut_ptr(&mut self) -> *mut u8;
+
+    /// Gives direct access to the raw underlying storage.
+    ///
+    /// Crucially this pointer is compatible with:
+    /// - other pointers returned by this method, and
+    /// - references returned from `deref()`, as long as there was no write.
+    fn as_ptr(&self) -> *const u8;
 }
 
-// Default `bytes` for `Allocation` is a `Box<[u8]>`.
+/// Default `bytes` for `Allocation` is a `Box<u8>`.
 impl AllocBytes for Box<[u8]> {
-    fn adjust_to_align(self, _align: Align) -> Self {
-        self
-    }
+    type AllocParams = ();
 
-    fn from_bytes<'a>(slice: impl Into<Cow<'a, [u8]>>, _align: Align) -> Self {
+    fn from_bytes<'a>(slice: impl Into<Cow<'a, [u8]>>, _align: Align, _params: ()) -> Self {
         Box::<[u8]>::from(slice.into())
     }
 
-    fn zeroed(size: Size, _align: Align) -> Option<Self> {
-        let bytes = Box::<[u8]>::try_new_zeroed_slice(size.bytes_usize()).ok()?;
+    fn zeroed(size: Size, _align: Align, _params: ()) -> Option<Self> {
+        let bytes = Box::<[u8]>::try_new_zeroed_slice(size.bytes().try_into().ok()?).ok()?;
         // SAFETY: the box was zero-allocated, which is a valid initial value for Box<[u8]>
         let bytes = unsafe { bytes.assume_init() };
         Some(bytes)
+    }
+
+    fn as_mut_ptr(&mut self) -> *mut u8 {
+        Box::as_mut_ptr(self).cast()
+    }
+
+    fn as_ptr(&self) -> *const u8 {
+        Box::as_ptr(self).cast()
     }
 }
 
@@ -68,9 +89,9 @@ impl AllocBytes for Box<[u8]> {
 /// module provides higher-level access.
 // Note: for performance reasons when interning, some of the `Allocation` fields can be partially
 // hashed. (see the `Hash` impl below for more details), so the impl is not derived.
-#[derive(Clone, Eq, PartialEq, TyEncodable, TyDecodable)]
+#[derive(Clone, Eq, PartialEq)]
 #[derive(HashStable)]
-pub struct Allocation<Prov: Provenance = AllocId, Extra = (), Bytes = Box<[u8]>> {
+pub struct Allocation<Prov: Provenance = CtfeProvenance, Extra = (), Bytes = Box<[u8]>> {
     /// The actual bytes of the allocation.
     /// Note that the bytes of a pointer represent the offset of the pointer.
     bytes: Bytes,
@@ -80,6 +101,8 @@ pub struct Allocation<Prov: Provenance = AllocId, Extra = (), Bytes = Box<[u8]>>
     /// at the given offset.
     provenance: ProvenanceMap<Prov>,
     /// Denotes which part of this allocation is initialized.
+    ///
+    /// Invariant: the uninitialized parts have no provenance.
     init_mask: InitMask,
     /// The alignment of the allocation to detect unaligned reads.
     /// (`Align` guarantees that this is a power of two.)
@@ -90,6 +113,115 @@ pub struct Allocation<Prov: Provenance = AllocId, Extra = (), Bytes = Box<[u8]>>
     pub mutability: Mutability,
     /// Extra state for the machine.
     pub extra: Extra,
+}
+
+/// Helper struct that packs an alignment, mutability, and "all bytes are zero" flag together.
+///
+/// Alignment values always have 2 free high bits, and we check for this in our [`Encodable`] impl.
+struct AllocFlags {
+    align: Align,
+    mutability: Mutability,
+    all_zero: bool,
+}
+
+impl<E: Encoder> Encodable<E> for AllocFlags {
+    fn encode(&self, encoder: &mut E) {
+        // Make sure Align::MAX can be stored with the high 2 bits unset.
+        const {
+            let max_supported_align_repr = u8::MAX >> 2;
+            let max_supported_align = 1 << max_supported_align_repr;
+            assert!(Align::MAX.bytes() <= max_supported_align)
+        }
+
+        let mut flags = self.align.bytes().trailing_zeros() as u8;
+        flags |= match self.mutability {
+            Mutability::Not => 0,
+            Mutability::Mut => 1 << 6,
+        };
+        flags |= (self.all_zero as u8) << 7;
+        flags.encode(encoder);
+    }
+}
+
+impl<D: Decoder> Decodable<D> for AllocFlags {
+    fn decode(decoder: &mut D) -> Self {
+        let flags: u8 = Decodable::decode(decoder);
+        let align = flags & 0b0011_1111;
+        let mutability = flags & 0b0100_0000;
+        let all_zero = flags & 0b1000_0000;
+
+        let align = Align::from_bytes(1 << align).unwrap();
+        let mutability = match mutability {
+            0 => Mutability::Not,
+            _ => Mutability::Mut,
+        };
+        let all_zero = all_zero > 0;
+
+        AllocFlags { align, mutability, all_zero }
+    }
+}
+
+/// Efficiently detect whether a slice of `u8` is all zero.
+///
+/// This is used in encoding of [`Allocation`] to special-case all-zero allocations. It is only
+/// optimized a little, because for many allocations the encoding of the actual bytes does not
+/// dominate runtime.
+#[inline]
+fn all_zero(buf: &[u8]) -> bool {
+    // In the empty case we wouldn't encode any contents even without this system where we
+    // special-case allocations whose contents are all 0. We can return anything in the empty case.
+    if buf.is_empty() {
+        return true;
+    }
+    // Just fast-rejecting based on the first element significantly reduces the amount that we end
+    // up walking the whole array.
+    if buf[0] != 0 {
+        return false;
+    }
+
+    // This strategy of combining all slice elements with & or | is unbeatable for the large
+    // all-zero case because it is so well-understood by autovectorization.
+    buf.iter().fold(true, |acc, b| acc & (*b == 0))
+}
+
+/// Custom encoder for [`Allocation`] to more efficiently represent the case where all bytes are 0.
+impl<Prov: Provenance, Extra, E: Encoder> Encodable<E> for Allocation<Prov, Extra, Box<[u8]>>
+where
+    ProvenanceMap<Prov>: Encodable<E>,
+    Extra: Encodable<E>,
+{
+    fn encode(&self, encoder: &mut E) {
+        let all_zero = all_zero(&self.bytes);
+        AllocFlags { align: self.align, mutability: self.mutability, all_zero }.encode(encoder);
+
+        encoder.emit_usize(self.bytes.len());
+        if !all_zero {
+            encoder.emit_raw_bytes(&self.bytes);
+        }
+        self.provenance.encode(encoder);
+        self.init_mask.encode(encoder);
+        self.extra.encode(encoder);
+    }
+}
+
+impl<Prov: Provenance, Extra, D: Decoder> Decodable<D> for Allocation<Prov, Extra, Box<[u8]>>
+where
+    ProvenanceMap<Prov>: Decodable<D>,
+    Extra: Decodable<D>,
+{
+    fn decode(decoder: &mut D) -> Self {
+        let AllocFlags { align, mutability, all_zero } = Decodable::decode(decoder);
+
+        let len = decoder.read_usize();
+        let bytes = if all_zero { vec![0u8; len] } else { decoder.read_raw_bytes(len).to_vec() };
+        let bytes = <Box<[u8]> as AllocBytes>::from_bytes(bytes, align, ());
+
+        let provenance = Decodable::decode(decoder);
+        let init_mask = Decodable::decode(decoder);
+        let extra = Decodable::decode(decoder);
+
+        Self { bytes, provenance, init_mask, align, mutability, extra }
+    }
 }
 
 /// This is the maximum size we will hash at a time, when interning an `Allocation` and its
@@ -173,13 +305,11 @@ pub enum AllocError {
     /// A scalar had the wrong size.
     ScalarSizeMismatch(ScalarSizeMismatch),
     /// Encountered a pointer where we needed raw bytes.
-    ReadPointerAsBytes,
-    /// Partially overwriting a pointer.
-    PartialPointerOverwrite(Size),
+    ReadPointerAsInt(Option<BadBytesAccess>),
     /// Partially copying a pointer.
-    PartialPointerCopy(Size),
+    ReadPartialPointer(Size),
     /// Using uninitialized data where it is not allowed.
-    InvalidUninitBytes(Option<UninitBytesAccess>),
+    InvalidUninitBytes(Option<BadBytesAccess>),
 }
 pub type AllocResult<T = ()> = Result<T, AllocError>;
 
@@ -190,20 +320,19 @@ impl From<ScalarSizeMismatch> for AllocError {
 }
 
 impl AllocError {
-    pub fn to_interp_error<'tcx>(self, alloc_id: AllocId) -> InterpError<'tcx> {
+    pub fn to_interp_error<'tcx>(self, alloc_id: AllocId) -> InterpErrorKind<'tcx> {
         use AllocError::*;
         match self {
             ScalarSizeMismatch(s) => {
-                InterpError::UndefinedBehavior(UndefinedBehaviorInfo::ScalarSizeMismatch(s))
+                InterpErrorKind::UndefinedBehavior(UndefinedBehaviorInfo::ScalarSizeMismatch(s))
             }
-            ReadPointerAsBytes => InterpError::Unsupported(UnsupportedOpInfo::ReadPointerAsBytes),
-            PartialPointerOverwrite(offset) => InterpError::Unsupported(
-                UnsupportedOpInfo::PartialPointerOverwrite(Pointer::new(alloc_id, offset)),
+            ReadPointerAsInt(info) => InterpErrorKind::Unsupported(
+                UnsupportedOpInfo::ReadPointerAsInt(info.map(|b| (alloc_id, b))),
             ),
-            PartialPointerCopy(offset) => InterpError::Unsupported(
-                UnsupportedOpInfo::PartialPointerCopy(Pointer::new(alloc_id, offset)),
+            ReadPartialPointer(offset) => InterpErrorKind::Unsupported(
+                UnsupportedOpInfo::ReadPartialPointer(Pointer::new(alloc_id, offset)),
             ),
-            InvalidUninitBytes(info) => InterpError::UndefinedBehavior(
+            InvalidUninitBytes(info) => InterpErrorKind::UndefinedBehavior(
                 UndefinedBehaviorInfo::InvalidUninitBytes(info.map(|b| (alloc_id, b))),
             ),
         }
@@ -259,28 +388,22 @@ impl AllocRange {
     }
 }
 
+/// Whether a new allocation should be initialized with zero-bytes.
+pub enum AllocInit {
+    Uninit,
+    Zero,
+}
+
 // The constructors are all without extra; the extra gets added by a machine hook later.
 impl<Prov: Provenance, Bytes: AllocBytes> Allocation<Prov, (), Bytes> {
-    /// Creates an allocation from an existing `Bytes` value - this is needed for miri FFI support
-    pub fn from_raw_bytes(bytes: Bytes, align: Align, mutability: Mutability) -> Self {
-        let size = Size::from_bytes(bytes.len());
-        Self {
-            bytes,
-            provenance: ProvenanceMap::new(),
-            init_mask: InitMask::new(size, true),
-            align,
-            mutability,
-            extra: (),
-        }
-    }
-
     /// Creates an allocation initialized by the given bytes
     pub fn from_bytes<'a>(
         slice: impl Into<Cow<'a, [u8]>>,
         align: Align,
         mutability: Mutability,
+        params: <Bytes as AllocBytes>::AllocParams,
     ) -> Self {
-        let bytes = Bytes::from_bytes(slice, align);
+        let bytes = Bytes::from_bytes(slice, align, params);
         let size = Size::from_bytes(bytes.len());
         Self {
             bytes,
@@ -292,74 +415,126 @@ impl<Prov: Provenance, Bytes: AllocBytes> Allocation<Prov, (), Bytes> {
         }
     }
 
-    pub fn from_bytes_byte_aligned_immutable<'a>(slice: impl Into<Cow<'a, [u8]>>) -> Self {
-        Allocation::from_bytes(slice, Align::ONE, Mutability::Not)
+    pub fn from_bytes_byte_aligned_immutable<'a>(
+        slice: impl Into<Cow<'a, [u8]>>,
+        params: <Bytes as AllocBytes>::AllocParams,
+    ) -> Self {
+        Allocation::from_bytes(slice, Align::ONE, Mutability::Not, params)
     }
 
-    /// Try to create an Allocation of `size` bytes, failing if there is not enough memory
-    /// available to the compiler to do so.
-    ///
-    /// If `panic_on_fail` is true, this will never return `Err`.
-    pub fn uninit<'tcx>(size: Size, align: Align, panic_on_fail: bool) -> InterpResult<'tcx, Self> {
-        let bytes = Bytes::zeroed(size, align).ok_or_else(|| {
-            // This results in an error that can happen non-deterministically, since the memory
-            // available to the compiler can change between runs. Normally queries are always
-            // deterministic. However, we can be non-deterministic here because all uses of const
-            // evaluation (including ConstProp!) will make compilation fail (via hard error
-            // or ICE) upon encountering a `MemoryExhausted` error.
-            if panic_on_fail {
-                panic!("Allocation::uninit called with panic_on_fail had allocation failure")
-            }
-            ty::tls::with(|tcx| {
-                tcx.sess.delay_span_bug(DUMMY_SP, "exhausted memory during interpretation")
-            });
-            InterpError::ResourceExhaustion(ResourceExhaustionInfo::MemoryExhausted)
-        })?;
+    fn new_inner<R>(
+        size: Size,
+        align: Align,
+        init: AllocInit,
+        params: <Bytes as AllocBytes>::AllocParams,
+        fail: impl FnOnce() -> R,
+    ) -> Result<Self, R> {
+        // We raise an error if we cannot create the allocation on the host.
+        // This results in an error that can happen non-deterministically, since the memory
+        // available to the compiler can change between runs. Normally queries are always
+        // deterministic. However, we can be non-deterministic here because all uses of const
+        // evaluation (including ConstProp!) will make compilation fail (via hard error
+        // or ICE) upon encountering a `MemoryExhausted` error.
+        let bytes = Bytes::zeroed(size, align, params).ok_or_else(fail)?;
 
         Ok(Allocation {
             bytes,
             provenance: ProvenanceMap::new(),
-            init_mask: InitMask::new(size, false),
+            init_mask: InitMask::new(
+                size,
+                match init {
+                    AllocInit::Uninit => false,
+                    AllocInit::Zero => true,
+                },
+            ),
             align,
             mutability: Mutability::Mut,
             extra: (),
         })
     }
+
+    /// Try to create an Allocation of `size` bytes, failing if there is not enough memory
+    /// available to the compiler to do so.
+    pub fn try_new<'tcx>(
+        size: Size,
+        align: Align,
+        init: AllocInit,
+        params: <Bytes as AllocBytes>::AllocParams,
+    ) -> InterpResult<'tcx, Self> {
+        Self::new_inner(size, align, init, params, || {
+            ty::tls::with(|tcx| tcx.dcx().delayed_bug("exhausted memory during interpretation"));
+            InterpErrorKind::ResourceExhaustion(ResourceExhaustionInfo::MemoryExhausted)
+        })
+        .into()
+    }
+
+    /// Try to create an Allocation of `size` bytes, panics if there is not enough memory
+    /// available to the compiler to do so.
+    ///
+    /// Example use case: To obtain an Allocation filled with specific data,
+    /// first call this function and then call write_scalar to fill in the right data.
+    pub fn new(
+        size: Size,
+        align: Align,
+        init: AllocInit,
+        params: <Bytes as AllocBytes>::AllocParams,
+    ) -> Self {
+        match Self::new_inner(size, align, init, params, || {
+            panic!(
+                "interpreter ran out of memory: cannot create allocation of {} bytes",
+                size.bytes()
+            );
+        }) {
+            Ok(x) => x,
+            Err(x) => x,
+        }
+    }
+
+    /// Add the extra.
+    pub fn with_extra<Extra>(self, extra: Extra) -> Allocation<Prov, Extra, Bytes> {
+        Allocation {
+            bytes: self.bytes,
+            provenance: self.provenance,
+            init_mask: self.init_mask,
+            align: self.align,
+            mutability: self.mutability,
+            extra,
+        }
+    }
 }
 
-impl<Bytes: AllocBytes> Allocation<AllocId, (), Bytes> {
-    /// Adjust allocation from the ones in tcx to a custom Machine instance
-    /// with a different Provenance and Extra type.
-    pub fn adjust_from_tcx<Prov: Provenance, Extra, Err>(
-        self,
+impl Allocation {
+    /// Adjust allocation from the ones in `tcx` to a custom Machine instance
+    /// with a different `Provenance` and `Byte` type.
+    pub fn adjust_from_tcx<'tcx, Prov: Provenance, Bytes: AllocBytes>(
+        &self,
         cx: &impl HasDataLayout,
-        extra: Extra,
-        mut adjust_ptr: impl FnMut(Pointer<AllocId>) -> Result<Pointer<Prov>, Err>,
-    ) -> Result<Allocation<Prov, Extra, Bytes>, Err> {
-        // Compute new pointer provenance, which also adjusts the bytes, and realign the pointer if
-        // necessary.
-        let mut bytes = self.bytes.adjust_to_align(self.align);
-
+        alloc_bytes: impl FnOnce(&[u8], Align) -> InterpResult<'tcx, Bytes>,
+        mut adjust_ptr: impl FnMut(Pointer<CtfeProvenance>) -> InterpResult<'tcx, Pointer<Prov>>,
+    ) -> InterpResult<'tcx, Allocation<Prov, (), Bytes>> {
+        // Copy the data.
+        let mut bytes = alloc_bytes(&*self.bytes, self.align)?;
+        // Adjust provenance of pointers stored in this allocation.
         let mut new_provenance = Vec::with_capacity(self.provenance.ptrs().len());
-        let ptr_size = cx.data_layout().pointer_size.bytes_usize();
+        let ptr_size = cx.data_layout().pointer_size().bytes_usize();
         let endian = cx.data_layout().endian;
         for &(offset, alloc_id) in self.provenance.ptrs().iter() {
             let idx = offset.bytes_usize();
             let ptr_bytes = &mut bytes[idx..idx + ptr_size];
             let bits = read_target_uint(endian, ptr_bytes).unwrap();
             let (ptr_prov, ptr_offset) =
-                adjust_ptr(Pointer::new(alloc_id, Size::from_bytes(bits)))?.into_parts();
+                adjust_ptr(Pointer::new(alloc_id, Size::from_bytes(bits)))?.into_raw_parts();
             write_target_uint(endian, ptr_bytes, ptr_offset.bytes().into()).unwrap();
             new_provenance.push((offset, ptr_prov));
         }
         // Create allocation.
-        Ok(Allocation {
+        interp_ok(Allocation {
             bytes,
             provenance: ProvenanceMap::from_presorted_ptrs(new_provenance),
-            init_mask: self.init_mask,
+            init_mask: self.init_mask.clone(),
             align: self.align,
             mutability: self.mutability,
-            extra,
+            extra: self.extra,
         })
     }
 }
@@ -395,10 +570,6 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
 
 /// Byte accessors.
 impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> {
-    pub fn base_addr(&self) -> *const u8 {
-        self.bytes.as_ptr()
-    }
-
     /// This is the entirely abstraction-violating way to just grab the raw bytes without
     /// caring about provenance or initialization.
     ///
@@ -423,49 +594,78 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
         range: AllocRange,
     ) -> AllocResult<&[u8]> {
         self.init_mask.is_range_initialized(range).map_err(|uninit_range| {
-            AllocError::InvalidUninitBytes(Some(UninitBytesAccess {
+            AllocError::InvalidUninitBytes(Some(BadBytesAccess {
                 access: range,
-                uninit: uninit_range,
+                bad: uninit_range,
             }))
         })?;
-        if !Prov::OFFSET_IS_ADDR {
-            if !self.provenance.range_empty(range, cx) {
-                return Err(AllocError::ReadPointerAsBytes);
-            }
+        if !Prov::OFFSET_IS_ADDR && !self.provenance.range_empty(range, cx) {
+            // Find the provenance.
+            let (offset, _prov) = self
+                .provenance
+                .range_ptrs_get(range, cx)
+                .first()
+                .copied()
+                .expect("there must be provenance somewhere here");
+            let start = offset.max(range.start); // the pointer might begin before `range`!
+            let end = (offset + cx.pointer_size()).min(range.end()); // the pointer might end after `range`!
+            return Err(AllocError::ReadPointerAsInt(Some(BadBytesAccess {
+                access: range,
+                bad: AllocRange::from(start..end),
+            })));
         }
         Ok(self.get_bytes_unchecked(range))
     }
 
-    /// Just calling this already marks everything as defined and removes provenance,
-    /// so be sure to actually put data there!
+    /// This is the entirely abstraction-violating way to just get mutable access to the raw bytes.
+    /// Just calling this already marks everything as defined and removes provenance, so be sure to
+    /// actually overwrite all the data there!
     ///
     /// It is the caller's responsibility to check bounds and alignment beforehand.
     /// Most likely, you want to use the `PlaceTy` and `OperandTy`-based methods
     /// on `InterpCx` instead.
-    pub fn get_bytes_mut(
+    pub fn get_bytes_unchecked_for_overwrite(
         &mut self,
         cx: &impl HasDataLayout,
         range: AllocRange,
-    ) -> AllocResult<&mut [u8]> {
+    ) -> &mut [u8] {
         self.mark_init(range, true);
-        self.provenance.clear(range, cx)?;
+        self.provenance.clear(range, cx);
 
-        Ok(&mut self.bytes[range.start.bytes_usize()..range.end().bytes_usize()])
+        &mut self.bytes[range.start.bytes_usize()..range.end().bytes_usize()]
     }
 
-    /// A raw pointer variant of `get_bytes_mut` that avoids invalidating existing aliases into this memory.
-    pub fn get_bytes_mut_ptr(
+    /// A raw pointer variant of `get_bytes_unchecked_for_overwrite` that avoids invalidating existing immutable aliases
+    /// into this memory.
+    pub fn get_bytes_unchecked_for_overwrite_ptr(
         &mut self,
         cx: &impl HasDataLayout,
         range: AllocRange,
-    ) -> AllocResult<*mut [u8]> {
+    ) -> *mut [u8] {
         self.mark_init(range, true);
-        self.provenance.clear(range, cx)?;
+        self.provenance.clear(range, cx);
 
         assert!(range.end().bytes_usize() <= self.bytes.len()); // need to do our own bounds-check
+        // Crucially, we go via `AllocBytes::as_mut_ptr`, not `AllocBytes::deref_mut`.
         let begin_ptr = self.bytes.as_mut_ptr().wrapping_add(range.start.bytes_usize());
         let len = range.end().bytes_usize() - range.start.bytes_usize();
-        Ok(ptr::slice_from_raw_parts_mut(begin_ptr, len))
+        ptr::slice_from_raw_parts_mut(begin_ptr, len)
+    }
+
+    /// This gives direct mutable access to the entire buffer, just exposing their internal state
+    /// without resetting anything. Directly exposes `AllocBytes::as_mut_ptr`. Only works if
+    /// `OFFSET_IS_ADDR` is true.
+    pub fn get_bytes_unchecked_raw_mut(&mut self) -> *mut u8 {
+        assert!(Prov::OFFSET_IS_ADDR);
+        self.bytes.as_mut_ptr()
+    }
+
+    /// This gives direct immutable access to the entire buffer, just exposing their internal state
+    /// without resetting anything. Directly exposes `AllocBytes::as_ptr`. Only works if
+    /// `OFFSET_IS_ADDR` is true.
+    pub fn get_bytes_unchecked_raw(&self) -> *const u8 {
+        assert!(Prov::OFFSET_IS_ADDR);
+        self.bytes.as_ptr()
     }
 }
 
@@ -497,8 +697,11 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
         read_provenance: bool,
     ) -> AllocResult<Scalar<Prov>> {
         // First and foremost, if anything is uninit, bail.
-        if self.init_mask.is_range_initialized(range).is_err() {
-            return Err(AllocError::InvalidUninitBytes(None));
+        if let Err(bad) = self.init_mask.is_range_initialized(range) {
+            return Err(AllocError::InvalidUninitBytes(Some(BadBytesAccess {
+                access: range,
+                bad,
+            })));
         }
 
         // Get the integer part of the result. We HAVE TO check provenance before returning this!
@@ -506,7 +709,7 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
         let bits = read_target_uint(cx.data_layout().endian, bytes).unwrap();
 
         if read_provenance {
-            assert_eq!(range.size, cx.data_layout().pointer_size);
+            assert_eq!(range.size, cx.data_layout().pointer_size());
 
             // When reading data with provenance, the easy case is finding provenance exactly where we
             // are reading, then we can put data and provenance back together and return that.
@@ -515,34 +718,60 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
                 let ptr = Pointer::new(prov, Size::from_bytes(bits));
                 return Ok(Scalar::from_pointer(ptr, cx));
             }
-
-            // If we can work on pointers byte-wise, join the byte-wise provenances.
-            if Prov::OFFSET_IS_ADDR {
-                let mut prov = self.provenance.get(range.start, cx);
-                for offset in Size::from_bytes(1)..range.size {
-                    let this_prov = self.provenance.get(range.start + offset, cx);
-                    prov = Prov::join(prov, this_prov);
-                }
-                // Now use this provenance.
-                let ptr = Pointer::new(prov, Size::from_bytes(bits));
-                return Ok(Scalar::from_maybe_pointer(ptr, cx));
+            // The other easy case is total absence of provenance.
+            if self.provenance.range_empty(range, cx) {
+                return Ok(Scalar::from_uint(bits, range.size));
             }
+            // If we get here, we have to check per-byte provenance, and join them together.
+            let prov = 'prov: {
+                if !Prov::OFFSET_IS_ADDR {
+                    // FIXME(#146291): We need to ensure that we don't mix different pointers with
+                    // the same provenance.
+                    return Err(AllocError::ReadPartialPointer(range.start));
+                }
+                // Initialize with first fragment. Must have index 0.
+                let Some((mut joint_prov, 0)) = self.provenance.get_byte(range.start, cx) else {
+                    break 'prov None;
+                };
+                // Update with the remaining fragments.
+                for offset in Size::from_bytes(1)..range.size {
+                    // Ensure there is provenance here and it has the right index.
+                    let Some((frag_prov, frag_idx)) =
+                        self.provenance.get_byte(range.start + offset, cx)
+                    else {
+                        break 'prov None;
+                    };
+                    // Wildcard provenance is allowed to come with any index (this is needed
+                    // for Miri's native-lib mode to work).
+                    if u64::from(frag_idx) != offset.bytes() && Some(frag_prov) != Prov::WILDCARD {
+                        break 'prov None;
+                    }
+                    // Merge this byte's provenance with the previous ones.
+                    joint_prov = match Prov::join(joint_prov, frag_prov) {
+                        Some(prov) => prov,
+                        None => break 'prov None,
+                    };
+                }
+                break 'prov Some(joint_prov);
+            };
+            if prov.is_none() && !Prov::OFFSET_IS_ADDR {
+                // There are some bytes with provenance here but overall the provenance does not add up.
+                // We need `OFFSET_IS_ADDR` to fall back to no-provenance here; without that option, we must error.
+                return Err(AllocError::ReadPartialPointer(range.start));
+            }
+            // We can use this provenance.
+            let ptr = Pointer::new(prov, Size::from_bytes(bits));
+            return Ok(Scalar::from_maybe_pointer(ptr, cx));
         } else {
             // We are *not* reading a pointer.
-            // If we can just ignore provenance, do exactly that.
-            if Prov::OFFSET_IS_ADDR {
+            // If we can just ignore provenance or there is none, that's easy.
+            if Prov::OFFSET_IS_ADDR || self.provenance.range_empty(range, cx) {
                 // We just strip provenance.
                 return Ok(Scalar::from_uint(bits, range.size));
             }
+            // There is some provenance and we don't have OFFSET_IS_ADDR. This doesn't work.
+            return Err(AllocError::ReadPointerAsInt(None));
         }
-
-        // Fallback path for when we cannot treat provenance bytewise or ignore it.
-        assert!(!Prov::OFFSET_IS_ADDR);
-        if !self.provenance.range_empty(range, cx) {
-            return Err(AllocError::ReadPointerAsBytes);
-        }
-        // There is no provenance, we can just return the bits.
-        Ok(Scalar::from_uint(bits, range.size))
     }
 
     /// Writes a *non-ZST* scalar.
@@ -561,22 +790,23 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
         assert!(self.mutability == Mutability::Mut);
 
         // `to_bits_or_ptr_internal` is the right method because we just want to store this data
-        // as-is into memory.
+        // as-is into memory. This also double-checks that `val.size()` matches `range.size`.
         let (bytes, provenance) = match val.to_bits_or_ptr_internal(range.size)? {
             Right(ptr) => {
-                let (provenance, offset) = ptr.into_parts();
+                let (provenance, offset) = ptr.into_raw_parts();
                 (u128::from(offset.bytes()), Some(provenance))
             }
             Left(data) => (data, None),
         };
 
         let endian = cx.data_layout().endian;
-        let dst = self.get_bytes_mut(cx, range)?;
+        // Yes we do overwrite all the bytes in `dst`.
+        let dst = self.get_bytes_unchecked_for_overwrite(cx, range);
         write_target_uint(endian, dst, bytes).unwrap();
 
         // See if we have to also store some provenance.
         if let Some(provenance) = provenance {
-            assert_eq!(range.size, cx.data_layout().pointer_size);
+            assert_eq!(range.size, cx.data_layout().pointer_size());
             self.provenance.insert_ptr(range.start, provenance, cx);
         }
 
@@ -584,10 +814,33 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     }
 
     /// Write "uninit" to the given memory range.
-    pub fn write_uninit(&mut self, cx: &impl HasDataLayout, range: AllocRange) -> AllocResult {
+    pub fn write_uninit(&mut self, cx: &impl HasDataLayout, range: AllocRange) {
         self.mark_init(range, false);
-        self.provenance.clear(range, cx)?;
-        return Ok(());
+        self.provenance.clear(range, cx);
+    }
+
+    /// Mark all bytes in the given range as initialised and reset the provenance
+    /// to wildcards. This entirely breaks the normal mechanisms for tracking
+    /// initialisation and is only provided for Miri operating in native-lib
+    /// mode. UB will be missed if the underlying bytes were not actually written to.
+    ///
+    /// If `range` is `None`, defaults to performing this on the whole allocation.
+    pub fn process_native_write(&mut self, cx: &impl HasDataLayout, range: Option<AllocRange>) {
+        let range = range.unwrap_or_else(|| AllocRange {
+            start: Size::ZERO,
+            size: Size::from_bytes(self.len()),
+        });
+        self.mark_init(range, true);
+        self.provenance.write_wildcards(cx, range);
+    }
+
+    /// Remove all provenance in the given memory range.
+    pub fn clear_provenance(&mut self, cx: &impl HasDataLayout, range: AllocRange) {
+        self.provenance.clear(range, cx);
+    }
+
+    pub fn provenance_merge_bytes(&mut self, cx: &impl HasDataLayout) -> bool {
+        self.provenance.merge_bytes(cx)
     }
 
     /// Applies a previously prepared provenance copy.
@@ -596,8 +849,13 @@ impl<Prov: Provenance, Extra, Bytes: AllocBytes> Allocation<Prov, Extra, Bytes> 
     ///
     /// This is dangerous to use as it can violate internal `Allocation` invariants!
     /// It only exists to support an efficient implementation of `mem_copy_repeatedly`.
-    pub fn provenance_apply_copy(&mut self, copy: ProvenanceCopy<Prov>) {
-        self.provenance.apply_copy(copy)
+    pub fn provenance_apply_copy(
+        &mut self,
+        copy: ProvenanceCopy<Prov>,
+        range: AllocRange,
+        repeat: u64,
+    ) {
+        self.provenance.apply_copy(copy, range, repeat)
     }
 
     /// Applies a previously prepared copy of the init mask.

@@ -1,6 +1,6 @@
 // Test-pass variant of #69136
 
-// check-pass
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 
@@ -18,6 +18,7 @@ impl WithAssoc for () {
 
 type Return<'a> = impl WithAssoc<AssocType = impl Sized + 'a>;
 
+#[define_opaque(Return)]
 fn my_fun<'a>() -> Return<'a> {}
 
 fn main() {}

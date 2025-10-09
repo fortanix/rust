@@ -4,8 +4,9 @@
 // for expressions occurring in function signatures, as in the `foo` example
 // below, leading to an ICE.
 
-// check-pass
-// compile-flags: -Zunpretty=hir,typed
+//@ check-pass
+//@ compile-flags: -Zunpretty=hir,typed
+//@ edition: 2015
 #![allow(dead_code)]
 
 fn main() {}

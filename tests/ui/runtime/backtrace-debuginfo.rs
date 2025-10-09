@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 // We disable tail merging here because it can't preserve debuginfo and thus
 // potentially breaks the backtraces. Also, subtle changes can decide whether
 // tail merging succeeds, so the test might work today but fail tomorrow due to a
@@ -6,12 +6,20 @@
 // Unfortunately, LLVM has no "disable" option for this, so we have to set
 // "enable" to 0 instead.
 
-// compile-flags:-g -Copt-level=0 -Cllvm-args=-enable-tail-merge=0
-// compile-flags:-Cforce-frame-pointers=yes
-// compile-flags:-Cstrip=none
-// ignore-emscripten spawning processes is not supported
-// ignore-sgx no processes
-// ignore-fuchsia Backtrace not symbolized, trace different line alignment
+//@ compile-flags:-g -Copt-level=0 -Cllvm-args=-enable-tail-merge=0
+//@ compile-flags:-Cforce-frame-pointers=yes
+//@ compile-flags:-Cstrip=none
+//@ needs-subprocess
+//@ ignore-fuchsia Backtrace not symbolized, trace different line alignment
+//@ ignore-ios needs the `.dSYM` files to be moved to the device
+//@ ignore-tvos needs the `.dSYM` files to be moved to the device
+//@ ignore-watchos needs the `.dSYM` files to be moved to the device
+//@ ignore-visionos needs the `.dSYM` files to be moved to the device
+
+// FIXME(#117097): backtrace (possibly unwinding mechanism) seems to be different on at least
+// `i686-mingw` (32-bit windows-gnu)? cc #128911.
+//@ ignore-windows-gnu
+//@ ignore-backends: gcc
 
 use std::env;
 
@@ -39,9 +47,14 @@ macro_rules! dump_and_die {
         // there, even on i686-pc-windows-msvc. We do the best we can in
         // rust-lang/rust to test it as well, but sometimes we just gotta keep
         // landing PRs.
+        //
+        // aarch64-msvc/arm64ec-msvc is broken as its backtraces are truncated.
+        // See https://github.com/rust-lang/rust/issues/140489
         if cfg!(any(target_os = "android",
                     all(target_os = "linux", target_arch = "arm"),
                     all(target_env = "msvc", target_arch = "x86"),
+                    all(target_env = "msvc", target_arch = "aarch64"),
+                    all(target_env = "msvc", target_arch = "arm64ec"),
                     target_os = "freebsd",
                     target_os = "dragonfly",
                     target_os = "openbsd")) {

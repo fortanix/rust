@@ -3,9 +3,13 @@
 type Closure = impl Fn() -> u64;
 struct Anonymous(Closure);
 
-fn main() {
+#[define_opaque(Closure)]
+fn bop() {
     let y = || -> Closure { || 3 };
-    Anonymous(|| { //~ ERROR mismatched types
-        3 //~^ ERROR mismatched types
+    Anonymous(|| {
+        //~^ ERROR mismatched types
+        3 //~^^ ERROR mismatched types
     })
 }
+
+fn main() {}

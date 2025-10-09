@@ -1,4 +1,4 @@
-// build-pass
+//@ build-pass
 
 // This test is the same code as in ui/symbol-names/issue-60925.rs but this checks that the
 // reproduction compiles successfully and doesn't segfault, whereas that test just checks that the
@@ -12,13 +12,13 @@ mod llvm {
 mod foo {
     pub(crate) struct Foo<T>(T);
 
-    impl Foo<::llvm::Foo> {
+    impl Foo<crate::llvm::Foo> {
         pub(crate) fn foo() {
             for _ in 0..0 {
-                for _ in &[::dummy()] {
-                    ::dummy();
-                    ::dummy();
-                    ::dummy();
+                for _ in &[crate::dummy()] {
+                    crate::dummy();
+                    crate::dummy();
+                    crate::dummy();
                 }
             }
         }

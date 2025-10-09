@@ -1,8 +1,8 @@
-// run-pass
+//@ run-pass
+//@ ignore-backends: gcc
+
 #![allow(dead_code)]
 #![allow(improper_ctypes)]
-
-// ignore-wasm32-bare no libc to test ffi with
 
 #[derive(Copy, Clone)]
 pub struct Quad {

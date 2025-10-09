@@ -22,9 +22,9 @@ struct S<T> { a: T }
 fn f<T>(_: &[T]) -> T { loop {} }
 fn g<T>(_: S<&[T]>) -> T { loop {} }
 
-fn gen<T>() -> *mut [T; 2] { loop {} }
+fn generate<T>() -> *mut [T; 2] { loop {} }
 fn test1<U>() -> *mut [U] {
-    gen()
+    generate()
 }
 
 fn test2() {
@@ -49,7 +49,7 @@ fn let_stmt_coerce() {
 //- minicore: coerce_unsized
 fn test() {
     let x: &[isize] = &[1];
-                   // ^^^^ adjustments: Deref(None), Borrow(Ref(Not)), Pointer(Unsize)
+                   // ^^^^ adjustments: Deref(None), Borrow(Ref('?1, Not)), Pointer(Unsize)
     let x: *const [isize] = &[1];
                          // ^^^^ adjustments: Deref(None), Borrow(RawPtr(Not)), Pointer(Unsize)
 }
@@ -96,7 +96,7 @@ fn foo<T>(x: &[T]) -> &[T] { x }
 fn test() {
     let x = if true {
         foo(&[1])
-         // ^^^^ adjustments: Deref(None), Borrow(Ref(Not)), Pointer(Unsize)
+         // ^^^^ adjustments: Deref(None), Borrow(Ref('?1, Not)), Pointer(Unsize)
     } else {
         &[1]
     };
@@ -148,7 +148,7 @@ fn foo<T>(x: &[T]) -> &[T] { x }
 fn test(i: i32) {
     let x = match i {
         2 => foo(&[2]),
-              // ^^^^ adjustments: Deref(None), Borrow(Ref(Not)), Pointer(Unsize)
+              // ^^^^ adjustments: Deref(None), Borrow(Ref('?1, Not)), Pointer(Unsize)
         1 => &[1],
         _ => &[3],
     };
@@ -177,22 +177,23 @@ fn test(i: i32) {
 
 #[test]
 fn coerce_merge_one_by_one1() {
-    cov_mark::check!(coerce_merge_fail_fallback);
-
     check(
         r"
 fn test() {
     let t = &mut 1;
     let x = match 1 {
         1 => t as *mut i32,
-        2 => t as &i32,
-           //^^^^^^^^^ expected *mut i32, got &i32
+           //^ adjustments: Deref(None), Borrow(RawPtr(Mut))
         _ => t as *const i32,
-          // ^^^^^^^^^^^^^^^ adjustments: Pointer(MutToConstPointer)
-
     };
     x;
-  //^ type: *const i32
+ // ^ type: *const i32
+    let x = match 1 {
+        1 => t as *mut i32,
+        2 => t as &i32,
+           //^^^^^^^^^ expected *mut i32, got &'? i32
+        _ => t as *const i32,
+    };
 
 }
         ",
@@ -258,7 +259,6 @@ fn test() {
 
 #[test]
 fn coerce_autoderef_block() {
-    // FIXME: We should know mutability in overloaded deref
     check_no_mismatches(
         r#"
 //- minicore: deref
@@ -268,7 +268,7 @@ fn takes_ref_str(x: &str) {}
 fn returns_string() -> String { loop {} }
 fn test() {
     takes_ref_str(&{ returns_string() });
-               // ^^^^^^^^^^^^^^^^^^^^^ adjustments: Deref(None), Deref(Some(OverloadedDeref(None))), Borrow(Ref(Not))
+               // ^^^^^^^^^^^^^^^^^^^^^ adjustments: Deref(None), Deref(Some(OverloadedDeref(Some(Not)))), Borrow(Ref('{error}, Not))
 }
 "#,
     );
@@ -278,17 +278,19 @@ fn test() {
 fn coerce_autoderef_implication_1() {
     check_no_mismatches(
         r"
-//- minicore: deref
-struct Foo<T>;
+//- minicore: deref, phantom_data
+use core::marker::PhantomData;
+
+struct Foo<T>(PhantomData<T>);
 impl core::ops::Deref for Foo<u32> { type Target = (); }
 
 fn takes_ref_foo<T>(x: &Foo<T>) {}
 fn test() {
-    let foo = Foo;
+    let foo = Foo(PhantomData);
       //^^^ type: Foo<{unknown}>
     takes_ref_foo(&foo);
 
-    let foo = Foo;
+    let foo = Foo(PhantomData);
       //^^^ type: Foo<u32>
     let _: &() = &foo;
 }",
@@ -299,16 +301,18 @@ fn test() {
 fn coerce_autoderef_implication_2() {
     check(
         r"
-//- minicore: deref
-struct Foo<T>;
+//- minicore: deref, phantom_data
+use core::marker::PhantomData;
+
+struct Foo<T>(PhantomData<T>);
 impl core::ops::Deref for Foo<u32> { type Target = (); }
 
 fn takes_ref_foo<T>(x: &Foo<T>) {}
 fn test() {
-    let foo = Foo;
+    let foo = Foo(PhantomData);
       //^^^ type: Foo<{unknown}>
-    let _: &u32 = &Foo;
-                //^^^^ expected &u32, got &Foo<{unknown}>
+    let _: &u32 = &Foo(PhantomData);
+                //^^^^^^^^^^^^^^^^^ expected &'? u32, got &'? Foo<{unknown}>
 }",
     );
 }
@@ -329,7 +333,7 @@ fn foo() {
 }
 
 #[test]
-fn generator_yield_return_coerce() {
+fn coroutine_yield_return_coerce() {
     check_no_mismatches(
         r#"
 fn test() {
@@ -397,9 +401,37 @@ fn test() {
 }
 
 #[test]
-fn coerce_fn_items_in_match_arms() {
-    cov_mark::check!(coerce_fn_reification);
+fn coerce_fn_item_to_fn_ptr_in_array() {
+    check_no_mismatches(
+        r"
+fn foo(x: u32) -> isize { 1 }
+fn bar(x: u32) -> isize { 1 }
+fn test() {
+    let f = [foo, bar];
+          // ^^^ adjustments: Pointer(ReifyFnPointer)
+}",
+    );
+}
 
+#[test]
+fn coerce_fn_items_in_match_arms() {
+    check_no_mismatches(
+        r"
+fn foo1(x: u32) -> isize { 1 }
+fn foo2(x: u32) -> isize { 2 }
+fn foo3(x: u32) -> isize { 3 }
+fn test() {
+    let x = match 1 {
+        1 => foo1,
+          // ^^^^ adjustments: Pointer(ReifyFnPointer)
+        2 => foo2,
+          // ^^^^ adjustments: Pointer(ReifyFnPointer)
+        _ => foo3,
+          // ^^^^ adjustments: Pointer(ReifyFnPointer)
+    };
+    x;
+}",
+    );
     check_types(
         r"
 fn foo1(x: u32) -> isize { 1 }
@@ -456,6 +488,8 @@ fn test() {
     );
 }
 
+// FIXME(next-solver): We could learn more from the `&S` -> `&dyn Foo<i8, _>` coercion if we followed the rustc model
+// where unsized is successful if all unsizing trait goals are certain (and non-unsizing goals are delayed).
 #[test]
 fn coerce_unsize_trait_object_simple() {
     check_types(
@@ -475,8 +509,8 @@ fn test() {
                                 //^ S<i8, i16>
     let obj: &dyn Bar<_, i8, i16> = &S;
                                    //^ S<i8, i16>
-    let obj: &dyn Foo<i8, _> = &S;
-                              //^ S<i8, {unknown}>
+    //let obj: &dyn Foo<i8, _> = &S;
+                              // S<{unknown}, {unknown}>
 }"#,
     );
 }
@@ -507,7 +541,6 @@ fn test() {
 
 #[test]
 fn coerce_unsize_generic() {
-    // FIXME: fix the type mismatches here
     check(
         r#"
 //- minicore: coerce_unsized
@@ -516,9 +549,9 @@ struct Bar<T>(Foo<T>);
 
 fn test() {
     let _: &Foo<[usize]> = &Foo { t: [1, 2, 3] };
-                                   //^^^^^^^^^ expected [usize], got [usize; 3]
+                         //^^^^^^^^^^^^^^^^^^^^^ type: &'? Foo<[usize; 3]>
     let _: &Bar<[usize]> = &Bar(Foo { t: [1, 2, 3] });
-                                       //^^^^^^^^^ expected [usize], got [usize; 3]
+                         //^^^^^^^^^^^^^^^^^^^^^^^^^^ type: &'? Bar<[usize; 3]>
 }
 "#,
     );
@@ -534,7 +567,7 @@ trait Foo {}
 fn test(f: impl Foo, g: &(impl Foo + ?Sized)) {
     let _: &dyn Foo = &f;
     let _: &dyn Foo = g;
-                    //^ expected &dyn Foo, got &impl Foo + ?Sized
+                    //^ expected &'? (dyn Foo + '?), got &'? impl Foo + ?Sized
 }
         "#,
     );
@@ -546,8 +579,9 @@ fn two_closures_lub() {
         r#"
 fn foo(c: i32) {
     let add = |a: i32, b: i32| a + b;
+            //^^^^^^^^^^^^^^^^^^^^^^ impl Fn(i32, i32) -> i32
     let sub = |a, b| a - b;
-            //^^^^^^^^^^^^ |i32, i32| -> i32
+            //^^^^^^^^^^^^ impl Fn(i32, i32) -> i32
     if c > 42 { add } else { sub };
   //^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ fn(i32, i32) -> i32
 }
@@ -653,9 +687,9 @@ fn coerce_unsize_expected_type_2() {
     check_no_mismatches(
         r#"
 //- minicore: coerce_unsized
-struct InFile<T>;
+struct InFile<T>(T);
 impl<T> InFile<T> {
-    fn with_value<U>(self, value: U) -> InFile<U> { InFile }
+    fn with_value<U>(self, value: U) -> InFile<U> { InFile(loop {}) }
 }
 struct RecordField;
 trait AstNode {}
@@ -664,7 +698,7 @@ impl AstNode for RecordField {}
 fn takes_dyn(it: InFile<&dyn AstNode>) {}
 
 fn test() {
-    let x: InFile<()> = InFile;
+    let x: InFile<()> = InFile(());
     let n = &RecordField;
     takes_dyn(x.with_value(n));
 }
@@ -799,11 +833,11 @@ struct V<T> { t: T }
 fn main() {
     let a: V<&dyn Tr>;
     (a,) = V { t: &S };
-  //^^^^expected V<&S>, got (V<&dyn Tr>,)
+  //^^^^expected V<&'? S>, got (V<&'? (dyn Tr + '?)>,)
 
     let mut a: V<&dyn Tr> = V { t: &S };
     (a,) = V { t: &S };
-  //^^^^expected V<&S>, got (V<&dyn Tr>,)
+  //^^^^expected V<&'? S>, got (V<&'? (dyn Tr + '?)>,)
 }
         "#,
     );
@@ -820,8 +854,8 @@ impl core::cmp::PartialEq for Struct {
 }
 fn test() {
     Struct == Struct;
- // ^^^^^^ adjustments: Borrow(Ref(Not))
-           // ^^^^^^ adjustments: Borrow(Ref(Not))
+ // ^^^^^^ adjustments: Borrow(Ref('{error}, Not))
+           // ^^^^^^ adjustments: Borrow(Ref('{error}, Not))
 }",
     );
 }
@@ -837,8 +871,95 @@ impl core::ops::AddAssign for Struct {
 }
 fn test() {
     Struct += Struct;
- // ^^^^^^ adjustments: Borrow(Ref(Mut))
+ // ^^^^^^ adjustments: Borrow(Ref('{error}, Mut))
            // ^^^^^^ adjustments:
 }",
+    );
+}
+
+#[test]
+fn adjust_index() {
+    check_no_mismatches(
+        r"
+//- minicore: index, slice, coerce_unsized
+fn test() {
+    let x = [1, 2, 3];
+    x[2] = 6;
+ // ^ adjustments: Borrow(Ref('?0, Mut))
+}
+    ",
+    );
+    check_no_mismatches(
+        r"
+//- minicore: index
+struct Struct;
+impl core::ops::Index<usize> for Struct {
+    type Output = ();
+
+    fn index(&self, index: usize) -> &Self::Output { &() }
+}
+struct StructMut;
+
+impl core::ops::Index<usize> for StructMut {
+    type Output = ();
+
+    fn index(&self, index: usize) -> &Self::Output { &() }
+}
+impl core::ops::IndexMut<usize> for StructMut {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output { &mut () }
+}
+fn test() {
+    Struct[0];
+ // ^^^^^^ adjustments: Borrow(Ref('?0, Not))
+    StructMut[0];
+ // ^^^^^^^^^ adjustments: Borrow(Ref('?1, Not))
+    &mut StructMut[0];
+      // ^^^^^^^^^ adjustments: Borrow(Ref('?2, Mut))
+}",
+    );
+}
+
+#[test]
+fn regression_14443_dyn_coercion_block_impls() {
+    check_no_mismatches(
+        r#"
+//- minicore: coerce_unsized
+trait T {}
+
+fn dyn_t(d: &dyn T) {}
+
+fn main() {
+    struct A;
+    impl T for A {}
+
+    let a = A;
+
+    let b = {
+        struct B;
+        impl T for B {}
+
+        B
+    };
+
+    dyn_t(&a);
+    dyn_t(&b);
+}
+"#,
+    )
+}
+
+#[test]
+fn regression_18626() {
+    check_no_mismatches(
+        r#"
+fn f() {
+    trait T {
+        fn f() {}
+    }
+    impl T for i32 {}
+    impl T for u32 {}
+    &[i32::f, u32::f] as &[fn()];
+}
+    "#,
     );
 }

@@ -1,234 +1,148 @@
-use crate::MirPass;
-use rustc_hir::def_id::DefId;
-use rustc_hir::lang_items::LangItem;
+use rustc_abi::Align;
 use rustc_index::IndexVec;
+use rustc_middle::mir::interpret::Scalar;
+use rustc_middle::mir::visit::PlaceContext;
 use rustc_middle::mir::*;
-use rustc_middle::mir::{
-    interpret::{ConstValue, Scalar},
-    visit::{PlaceContext, Visitor},
-};
-use rustc_middle::ty::{Ty, TyCtxt, TypeAndMut};
+use rustc_middle::ty::{Ty, TyCtxt};
 use rustc_session::Session;
 
-pub struct CheckAlignment;
+use crate::check_pointers::{BorrowedFieldProjectionMode, PointerCheck, check_pointers};
 
-impl<'tcx> MirPass<'tcx> for CheckAlignment {
+pub(super) struct CheckAlignment;
+
+impl<'tcx> crate::MirPass<'tcx> for CheckAlignment {
     fn is_enabled(&self, sess: &Session) -> bool {
-        sess.opts.debug_assertions
+        sess.ub_checks()
     }
 
     fn run_pass(&self, tcx: TyCtxt<'tcx>, body: &mut Body<'tcx>) {
-        // This pass emits new panics. If for whatever reason we do not have a panic
-        // implementation, running this pass may cause otherwise-valid code to not compile.
-        if tcx.lang_items().get(LangItem::PanicImpl).is_none() {
-            return;
-        }
+        // Skip trivially aligned place types.
+        let excluded_pointees = [tcx.types.bool, tcx.types.i8, tcx.types.u8];
 
-        let basic_blocks = body.basic_blocks.as_mut();
-        let local_decls = &mut body.local_decls;
+        // When checking the alignment of references to field projections (`&(*ptr).a`),
+        // we need to make sure that the reference is aligned according to the field type
+        // and not to the pointer type.
+        check_pointers(
+            tcx,
+            body,
+            &excluded_pointees,
+            insert_alignment_check,
+            BorrowedFieldProjectionMode::FollowProjections,
+        );
+    }
 
-        for block in (0..basic_blocks.len()).rev() {
-            let block = block.into();
-            for statement_index in (0..basic_blocks[block].statements.len()).rev() {
-                let location = Location { block, statement_index };
-                let statement = &basic_blocks[block].statements[statement_index];
-                let source_info = statement.source_info;
-
-                let mut finder = PointerFinder {
-                    local_decls,
-                    tcx,
-                    pointers: Vec::new(),
-                    def_id: body.source.def_id(),
-                };
-                for (pointer, pointee_ty) in finder.find_pointers(statement) {
-                    debug!("Inserting alignment check for {:?}", pointer.ty(&*local_decls, tcx).ty);
-
-                    let new_block = split_block(basic_blocks, location);
-                    insert_alignment_check(
-                        tcx,
-                        local_decls,
-                        &mut basic_blocks[block],
-                        pointer,
-                        pointee_ty,
-                        source_info,
-                        new_block,
-                    );
-                }
-            }
-        }
+    fn is_required(&self) -> bool {
+        true
     }
 }
 
-impl<'tcx, 'a> PointerFinder<'tcx, 'a> {
-    fn find_pointers(&mut self, statement: &Statement<'tcx>) -> Vec<(Place<'tcx>, Ty<'tcx>)> {
-        self.pointers.clear();
-        self.visit_statement(statement, Location::START);
-        core::mem::take(&mut self.pointers)
-    }
-}
-
-struct PointerFinder<'tcx, 'a> {
-    local_decls: &'a mut LocalDecls<'tcx>,
-    tcx: TyCtxt<'tcx>,
-    def_id: DefId,
-    pointers: Vec<(Place<'tcx>, Ty<'tcx>)>,
-}
-
-impl<'tcx, 'a> Visitor<'tcx> for PointerFinder<'tcx, 'a> {
-    fn visit_place(&mut self, place: &Place<'tcx>, context: PlaceContext, _location: Location) {
-        if let PlaceContext::NonUse(_) = context {
-            return;
-        }
-        if !place.is_indirect() {
-            return;
-        }
-
-        let pointer = Place::from(place.local);
-        let pointer_ty = pointer.ty(&*self.local_decls, self.tcx).ty;
-
-        // We only want to check unsafe pointers
-        if !pointer_ty.is_unsafe_ptr() {
-            trace!("Indirect, but not an unsafe ptr, not checking {:?}", pointer_ty);
-            return;
-        }
-
-        let Some(pointee) = pointer_ty.builtin_deref(true) else {
-            debug!("Indirect but no builtin deref: {:?}", pointer_ty);
-            return;
-        };
-        let mut pointee_ty = pointee.ty;
-        if pointee_ty.is_array() || pointee_ty.is_slice() || pointee_ty.is_str() {
-            pointee_ty = pointee_ty.sequence_element_type(self.tcx);
-        }
-
-        if !pointee_ty.is_sized(self.tcx, self.tcx.param_env_reveal_all_normalized(self.def_id)) {
-            debug!("Unsafe pointer, but unsized: {:?}", pointer_ty);
-            return;
-        }
-
-        if [self.tcx.types.bool, self.tcx.types.i8, self.tcx.types.u8, self.tcx.types.str_]
-            .contains(&pointee_ty)
-        {
-            debug!("Trivially aligned pointee type: {:?}", pointer_ty);
-            return;
-        }
-
-        self.pointers.push((pointer, pointee_ty))
-    }
-}
-
-fn split_block(
-    basic_blocks: &mut IndexVec<BasicBlock, BasicBlockData<'_>>,
-    location: Location,
-) -> BasicBlock {
-    let block_data = &mut basic_blocks[location.block];
-
-    // Drain every statement after this one and move the current terminator to a new basic block
-    let new_block = BasicBlockData {
-        statements: block_data.statements.split_off(location.statement_index),
-        terminator: block_data.terminator.take(),
-        is_cleanup: block_data.is_cleanup,
-    };
-
-    basic_blocks.push(new_block)
-}
-
+/// Inserts the actual alignment check's logic. Returns a
+/// [AssertKind::MisalignedPointerDereference] on failure.
 fn insert_alignment_check<'tcx>(
     tcx: TyCtxt<'tcx>,
-    local_decls: &mut IndexVec<Local, LocalDecl<'tcx>>,
-    block_data: &mut BasicBlockData<'tcx>,
     pointer: Place<'tcx>,
     pointee_ty: Ty<'tcx>,
+    _context: PlaceContext,
+    local_decls: &mut IndexVec<Local, LocalDecl<'tcx>>,
+    stmts: &mut Vec<Statement<'tcx>>,
     source_info: SourceInfo,
-    new_block: BasicBlock,
-) {
-    // Cast the pointer to a *const ()
-    let const_raw_ptr = tcx.mk_ptr(TypeAndMut { ty: tcx.types.unit, mutbl: Mutability::Not });
+) -> PointerCheck<'tcx> {
+    // Cast the pointer to a *const ().
+    let const_raw_ptr = Ty::new_imm_ptr(tcx, tcx.types.unit);
     let rvalue = Rvalue::Cast(CastKind::PtrToPtr, Operand::Copy(pointer), const_raw_ptr);
     let thin_ptr = local_decls.push(LocalDecl::with_source_info(const_raw_ptr, source_info)).into();
-    block_data
-        .statements
-        .push(Statement { source_info, kind: StatementKind::Assign(Box::new((thin_ptr, rvalue))) });
+    stmts.push(Statement::new(source_info, StatementKind::Assign(Box::new((thin_ptr, rvalue)))));
 
-    // Transmute the pointer to a usize (equivalent to `ptr.addr()`)
+    // Transmute the pointer to a usize (equivalent to `ptr.addr()`).
     let rvalue = Rvalue::Cast(CastKind::Transmute, Operand::Copy(thin_ptr), tcx.types.usize);
     let addr = local_decls.push(LocalDecl::with_source_info(tcx.types.usize, source_info)).into();
-    block_data
-        .statements
-        .push(Statement { source_info, kind: StatementKind::Assign(Box::new((addr, rvalue))) });
+    stmts.push(Statement::new(source_info, StatementKind::Assign(Box::new((addr, rvalue)))));
 
     // Get the alignment of the pointee
     let alignment =
         local_decls.push(LocalDecl::with_source_info(tcx.types.usize, source_info)).into();
     let rvalue = Rvalue::NullaryOp(NullOp::AlignOf, pointee_ty);
-    block_data.statements.push(Statement {
-        source_info,
-        kind: StatementKind::Assign(Box::new((alignment, rvalue))),
-    });
+    stmts.push(Statement::new(source_info, StatementKind::Assign(Box::new((alignment, rvalue)))));
 
     // Subtract 1 from the alignment to get the alignment mask
     let alignment_mask =
         local_decls.push(LocalDecl::with_source_info(tcx.types.usize, source_info)).into();
-    let one = Operand::Constant(Box::new(Constant {
+    let one = Operand::Constant(Box::new(ConstOperand {
         span: source_info.span,
         user_ty: None,
-        literal: ConstantKind::Val(
-            ConstValue::Scalar(Scalar::from_target_usize(1, &tcx)),
-            tcx.types.usize,
-        ),
+        const_: Const::Val(ConstValue::Scalar(Scalar::from_target_usize(1, &tcx)), tcx.types.usize),
     }));
-    block_data.statements.push(Statement {
+    stmts.push(Statement::new(
         source_info,
-        kind: StatementKind::Assign(Box::new((
+        StatementKind::Assign(Box::new((
             alignment_mask,
             Rvalue::BinaryOp(BinOp::Sub, Box::new((Operand::Copy(alignment), one))),
         ))),
-    });
+    ));
+
+    // If this target does not have reliable alignment, further limit the mask by anding it with
+    // the mask for the highest reliable alignment.
+    #[allow(irrefutable_let_patterns)]
+    if let max_align = tcx.sess.target.max_reliable_alignment()
+        && max_align < Align::MAX
+    {
+        let max_mask = max_align.bytes() - 1;
+        let max_mask = Operand::Constant(Box::new(ConstOperand {
+            span: source_info.span,
+            user_ty: None,
+            const_: Const::Val(
+                ConstValue::Scalar(Scalar::from_target_usize(max_mask, &tcx)),
+                tcx.types.usize,
+            ),
+        }));
+        stmts.push(Statement::new(
+            source_info,
+            StatementKind::Assign(Box::new((
+                alignment_mask,
+                Rvalue::BinaryOp(
+                    BinOp::BitAnd,
+                    Box::new((Operand::Copy(alignment_mask), max_mask)),
+                ),
+            ))),
+        ));
+    }
 
     // BitAnd the alignment mask with the pointer
     let alignment_bits =
         local_decls.push(LocalDecl::with_source_info(tcx.types.usize, source_info)).into();
-    block_data.statements.push(Statement {
+    stmts.push(Statement::new(
         source_info,
-        kind: StatementKind::Assign(Box::new((
+        StatementKind::Assign(Box::new((
             alignment_bits,
             Rvalue::BinaryOp(
                 BinOp::BitAnd,
                 Box::new((Operand::Copy(addr), Operand::Copy(alignment_mask))),
             ),
         ))),
-    });
+    ));
 
     // Check if the alignment bits are all zero
     let is_ok = local_decls.push(LocalDecl::with_source_info(tcx.types.bool, source_info)).into();
-    let zero = Operand::Constant(Box::new(Constant {
+    let zero = Operand::Constant(Box::new(ConstOperand {
         span: source_info.span,
         user_ty: None,
-        literal: ConstantKind::Val(
-            ConstValue::Scalar(Scalar::from_target_usize(0, &tcx)),
-            tcx.types.usize,
-        ),
+        const_: Const::Val(ConstValue::Scalar(Scalar::from_target_usize(0, &tcx)), tcx.types.usize),
     }));
-    block_data.statements.push(Statement {
+    stmts.push(Statement::new(
         source_info,
-        kind: StatementKind::Assign(Box::new((
+        StatementKind::Assign(Box::new((
             is_ok,
             Rvalue::BinaryOp(BinOp::Eq, Box::new((Operand::Copy(alignment_bits), zero.clone()))),
         ))),
-    });
+    ));
 
-    // Set this block's terminator to our assert, continuing to new_block if we pass
-    block_data.terminator = Some(Terminator {
-        source_info,
-        kind: TerminatorKind::Assert {
-            cond: Operand::Copy(is_ok),
-            expected: true,
-            target: new_block,
-            msg: Box::new(AssertKind::MisalignedPointerDereference {
-                required: Operand::Copy(alignment),
-                found: Operand::Copy(addr),
-            }),
-            unwind: UnwindAction::Terminate,
-        },
-    });
+    // Emit a check that asserts on the alignment and otherwise triggers a
+    // AssertKind::MisalignedPointerDereference.
+    PointerCheck {
+        cond: Operand::Copy(is_ok),
+        assert_kind: Box::new(AssertKind::MisalignedPointerDereference {
+            required: Operand::Copy(alignment),
+            found: Operand::Copy(addr),
+        }),
+    }
 }

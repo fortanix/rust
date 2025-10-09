@@ -1,13 +1,13 @@
 use crate::assist_context::{AssistContext, Assists};
 use hir::{HasVisibility, HirDisplay, Module};
 use ide_db::{
-    assists::{AssistId, AssistKind},
-    base_db::{FileId, Upcast},
+    FileId,
+    assists::AssistId,
     defs::{Definition, NameRefClass},
 };
 use syntax::{
-    ast::{self, edit::IndentLevel, NameRef},
     AstNode, Direction, SyntaxKind, TextSize,
+    ast::{self, NameRef, edit::IndentLevel},
 };
 
 // Assist: generate_constant
@@ -46,9 +46,14 @@ pub(crate) fn generate_constant(acc: &mut Assists, ctx: &AssistContext<'_>) -> O
     let ty = ctx.sema.type_of_expr(&expr)?;
     let scope = ctx.sema.scope(statement.syntax())?;
     let constant_module = scope.module();
-    let type_name = ty.original().display_source_code(ctx.db(), constant_module.into()).ok()?;
+    let type_name =
+        ty.original().display_source_code(ctx.db(), constant_module.into(), false).ok()?;
     let target = statement.syntax().parent()?.text_range();
     let path = constant_token.syntax().ancestors().find_map(ast::Path::cast)?;
+    if path.parent_path().is_some() {
+        cov_mark::hit!(not_last_path_segment);
+        return None;
+    }
 
     let name_refs = path.segments().map(|s| s.name_ref());
     let mut outer_exists = false;
@@ -58,7 +63,7 @@ pub(crate) fn generate_constant(acc: &mut Assists, ctx: &AssistContext<'_>) -> O
         let name_ref_value = name_ref?;
         let name_ref_class = NameRefClass::classify(&ctx.sema, &name_ref_value);
         match name_ref_class {
-            Some(NameRefClass::Definition(Definition::Module(m))) => {
+            Some(NameRefClass::Definition(Definition::Module(m), _)) => {
                 if !m.visibility(ctx.sema.db).is_visible_from(ctx.sema.db, constant_module.into()) {
                     return None;
                 }
@@ -82,17 +87,12 @@ pub(crate) fn generate_constant(acc: &mut Assists, ctx: &AssistContext<'_>) -> O
         );
 
     let text = get_text_for_generate_constant(not_exist_name_ref, indent, outer_exists, type_name)?;
-    acc.add(
-        AssistId("generate_constant", AssistKind::QuickFix),
-        "Generate constant",
-        target,
-        |builder| {
-            if let Some(file_id) = file_id {
-                builder.edit_file(file_id);
-            }
-            builder.insert(offset, format!("{text}{post_string}"));
-        },
-    )
+    acc.add(AssistId::quick_fix("generate_constant"), "Generate constant", target, |builder| {
+        if let Some(file_id) = file_id {
+            builder.edit_file(file_id);
+        }
+        builder.insert(offset, format!("{text}{post_string}"));
+    })
 }
 
 fn get_text_for_generate_constant(
@@ -102,14 +102,14 @@ fn get_text_for_generate_constant(
     type_name: String,
 ) -> Option<String> {
     let constant_token = not_exist_name_ref.pop()?;
-    let vis = if not_exist_name_ref.len() == 0 && !outer_exists { "" } else { "\npub " };
+    let vis = if not_exist_name_ref.is_empty() && !outer_exists { "" } else { "\npub " };
     let mut text = format!("{vis}const {constant_token}: {type_name} = $0;");
     while let Some(name_ref) = not_exist_name_ref.pop() {
-        let vis = if not_exist_name_ref.len() == 0 && !outer_exists { "" } else { "\npub " };
-        text = text.replace("\n", "\n    ");
+        let vis = if not_exist_name_ref.is_empty() && !outer_exists { "" } else { "\npub " };
+        text = text.replace('\n', "\n    ");
         text = format!("{vis}mod {name_ref} {{{text}\n}}");
     }
-    Some(text.replace("\n", &format!("\n{indent}")))
+    Some(text.replace('\n', &format!("\n{indent}")))
 }
 
 fn target_data_for_generate_constant(
@@ -122,7 +122,7 @@ fn target_data_for_generate_constant(
         return None;
     }
     let in_file_source = current_module.definition_source(ctx.sema.db);
-    let file_id = in_file_source.file_id.original_file(ctx.sema.db.upcast());
+    let file_id = in_file_source.file_id.original_file(ctx.sema.db);
     match in_file_source.value {
         hir::ModuleSource::Module(module_node) => {
             let indent = IndentLevel::from_node(module_node.syntax());
@@ -131,13 +131,12 @@ fn target_data_for_generate_constant(
 
             let siblings_has_newline = l_curly_token
                 .siblings_with_tokens(Direction::Next)
-                .find(|it| it.kind() == SyntaxKind::WHITESPACE && it.to_string().contains("\n"))
-                .is_some();
+                .any(|it| it.kind() == SyntaxKind::WHITESPACE && it.to_string().contains('\n'));
             let post_string =
                 if siblings_has_newline { format!("{indent}") } else { format!("\n{indent}") };
-            Some((offset, indent + 1, Some(file_id), post_string))
+            Some((offset, indent + 1, Some(file_id.file_id(ctx.db())), post_string))
         }
-        _ => Some((TextSize::from(0), 0.into(), Some(file_id), "\n".into())),
+        _ => Some((TextSize::from(0), 0.into(), Some(file_id.file_id(ctx.db())), "\n".into())),
     }
 }
 
@@ -249,6 +248,18 @@ fn bar() -> i32 {
 }
 fn bar() -> i32 {
     foo::goo::A_CONSTANT
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_wont_apply_when_not_last_path_segment() {
+        cov_mark::check!(not_last_path_segment);
+        check_assist_not_applicable(
+            generate_constant,
+            r#"mod foo {}
+fn bar() -> i32 {
+    foo::A_CON$0STANT::invalid_segment
 }"#,
         );
     }

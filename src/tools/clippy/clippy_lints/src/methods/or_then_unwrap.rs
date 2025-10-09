@@ -1,10 +1,12 @@
+use clippy_utils::diagnostics::span_lint_and_sugg;
 use clippy_utils::source::snippet_with_applicability;
 use clippy_utils::ty::is_type_diagnostic_item;
-use clippy_utils::{diagnostics::span_lint_and_sugg, is_res_lang_ctor, path_res};
+use clippy_utils::{is_res_lang_ctor, path_res};
 use rustc_errors::Applicability;
-use rustc_hir::{lang_items::LangItem, Expr, ExprKind};
+use rustc_hir::lang_items::LangItem;
+use rustc_hir::{Expr, ExprKind};
 use rustc_lint::LateContext;
-use rustc_span::{sym, Span};
+use rustc_span::{Span, sym};
 
 use super::OR_THEN_UNWRAP;
 
@@ -50,7 +52,7 @@ pub(super) fn check<'tcx>(
         OR_THEN_UNWRAP,
         unwrap_expr.span.with_lo(or_span.lo()),
         title,
-        "try this",
+        "try",
         suggestion,
         applicability,
     );
@@ -60,7 +62,7 @@ fn get_content_if_ctor_matches(cx: &LateContext<'_>, expr: &Expr<'_>, item: Lang
     if let ExprKind::Call(some_expr, [arg]) = expr.kind
         && is_res_lang_ctor(cx, path_res(cx, some_expr), item)
     {
-        Some(arg.span)
+        Some(arg.span.source_callsite())
     } else {
         None
     }

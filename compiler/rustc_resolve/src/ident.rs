@@ -1,45 +1,58 @@
-use rustc_ast::{self as ast, NodeId};
-use rustc_feature::is_builtin_attr_name;
-use rustc_hir::def::{DefKind, Namespace, NonMacroAttrKind, PartialRes, PerNS};
-use rustc_hir::PrimTy;
-use rustc_middle::bug;
-use rustc_middle::ty;
-use rustc_session::lint::builtin::PROC_MACRO_DERIVE_RESOLUTION_FALLBACK;
-use rustc_session::lint::BuiltinLintDiagnostics;
-use rustc_span::def_id::LocalDefId;
-use rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId, MacroKind, SyntaxContext};
-use rustc_span::symbol::{kw, Ident};
-use rustc_span::{Span, DUMMY_SP};
-
-use std::ptr;
-
-use crate::late::{
-    ConstantHasGenerics, ConstantItemKind, HasGenericParams, PathSource, Rib, RibKind,
-};
-use crate::macros::{sub_namespace_match, MacroRulesScope};
-use crate::{errors, AmbiguityError, AmbiguityErrorMisc, AmbiguityKind, Determinacy, Finalize};
-use crate::{Import, ImportKind, LexicalScopeBinding, Module, ModuleKind, ModuleOrUniformRoot};
-use crate::{NameBinding, NameBindingKind, ParentScope, PathResult, PrivacyError, Res};
-use crate::{ResolutionError, Resolver, Scope, ScopeSet, Segment, ToNameBinding, Weak};
-
 use Determinacy::*;
 use Namespace::*;
+use rustc_ast::{self as ast, NodeId};
+use rustc_errors::ErrorGuaranteed;
+use rustc_hir::def::{DefKind, MacroKinds, Namespace, NonMacroAttrKind, PartialRes, PerNS};
+use rustc_middle::{bug, span_bug};
+use rustc_session::lint::builtin::PROC_MACRO_DERIVE_RESOLUTION_FALLBACK;
+use rustc_session::parse::feature_err;
+use rustc_span::hygiene::{ExpnId, ExpnKind, LocalExpnId, MacroKind, SyntaxContext};
+use rustc_span::{Ident, Span, kw, sym};
+use tracing::{debug, instrument};
 
-type Visibility = ty::Visibility<LocalDefId>;
+use crate::errors::{ParamKindInEnumDiscriminant, ParamKindInNonTrivialAnonConst};
+use crate::imports::{Import, NameResolution};
+use crate::late::{ConstantHasGenerics, NoConstantGenericsReason, PathSource, Rib, RibKind};
+use crate::macros::{MacroRulesScope, sub_namespace_match};
+use crate::{
+    AmbiguityError, AmbiguityErrorMisc, AmbiguityKind, BindingKey, CmResolver, Determinacy,
+    Finalize, ImportKind, LexicalScopeBinding, Module, ModuleKind, ModuleOrUniformRoot,
+    NameBinding, NameBindingKind, ParentScope, PathResult, PrivacyError, Res, ResolutionError,
+    Resolver, Scope, ScopeSet, Segment, Stage, Used, Weak, errors,
+};
 
-impl<'a, 'tcx> Resolver<'a, 'tcx> {
+#[derive(Copy, Clone)]
+pub enum UsePrelude {
+    No,
+    Yes,
+}
+
+impl From<UsePrelude> for bool {
+    fn from(up: UsePrelude) -> bool {
+        matches!(up, UsePrelude::Yes)
+    }
+}
+
+#[derive(Debug, PartialEq, Clone, Copy)]
+enum Shadowing {
+    Restricted,
+    Unrestricted,
+}
+
+impl<'ra, 'tcx> Resolver<'ra, 'tcx> {
     /// A generic scope visitor.
     /// Visits scopes in order to resolve some identifier in them or perform other actions.
     /// If the callback returns `Some` result, we stop visiting scopes and return it.
-    pub(crate) fn visit_scopes<T>(
-        &mut self,
-        scope_set: ScopeSet<'a>,
-        parent_scope: &ParentScope<'a>,
+    pub(crate) fn visit_scopes<'r, T>(
+        mut self: CmResolver<'r, 'ra, 'tcx>,
+        scope_set: ScopeSet<'ra>,
+        parent_scope: &ParentScope<'ra>,
         ctxt: SyntaxContext,
+        derive_fallback_lint_id: Option<NodeId>,
         mut visitor: impl FnMut(
-            &mut Self,
-            Scope<'a>,
-            /*use_prelude*/ bool,
+            &mut CmResolver<'r, 'ra, 'tcx>,
+            Scope<'ra>,
+            UsePrelude,
             SyntaxContext,
         ) -> Option<T>,
     ) -> Option<T> {
@@ -85,20 +98,22 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         // 6. Language prelude: builtin attributes (closed, controlled).
 
         let rust_2015 = ctxt.edition().is_rust_2015();
-        let (ns, macro_kind, is_absolute_path) = match scope_set {
-            ScopeSet::All(ns, _) => (ns, None, false),
-            ScopeSet::AbsolutePath(ns) => (ns, None, true),
-            ScopeSet::Macro(macro_kind) => (MacroNS, Some(macro_kind), false),
-            ScopeSet::Late(ns, ..) => (ns, None, false),
+        let (ns, macro_kind) = match scope_set {
+            ScopeSet::All(ns) | ScopeSet::ModuleAndExternPrelude(ns, _) => (ns, None),
+            ScopeSet::ExternPrelude => (TypeNS, None),
+            ScopeSet::Macro(macro_kind) => (MacroNS, Some(macro_kind)),
         };
         let module = match scope_set {
             // Start with the specified module.
-            ScopeSet::Late(_, module, _) => module,
+            ScopeSet::ModuleAndExternPrelude(_, module) => module,
             // Jump out of trait or enum modules, they do not act as scopes.
             _ => parent_scope.module.nearest_item_scope(),
         };
+        let module_and_extern_prelude = matches!(scope_set, ScopeSet::ModuleAndExternPrelude(..));
+        let extern_prelude = matches!(scope_set, ScopeSet::ExternPrelude);
         let mut scope = match ns {
-            _ if is_absolute_path => Scope::CrateRoot,
+            _ if module_and_extern_prelude => Scope::Module(module, None),
+            _ if extern_prelude => Scope::ExternPreludeItems,
             TypeNS | ValueNS => Scope::Module(module, None),
             MacroNS => Scope::DeriveHelpers(parent_scope.expansion),
         };
@@ -126,18 +141,20 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     }
                     true
                 }
-                Scope::CrateRoot => true,
                 Scope::Module(..) => true,
                 Scope::MacroUsePrelude => use_prelude || rust_2015,
                 Scope::BuiltinAttrs => true,
-                Scope::ExternPrelude => use_prelude || is_absolute_path,
+                Scope::ExternPreludeItems | Scope::ExternPreludeFlags => {
+                    use_prelude || module_and_extern_prelude || extern_prelude
+                }
                 Scope::ToolPrelude => use_prelude,
                 Scope::StdLibPrelude => use_prelude || ns == MacroNS,
                 Scope::BuiltinTypes => true,
             };
 
             if visit {
-                if let break_result @ Some(..) = visitor(self, scope, use_prelude, ctxt) {
+                let use_prelude = if use_prelude { UsePrelude::Yes } else { UsePrelude::No };
+                if let break_result @ Some(..) = visitor(&mut self, scope, use_prelude, ctxt) {
                     return break_result;
                 }
             }
@@ -165,19 +182,15 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     }
                     MacroRulesScope::Empty => Scope::Module(module, None),
                 },
-                Scope::CrateRoot => match ns {
+                Scope::Module(..) if module_and_extern_prelude => match ns {
                     TypeNS => {
                         ctxt.adjust(ExpnId::root());
-                        Scope::ExternPrelude
+                        Scope::ExternPreludeItems
                     }
                     ValueNS | MacroNS => break,
                 },
                 Scope::Module(module, prev_lint_id) => {
                     use_prelude = !module.no_implicit_prelude;
-                    let derive_fallback_lint_id = match scope_set {
-                        ScopeSet::Late(.., lint_id) => lint_id,
-                        _ => None,
-                    };
                     match self.hygienic_lexical_parent(module, &mut ctxt, derive_fallback_lint_id) {
                         Some((parent_module, lint_id)) => {
                             Scope::Module(parent_module, lint_id.or(prev_lint_id))
@@ -185,7 +198,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         None => {
                             ctxt.adjust(ExpnId::root());
                             match ns {
-                                TypeNS => Scope::ExternPrelude,
+                                TypeNS => Scope::ExternPreludeItems,
                                 ValueNS => Scope::StdLibPrelude,
                                 MacroNS => Scope::MacroUsePrelude,
                             }
@@ -194,8 +207,9 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 }
                 Scope::MacroUsePrelude => Scope::StdLibPrelude,
                 Scope::BuiltinAttrs => break, // nowhere else to search
-                Scope::ExternPrelude if is_absolute_path => break,
-                Scope::ExternPrelude => Scope::ToolPrelude,
+                Scope::ExternPreludeItems => Scope::ExternPreludeFlags,
+                Scope::ExternPreludeFlags if module_and_extern_prelude || extern_prelude => break,
+                Scope::ExternPreludeFlags => Scope::ToolPrelude,
                 Scope::ToolPrelude => Scope::StdLibPrelude,
                 Scope::StdLibPrelude => match ns {
                     TypeNS => Scope::BuiltinTypes,
@@ -210,11 +224,11 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     }
 
     fn hygienic_lexical_parent(
-        &mut self,
-        module: Module<'a>,
+        &self,
+        module: Module<'ra>,
         ctxt: &mut SyntaxContext,
         derive_fallback_lint_id: Option<NodeId>,
-    ) -> Option<(Module<'a>, Option<NodeId>)> {
+    ) -> Option<(Module<'ra>, Option<NodeId>)> {
         if !module.expansion.outer_expn_is_descendant_of(*ctxt) {
             return Some((self.expn_def_scope(ctxt.remove_mark()), None));
         }
@@ -234,23 +248,21 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         // ---- end
         // ```
         // So we have to fall back to the module's parent during lexical resolution in this case.
-        if derive_fallback_lint_id.is_some() {
-            if let Some(parent) = module.parent {
-                // Inner module is inside the macro, parent module is outside of the macro.
-                if module.expansion != parent.expansion
-                    && module.expansion.is_descendant_of(parent.expansion)
-                {
-                    // The macro is a proc macro derive
-                    if let Some(def_id) = module.expansion.expn_data().macro_def_id {
-                        let ext = self.get_macro_by_def_id(def_id).ext;
-                        if ext.builtin_name.is_none()
-                            && ext.macro_kind() == MacroKind::Derive
-                            && parent.expansion.outer_expn_is_descendant_of(*ctxt)
-                        {
-                            return Some((parent, derive_fallback_lint_id));
-                        }
-                    }
-                }
+        if derive_fallback_lint_id.is_some()
+            && let Some(parent) = module.parent
+            // Inner module is inside the macro
+            && module.expansion != parent.expansion
+            // Parent module is outside of the macro
+            && module.expansion.is_descendant_of(parent.expansion)
+            // The macro is a proc macro derive
+            && let Some(def_id) = module.expansion.expn_data().macro_def_id
+        {
+            let ext = &self.get_macro_by_def_id(def_id).ext;
+            if ext.builtin_name.is_none()
+                && ext.macro_kinds() == MacroKinds::DERIVE
+                && parent.expansion.outer_expn_is_descendant_of(*ctxt)
+            {
+                return Some((parent, derive_fallback_lint_id));
             }
         }
 
@@ -279,16 +291,13 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         &mut self,
         mut ident: Ident,
         ns: Namespace,
-        parent_scope: &ParentScope<'a>,
+        parent_scope: &ParentScope<'ra>,
         finalize: Option<Finalize>,
-        ribs: &[Rib<'a>],
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Option<LexicalScopeBinding<'a>> {
+        ribs: &[Rib<'ra>],
+        ignore_binding: Option<NameBinding<'ra>>,
+    ) -> Option<LexicalScopeBinding<'ra>> {
         assert!(ns == TypeNS || ns == ValueNS);
         let orig_ident = ident;
-        if ident.name == kw::Empty {
-            return Some(LexicalScopeBinding::Res(Res::Err));
-        }
         let (general_span, normalized_span) = if ident.name == kw::SelfUpper {
             // FIXME(jseyfried) improve `Self` hygiene
             let empty_span = ident.span.with_ctxt(SyntaxContext::root());
@@ -303,14 +312,12 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         let normalized_ident = Ident { span: normalized_span, ..ident };
 
         // Walk backwards up the ribs in scope.
-        let mut module = self.graph_root;
-        for i in (0..ribs.len()).rev() {
-            debug!("walk rib\n{:?}", ribs[i].bindings);
+        for (i, rib) in ribs.iter().enumerate().rev() {
+            debug!("walk rib\n{:?}", rib.bindings);
             // Use the rib kind to determine whether we are resolving parameters
             // (macro 2.0 hygiene) or local variables (`macro_rules` hygiene).
-            let rib_ident = if ribs[i].kind.contains_params() { normalized_ident } else { ident };
-            if let Some((original_rib_ident_def, res)) = ribs[i].bindings.get_key_value(&rib_ident)
-            {
+            let rib_ident = if rib.kind.contains_params() { normalized_ident } else { ident };
+            if let Some((original_rib_ident_def, res)) = rib.bindings.get_key_value(&rib_ident) {
                 // The ident resolves to a type parameter or local variable.
                 return Some(LexicalScopeBinding::Res(self.validate_res_from_ribs(
                     i,
@@ -320,65 +327,65 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     *original_rib_ident_def,
                     ribs,
                 )));
-            }
-
-            module = match ribs[i].kind {
-                RibKind::Module(module) => module,
-                RibKind::MacroDefinition(def) if def == self.macro_def(ident.span.ctxt()) => {
-                    // If an invocation of this macro created `ident`, give up on `ident`
-                    // and switch to `ident`'s source from the macro definition.
-                    ident.span.remove_mark();
-                    continue;
-                }
-                _ => continue,
-            };
-
-            match module.kind {
-                ModuleKind::Block => {} // We can see through blocks
-                _ => break,
-            }
-
-            let item = self.resolve_ident_in_module_unadjusted(
-                ModuleOrUniformRoot::Module(module),
-                ident,
-                ns,
-                parent_scope,
-                finalize,
-                ignore_binding,
-            );
-            if let Ok(binding) = item {
-                // The ident resolves to an item.
+            } else if let RibKind::Block(Some(module)) = rib.kind
+                && let Ok(binding) = self.cm().resolve_ident_in_module_unadjusted(
+                    ModuleOrUniformRoot::Module(module),
+                    ident,
+                    ns,
+                    parent_scope,
+                    Shadowing::Unrestricted,
+                    finalize.map(|finalize| Finalize { used: Used::Scope, ..finalize }),
+                    ignore_binding,
+                    None,
+                )
+            {
+                // The ident resolves to an item in a block.
                 return Some(LexicalScopeBinding::Item(binding));
+            } else if let RibKind::Module(module) = rib.kind {
+                // Encountered a module item, abandon ribs and look into that module and preludes.
+                let parent_scope = &ParentScope { module, ..*parent_scope };
+                let finalize = finalize.map(|f| Finalize { stage: Stage::Late, ..f });
+                return self
+                    .cm()
+                    .resolve_ident_in_scope_set(
+                        orig_ident,
+                        ScopeSet::All(ns),
+                        parent_scope,
+                        finalize,
+                        finalize.is_some(),
+                        ignore_binding,
+                        None,
+                    )
+                    .ok()
+                    .map(LexicalScopeBinding::Item);
+            }
+
+            if let RibKind::MacroDefinition(def) = rib.kind
+                && def == self.macro_def(ident.span.ctxt())
+            {
+                // If an invocation of this macro created `ident`, give up on `ident`
+                // and switch to `ident`'s source from the macro definition.
+                ident.span.remove_mark();
             }
         }
-        self.early_resolve_ident_in_lexical_scope(
-            orig_ident,
-            ScopeSet::Late(ns, module, finalize.map(|finalize| finalize.node_id)),
-            parent_scope,
-            finalize,
-            finalize.is_some(),
-            ignore_binding,
-        )
-        .ok()
-        .map(LexicalScopeBinding::Item)
+
+        unreachable!()
     }
 
-    /// Resolve an identifier in lexical scope.
-    /// This is a variation of `fn resolve_ident_in_lexical_scope` that can be run during
-    /// expansion and import resolution (perhaps they can be merged in the future).
-    /// The function is used for resolving initial segments of macro paths (e.g., `foo` in
-    /// `foo::bar!();` or `foo!();`) and also for import paths on 2018 edition.
-    #[instrument(level = "debug", skip(self, scope_set))]
-    pub(crate) fn early_resolve_ident_in_lexical_scope(
-        &mut self,
+    /// Resolve an identifier in the specified set of scopes.
+    #[instrument(level = "debug", skip(self))]
+    pub(crate) fn resolve_ident_in_scope_set<'r>(
+        self: CmResolver<'r, 'ra, 'tcx>,
         orig_ident: Ident,
-        scope_set: ScopeSet<'a>,
-        parent_scope: &ParentScope<'a>,
+        scope_set: ScopeSet<'ra>,
+        parent_scope: &ParentScope<'ra>,
         finalize: Option<Finalize>,
         force: bool,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Result<&'a NameBinding<'a>, Determinacy> {
+        ignore_binding: Option<NameBinding<'ra>>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> Result<NameBinding<'ra>, Determinacy> {
         bitflags::bitflags! {
+            #[derive(Clone, Copy)]
             struct Flags: u8 {
                 const MACRO_RULES          = 1 << 0;
                 const MODULE               = 1 << 1;
@@ -395,11 +402,10 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             return Err(Determinacy::Determined);
         }
 
-        let (ns, macro_kind, is_import) = match scope_set {
-            ScopeSet::All(ns, is_import) => (ns, None, is_import),
-            ScopeSet::AbsolutePath(ns) => (ns, None, false),
-            ScopeSet::Macro(macro_kind) => (MacroNS, Some(macro_kind), false),
-            ScopeSet::Late(ns, ..) => (ns, None, false),
+        let (ns, macro_kind) = match scope_set {
+            ScopeSet::All(ns) | ScopeSet::ModuleAndExternPrelude(ns, _) => (ns, None),
+            ScopeSet::ExternPrelude => (TypeNS, None),
+            ScopeSet::Macro(macro_kind) => (MacroNS, Some(macro_kind)),
         };
 
         // This is *the* result, resolution from the scope closest to the resolved identifier.
@@ -413,36 +419,32 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         // }
         // So we have to save the innermost solution and continue searching in outer scopes
         // to detect potential ambiguities.
-        let mut innermost_result: Option<(&NameBinding<'_>, Flags)> = None;
+        let mut innermost_result: Option<(NameBinding<'_>, Flags)> = None;
         let mut determinacy = Determinacy::Determined;
+        let mut extern_prelude_item_binding = None;
+        let mut extern_prelude_flag_binding = None;
+        // Shadowed bindings don't need to be marked as used or non-speculatively loaded.
+        macro finalize_scope() {
+            if innermost_result.is_none() { finalize } else { None }
+        }
 
         // Go through all the scopes and try to resolve the name.
+        let derive_fallback_lint_id = match finalize {
+            Some(Finalize { node_id, stage: Stage::Late, .. }) => Some(node_id),
+            _ => None,
+        };
         let break_result = self.visit_scopes(
             scope_set,
             parent_scope,
             orig_ident.span.ctxt(),
+            derive_fallback_lint_id,
             |this, scope, use_prelude, ctxt| {
                 let ident = Ident::new(orig_ident.name, orig_ident.span.with_ctxt(ctxt));
-                let ok = |res, span, arenas| {
-                    Ok((
-                        (res, Visibility::Public, span, LocalExpnId::ROOT).to_name_binding(arenas),
-                        Flags::empty(),
-                    ))
-                };
                 let result = match scope {
                     Scope::DeriveHelpers(expn_id) => {
-                        if let Some(attr) = this
-                            .helper_attrs
-                            .get(&expn_id)
-                            .and_then(|attrs| attrs.iter().rfind(|i| ident == **i))
-                        {
-                            let binding = (
-                                Res::NonMacroAttr(NonMacroAttrKind::DeriveHelper),
-                                Visibility::Public,
-                                attr.span,
-                                expn_id,
-                            )
-                                .to_name_binding(this.arenas);
+                        if let Some(binding) = this.helper_attrs.get(&expn_id).and_then(|attrs| {
+                            attrs.iter().rfind(|(i, _)| ident == *i).map(|(_, binding)| *binding)
+                        }) {
                             Ok((binding, Flags::empty()))
                         } else {
                             Err(Determinacy::Determined)
@@ -452,20 +454,23 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         let mut result = Err(Determinacy::Determined);
                         for derive in parent_scope.derives {
                             let parent_scope = &ParentScope { derives: &[], ..*parent_scope };
-                            match this.resolve_macro_path(
+                            match this.reborrow().resolve_macro_path(
                                 derive,
-                                Some(MacroKind::Derive),
+                                MacroKind::Derive,
                                 parent_scope,
                                 true,
                                 force,
+                                ignore_import,
+                                None,
                             ) {
                                 Ok((Some(ext), _)) => {
                                     if ext.helper_attrs.contains(&ident.name) {
-                                        result = ok(
+                                        let binding = this.arenas.new_pub_res_binding(
                                             Res::NonMacroAttr(NonMacroAttrKind::DeriveHelperCompat),
                                             derive.span,
-                                            this.arenas,
+                                            LocalExpnId::ROOT,
                                         );
+                                        result = Ok((binding, Flags::empty()));
                                         break;
                                     }
                                 }
@@ -486,57 +491,41 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         MacroRulesScope::Invocation(_) => Err(Determinacy::Undetermined),
                         _ => Err(Determinacy::Determined),
                     },
-                    Scope::CrateRoot => {
-                        let root_ident = Ident::new(kw::PathRoot, ident.span);
-                        let root_module = this.resolve_crate_root(root_ident);
-                        let binding = this.resolve_ident_in_module_ext(
-                            ModuleOrUniformRoot::Module(root_module),
-                            ident,
-                            ns,
-                            parent_scope,
-                            finalize,
-                            ignore_binding,
-                        );
-                        match binding {
-                            Ok(binding) => Ok((binding, Flags::MODULE | Flags::MISC_SUGGEST_CRATE)),
-                            Err((Determinacy::Undetermined, Weak::No)) => {
-                                return Some(Err(Determinacy::determined(force)));
-                            }
-                            Err((Determinacy::Undetermined, Weak::Yes)) => {
-                                Err(Determinacy::Undetermined)
-                            }
-                            Err((Determinacy::Determined, _)) => Err(Determinacy::Determined),
-                        }
-                    }
                     Scope::Module(module, derive_fallback_lint_id) => {
-                        let adjusted_parent_scope = &ParentScope { module, ..*parent_scope };
-                        let binding = this.resolve_ident_in_module_unadjusted_ext(
+                        let (adjusted_parent_scope, adjusted_finalize) =
+                            if matches!(scope_set, ScopeSet::ModuleAndExternPrelude(..)) {
+                                (parent_scope, finalize_scope!())
+                            } else {
+                                (
+                                    &ParentScope { module, ..*parent_scope },
+                                    finalize_scope!().map(|f| Finalize { used: Used::Scope, ..f }),
+                                )
+                            };
+                        let binding = this.reborrow().resolve_ident_in_module_unadjusted(
                             ModuleOrUniformRoot::Module(module),
                             ident,
                             ns,
                             adjusted_parent_scope,
-                            !matches!(scope_set, ScopeSet::Late(..)),
-                            finalize,
+                            Shadowing::Restricted,
+                            adjusted_finalize,
                             ignore_binding,
+                            ignore_import,
                         );
                         match binding {
                             Ok(binding) => {
                                 if let Some(lint_id) = derive_fallback_lint_id {
-                                    this.lint_buffer.buffer_lint_with_diagnostic(
+                                    this.get_mut().lint_buffer.buffer_lint(
                                         PROC_MACRO_DERIVE_RESOLUTION_FALLBACK,
                                         lint_id,
                                         orig_ident.span,
-                                        format!(
-                                            "cannot find {} `{}` in this scope",
-                                            ns.descr(),
-                                            ident
-                                        ),
-                                        BuiltinLintDiagnostics::ProcMacroDeriveResolutionFallback(
-                                            orig_ident.span,
-                                        ),
+                                        errors::ProcMacroDeriveResolutionFallback {
+                                            span: orig_ident.span,
+                                            ns_descr: ns.descr(),
+                                            ident,
+                                        },
                                     );
                                 }
-                                let misc_flags = if ptr::eq(module, this.graph_root) {
+                                let misc_flags = if module == this.graph_root {
                                     Flags::MISC_SUGGEST_CRATE
                                 } else if module.is_normal() {
                                     Flags::MISC_SUGGEST_SELF
@@ -562,58 +551,103 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                             )),
                         }
                     }
-                    Scope::BuiltinAttrs => {
-                        if is_builtin_attr_name(ident.name) {
-                            ok(
-                                Res::NonMacroAttr(NonMacroAttrKind::Builtin(ident.name)),
-                                DUMMY_SP,
-                                this.arenas,
-                            )
-                        } else {
-                            Err(Determinacy::Determined)
-                        }
-                    }
-                    Scope::ExternPrelude => {
-                        match this.extern_prelude_get(ident, finalize.is_some()) {
-                            Some(binding) => Ok((binding, Flags::empty())),
+                    Scope::BuiltinAttrs => match this.builtin_attrs_bindings.get(&ident.name) {
+                        Some(binding) => Ok((*binding, Flags::empty())),
+                        None => Err(Determinacy::Determined),
+                    },
+                    Scope::ExternPreludeItems => {
+                        match this
+                            .reborrow()
+                            .extern_prelude_get_item(ident, finalize_scope!().is_some())
+                        {
+                            Some(binding) => {
+                                extern_prelude_item_binding = Some(binding);
+                                Ok((binding, Flags::empty()))
+                            }
                             None => Err(Determinacy::determined(
                                 this.graph_root.unexpanded_invocations.borrow().is_empty(),
                             )),
                         }
                     }
-                    Scope::ToolPrelude => match this.registered_tools.get(&ident).cloned() {
-                        Some(ident) => ok(Res::ToolMod, ident.span, this.arenas),
+                    Scope::ExternPreludeFlags => {
+                        match this.extern_prelude_get_flag(ident, finalize_scope!().is_some()) {
+                            Some(binding) => {
+                                extern_prelude_flag_binding = Some(binding);
+                                Ok((binding, Flags::empty()))
+                            }
+                            None => Err(Determinacy::Determined),
+                        }
+                    }
+                    Scope::ToolPrelude => match this.registered_tool_bindings.get(&ident) {
+                        Some(binding) => Ok((*binding, Flags::empty())),
                         None => Err(Determinacy::Determined),
                     },
                     Scope::StdLibPrelude => {
                         let mut result = Err(Determinacy::Determined);
-                        if let Some(prelude) = this.prelude {
-                            if let Ok(binding) = this.resolve_ident_in_module_unadjusted(
+                        if let Some(prelude) = this.prelude
+                            && let Ok(binding) = this.reborrow().resolve_ident_in_module_unadjusted(
                                 ModuleOrUniformRoot::Module(prelude),
                                 ident,
                                 ns,
                                 parent_scope,
+                                Shadowing::Unrestricted,
                                 None,
                                 ignore_binding,
-                            ) {
-                                if use_prelude || this.is_builtin_macro(binding.res()) {
-                                    result = Ok((binding, Flags::MISC_FROM_PRELUDE));
-                                }
-                            }
+                                ignore_import,
+                            )
+                            && (matches!(use_prelude, UsePrelude::Yes)
+                                || this.is_builtin_macro(binding.res()))
+                        {
+                            result = Ok((binding, Flags::MISC_FROM_PRELUDE));
                         }
+
                         result
                     }
-                    Scope::BuiltinTypes => match PrimTy::from_name(ident.name) {
-                        Some(prim_ty) => ok(Res::PrimTy(prim_ty), DUMMY_SP, this.arenas),
+                    Scope::BuiltinTypes => match this.builtin_types_bindings.get(&ident.name) {
+                        Some(binding) => {
+                            if matches!(ident.name, sym::f16)
+                                && !this.tcx.features().f16()
+                                && !ident.span.allows_unstable(sym::f16)
+                                && finalize_scope!().is_some()
+                            {
+                                feature_err(
+                                    this.tcx.sess,
+                                    sym::f16,
+                                    ident.span,
+                                    "the type `f16` is unstable",
+                                )
+                                .emit();
+                            }
+                            if matches!(ident.name, sym::f128)
+                                && !this.tcx.features().f128()
+                                && !ident.span.allows_unstable(sym::f128)
+                                && finalize_scope!().is_some()
+                            {
+                                feature_err(
+                                    this.tcx.sess,
+                                    sym::f128,
+                                    ident.span,
+                                    "the type `f128` is unstable",
+                                )
+                                .emit();
+                            }
+                            Ok((*binding, Flags::empty()))
+                        }
                         None => Err(Determinacy::Determined),
                     },
                 };
 
                 match result {
-                    Ok((binding, flags))
-                        if sub_namespace_match(binding.macro_kind(), macro_kind) =>
-                    {
-                        if finalize.is_none() || matches!(scope_set, ScopeSet::Late(..)) {
+                    Ok((binding, flags)) => {
+                        if !sub_namespace_match(binding.macro_kinds(), macro_kind) {
+                            return None;
+                        }
+
+                        // Below we report various ambiguity errors.
+                        // We do not need to report them if we are either in speculative resolution,
+                        // or in late resolution when everything is already imported and expanded
+                        // and no ambiguities exist.
+                        if matches!(finalize, None | Some(Finalize { stage: Stage::Late, .. })) {
                             return Some(Ok(binding));
                         }
 
@@ -629,9 +663,9 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                 let derive_helper_compat =
                                     Res::NonMacroAttr(NonMacroAttrKind::DeriveHelperCompat);
 
-                                let ambiguity_error_kind = if is_import {
-                                    Some(AmbiguityKind::Import)
-                                } else if is_builtin(innermost_res) || is_builtin(res) {
+                                let ambiguity_error_kind = if is_builtin(innermost_res)
+                                    || is_builtin(res)
+                                {
                                     Some(AmbiguityKind::BuiltinAttr)
                                 } else if innermost_res == derive_helper_compat
                                     || res == derive_helper_compat && innermost_res != derive_helper
@@ -643,14 +677,21 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                         innermost_binding,
                                         binding,
                                     )
-                                    || flags.contains(Flags::MACRO_RULES)
-                                        && innermost_flags.contains(Flags::MODULE)
-                                        && !this.disambiguate_macro_rules_vs_modularized(
-                                            binding,
-                                            innermost_binding,
-                                        )
                                 {
                                     Some(AmbiguityKind::MacroRulesVsModularized)
+                                } else if flags.contains(Flags::MACRO_RULES)
+                                    && innermost_flags.contains(Flags::MODULE)
+                                {
+                                    // should be impossible because of visitation order in
+                                    // visit_scopes
+                                    //
+                                    // we visit all macro_rules scopes (e.g. textual scope macros)
+                                    // before we visit any modules (e.g. path-based scope macros)
+                                    span_bug!(
+                                        orig_ident.span,
+                                        "ambiguous scoped macro resolutions with path-based \
+                                        scope resolution as first candidate"
+                                    )
                                 } else if innermost_binding.is_glob_import() {
                                     Some(AmbiguityKind::GlobVsOuter)
                                 } else if innermost_binding
@@ -660,7 +701,16 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                 } else {
                                     None
                                 };
-                                if let Some(kind) = ambiguity_error_kind {
+                                // Skip ambiguity errors for extern flag bindings "overridden"
+                                // by extern item bindings.
+                                // FIXME: Remove with lang team approval.
+                                let issue_145575_hack = Some(binding)
+                                    == extern_prelude_flag_binding
+                                    && extern_prelude_item_binding.is_some()
+                                    && extern_prelude_item_binding != Some(innermost_binding);
+                                if let Some(kind) = ambiguity_error_kind
+                                    && !issue_145575_hack
+                                {
                                     let misc = |f: Flags| {
                                         if f.contains(Flags::MISC_SUGGEST_CRATE) {
                                             AmbiguityErrorMisc::SuggestCrate
@@ -672,11 +722,12 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                             AmbiguityErrorMisc::None
                                         }
                                     };
-                                    this.ambiguity_errors.push(AmbiguityError {
+                                    this.get_mut().ambiguity_errors.push(AmbiguityError {
                                         kind,
                                         ident: orig_ident,
                                         b1: innermost_binding,
                                         b2: binding,
+                                        warning: false,
                                         misc1: misc(innermost_flags),
                                         misc2: misc(flags),
                                     });
@@ -688,7 +739,7 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                             innermost_result = Some((binding, flags));
                         }
                     }
-                    Ok(..) | Err(Determinacy::Determined) => {}
+                    Err(Determinacy::Determined) => {}
                     Err(Determinacy::Undetermined) => determinacy = Determinacy::Undetermined,
                 }
 
@@ -709,41 +760,29 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn maybe_resolve_ident_in_module(
-        &mut self,
-        module: ModuleOrUniformRoot<'a>,
+    pub(crate) fn maybe_resolve_ident_in_module<'r>(
+        self: CmResolver<'r, 'ra, 'tcx>,
+        module: ModuleOrUniformRoot<'ra>,
         ident: Ident,
         ns: Namespace,
-        parent_scope: &ParentScope<'a>,
-    ) -> Result<&'a NameBinding<'a>, Determinacy> {
-        self.resolve_ident_in_module_ext(module, ident, ns, parent_scope, None, None)
+        parent_scope: &ParentScope<'ra>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> Result<NameBinding<'ra>, Determinacy> {
+        self.resolve_ident_in_module(module, ident, ns, parent_scope, None, None, ignore_import)
             .map_err(|(determinacy, _)| determinacy)
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn resolve_ident_in_module(
-        &mut self,
-        module: ModuleOrUniformRoot<'a>,
-        ident: Ident,
-        ns: Namespace,
-        parent_scope: &ParentScope<'a>,
-        finalize: Option<Finalize>,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Result<&'a NameBinding<'a>, Determinacy> {
-        self.resolve_ident_in_module_ext(module, ident, ns, parent_scope, finalize, ignore_binding)
-            .map_err(|(determinacy, _)| determinacy)
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    fn resolve_ident_in_module_ext(
-        &mut self,
-        module: ModuleOrUniformRoot<'a>,
+    pub(crate) fn resolve_ident_in_module<'r>(
+        self: CmResolver<'r, 'ra, 'tcx>,
+        module: ModuleOrUniformRoot<'ra>,
         mut ident: Ident,
         ns: Namespace,
-        parent_scope: &ParentScope<'a>,
+        parent_scope: &ParentScope<'ra>,
         finalize: Option<Finalize>,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Result<&'a NameBinding<'a>, (Determinacy, Weak)> {
+        ignore_binding: Option<NameBinding<'ra>>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> Result<NameBinding<'ra>, (Determinacy, Weak)> {
         let tmp_parent_scope;
         let mut adjusted_parent_scope = parent_scope;
         match module {
@@ -757,93 +796,75 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             ModuleOrUniformRoot::ExternPrelude => {
                 ident.span.normalize_to_macros_2_0_and_adjust(ExpnId::root());
             }
-            ModuleOrUniformRoot::CrateRootAndExternPrelude | ModuleOrUniformRoot::CurrentScope => {
+            ModuleOrUniformRoot::ModuleAndExternPrelude(..) | ModuleOrUniformRoot::CurrentScope => {
                 // No adjustments
             }
         }
-        self.resolve_ident_in_module_unadjusted_ext(
+        self.resolve_ident_in_module_unadjusted(
             module,
             ident,
             ns,
             adjusted_parent_scope,
-            false,
+            Shadowing::Unrestricted,
             finalize,
             ignore_binding,
+            ignore_import,
         )
     }
-
-    #[instrument(level = "debug", skip(self))]
-    fn resolve_ident_in_module_unadjusted(
-        &mut self,
-        module: ModuleOrUniformRoot<'a>,
-        ident: Ident,
-        ns: Namespace,
-        parent_scope: &ParentScope<'a>,
-        finalize: Option<Finalize>,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Result<&'a NameBinding<'a>, Determinacy> {
-        self.resolve_ident_in_module_unadjusted_ext(
-            module,
-            ident,
-            ns,
-            parent_scope,
-            false,
-            finalize,
-            ignore_binding,
-        )
-        .map_err(|(determinacy, _)| determinacy)
-    }
-
     /// Attempts to resolve `ident` in namespaces `ns` of `module`.
     /// Invariant: if `finalize` is `Some`, expansion and import resolution must be complete.
     #[instrument(level = "debug", skip(self))]
-    fn resolve_ident_in_module_unadjusted_ext(
-        &mut self,
-        module: ModuleOrUniformRoot<'a>,
+    fn resolve_ident_in_module_unadjusted<'r>(
+        mut self: CmResolver<'r, 'ra, 'tcx>,
+        module: ModuleOrUniformRoot<'ra>,
         ident: Ident,
         ns: Namespace,
-        parent_scope: &ParentScope<'a>,
-        restricted_shadowing: bool,
+        parent_scope: &ParentScope<'ra>,
+        shadowing: Shadowing,
         finalize: Option<Finalize>,
         // This binding should be ignored during in-module resolution, so that we don't get
         // "self-confirming" import resolutions during import validation and checking.
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> Result<&'a NameBinding<'a>, (Determinacy, Weak)> {
+        ignore_binding: Option<NameBinding<'ra>>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> Result<NameBinding<'ra>, (Determinacy, Weak)> {
         let module = match module {
             ModuleOrUniformRoot::Module(module) => module,
-            ModuleOrUniformRoot::CrateRootAndExternPrelude => {
-                assert!(!restricted_shadowing);
-                let binding = self.early_resolve_ident_in_lexical_scope(
+            ModuleOrUniformRoot::ModuleAndExternPrelude(module) => {
+                assert_eq!(shadowing, Shadowing::Unrestricted);
+                let binding = self.resolve_ident_in_scope_set(
                     ident,
-                    ScopeSet::AbsolutePath(ns),
+                    ScopeSet::ModuleAndExternPrelude(ns, module),
                     parent_scope,
                     finalize,
                     finalize.is_some(),
                     ignore_binding,
+                    ignore_import,
                 );
                 return binding.map_err(|determinacy| (determinacy, Weak::No));
             }
             ModuleOrUniformRoot::ExternPrelude => {
-                assert!(!restricted_shadowing);
+                assert_eq!(shadowing, Shadowing::Unrestricted);
                 return if ns != TypeNS {
                     Err((Determined, Weak::No))
-                } else if let Some(binding) = self.extern_prelude_get(ident, finalize.is_some()) {
-                    Ok(binding)
-                } else if !self.graph_root.unexpanded_invocations.borrow().is_empty() {
-                    // Macro-expanded `extern crate` items can add names to extern prelude.
-                    Err((Undetermined, Weak::No))
                 } else {
-                    Err((Determined, Weak::No))
+                    let binding = self.resolve_ident_in_scope_set(
+                        ident,
+                        ScopeSet::ExternPrelude,
+                        parent_scope,
+                        finalize,
+                        finalize.is_some(),
+                        ignore_binding,
+                        ignore_import,
+                    );
+                    return binding.map_err(|determinacy| (determinacy, Weak::No));
                 };
             }
             ModuleOrUniformRoot::CurrentScope => {
-                assert!(!restricted_shadowing);
+                assert_eq!(shadowing, Shadowing::Unrestricted);
                 if ns == TypeNS {
                     if ident.name == kw::Crate || ident.name == kw::DollarCrate {
                         let module = self.resolve_crate_root(ident);
-                        let binding = (module, Visibility::Public, module.span, LocalExpnId::ROOT)
-                            .to_name_binding(self.arenas);
-                        return Ok(binding);
+                        return Ok(module.self_binding.unwrap());
                     } else if ident.name == kw::Super || ident.name == kw::SelfLower {
                         // FIXME: Implement these with renaming requirements so that e.g.
                         // `use super;` doesn't work, but `use super as name;` does.
@@ -851,135 +872,73 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     }
                 }
 
-                let scopes = ScopeSet::All(ns, true);
-                let binding = self.early_resolve_ident_in_lexical_scope(
+                let binding = self.resolve_ident_in_scope_set(
                     ident,
-                    scopes,
+                    ScopeSet::All(ns),
                     parent_scope,
                     finalize,
                     finalize.is_some(),
                     ignore_binding,
+                    ignore_import,
                 );
                 return binding.map_err(|determinacy| (determinacy, Weak::No));
             }
         };
 
-        let key = self.new_key(ident, ns);
-        let resolution =
-            self.resolution(module, key).try_borrow_mut().map_err(|_| (Determined, Weak::No))?; // This happens when there is a cycle of imports.
+        let key = BindingKey::new(ident, ns);
+        // `try_borrow_mut` is required to ensure exclusive access, even if the resulting binding
+        // doesn't need to be mutable. It will fail when there is a cycle of imports, and without
+        // the exclusive access infinite recursion will crash the compiler with stack overflow.
+        let resolution = &*self
+            .resolution_or_default(module, key)
+            .try_borrow_mut()
+            .map_err(|_| (Determined, Weak::No))?;
 
         // If the primary binding is unusable, search further and return the shadowed glob
         // binding if it exists. What we really want here is having two separate scopes in
         // a module - one for non-globs and one for globs, but until that's done use this
         // hack to avoid inconsistent resolution ICEs during import validation.
-        let binding =
-            [resolution.binding, resolution.shadowed_glob].into_iter().find_map(|binding| {
-                match (binding, ignore_binding) {
-                    (Some(binding), Some(ignored)) if ptr::eq(binding, ignored) => None,
-                    _ => binding,
-                }
-            });
+        let binding = [resolution.non_glob_binding, resolution.glob_binding]
+            .into_iter()
+            .find_map(|binding| if binding == ignore_binding { None } else { binding });
 
-        if let Some(Finalize { path_span, report_private, .. }) = finalize {
-            let Some(binding) = binding else {
-                return Err((Determined, Weak::No));
-            };
-
-            if !self.is_accessible_from(binding.vis, parent_scope.module) {
-                if report_private {
-                    self.privacy_errors.push(PrivacyError {
-                        ident,
-                        binding,
-                        dedup_span: path_span,
-                    });
-                } else {
-                    return Err((Determined, Weak::No));
-                }
-            }
-
-            // Forbid expanded shadowing to avoid time travel.
-            if let Some(shadowed_glob) = resolution.shadowed_glob
-                && restricted_shadowing
-                && binding.expansion != LocalExpnId::ROOT
-                && binding.res() != shadowed_glob.res()
-            {
-                self.ambiguity_errors.push(AmbiguityError {
-                    kind: AmbiguityKind::GlobVsExpanded,
-                    ident,
-                    b1: binding,
-                    b2: shadowed_glob,
-                    misc1: AmbiguityErrorMisc::None,
-                    misc2: AmbiguityErrorMisc::None,
-                });
-            }
-
-            if !restricted_shadowing && binding.expansion != LocalExpnId::ROOT {
-                if let NameBindingKind::Import {
-                    import: Import { kind: ImportKind::MacroExport, .. },
-                    ..
-                } = binding.kind
-                {
-                    self.macro_expanded_macro_export_errors.insert((path_span, binding.span));
-                }
-            }
-
-            self.record_use(ident, binding, restricted_shadowing);
-            return Ok(binding);
+        if let Some(finalize) = finalize {
+            return self.get_mut().finalize_module_binding(
+                ident,
+                binding,
+                if resolution.non_glob_binding.is_some() { resolution.glob_binding } else { None },
+                parent_scope,
+                module,
+                finalize,
+                shadowing,
+            );
         }
 
-        let check_usable = |this: &mut Self, binding: &'a NameBinding<'a>| {
+        let check_usable = |this: CmResolver<'r, 'ra, 'tcx>, binding: NameBinding<'ra>| {
             let usable = this.is_accessible_from(binding.vis, parent_scope.module);
             if usable { Ok(binding) } else { Err((Determined, Weak::No)) }
         };
 
         // Items and single imports are not shadowable, if we have one, then it's determined.
-        if let Some(binding) = binding {
-            if !binding.is_glob_import() {
-                return check_usable(self, binding);
-            }
+        if let Some(binding) = binding
+            && !binding.is_glob_import()
+        {
+            return check_usable(self, binding);
         }
 
         // --- From now on we either have a glob resolution or no resolution. ---
 
         // Check if one of single imports can still define the name,
         // if it can then our result is not determined and can be invalidated.
-        for single_import in &resolution.single_imports {
-            let Some(import_vis) = single_import.vis.get() else {
-                continue;
-            };
-            if !self.is_accessible_from(import_vis, parent_scope.module) {
-                continue;
-            }
-            if let Some(ignored) = ignore_binding &&
-                let NameBindingKind::Import { import, .. } = ignored.kind &&
-                ptr::eq(import, &**single_import) {
-                // Ignore not just the binding itself, but if it has a shadowed_glob,
-                // ignore that, too, because this loop is supposed to only process
-                // named imports.
-                continue;
-            }
-            let Some(module) = single_import.imported_module.get() else {
-                return Err((Undetermined, Weak::No));
-            };
-            let ImportKind::Single { source: ident, .. } = single_import.kind else {
-                unreachable!();
-            };
-            match self.resolve_ident_in_module(
-                module,
-                ident,
-                ns,
-                &single_import.parent_scope,
-                None,
-                ignore_binding,
-            ) {
-                Err(Determined) => continue,
-                Ok(binding)
-                    if !self.is_accessible_from(binding.vis, single_import.parent_scope.module) =>
-                {
-                    continue;
-                }
-                Ok(_) | Err(Undetermined) => return Err((Undetermined, Weak::No)),
-            }
+        if self.reborrow().single_import_can_define_name(
+            &resolution,
+            binding,
+            ns,
+            ignore_import,
+            ignore_binding,
+            parent_scope,
+        ) {
+            return Err((Undetermined, Weak::No));
         }
 
         // So we have a resolution that's from a glob import. This resolution is determined
@@ -994,9 +953,8 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         // progress, we have to ignore those potential unresolved invocations from other modules
         // and prohibit access to macro-expanded `macro_export` macros instead (unless restricted
         // shadowing is enabled, see `macro_expanded_macro_export_errors`).
-        let unexpanded_macros = !module.unexpanded_invocations.borrow().is_empty();
         if let Some(binding) = binding {
-            if !unexpanded_macros || ns == MacroNS || restricted_shadowing {
+            if binding.determined() || ns == MacroNS || shadowing == Shadowing::Restricted {
                 return check_usable(self, binding);
             } else {
                 return Err((Undetermined, Weak::No));
@@ -1008,22 +966,22 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         // Now we are in situation when new item/import can appear only from a glob or a macro
         // expansion. With restricted shadowing names from globs and macro expansions cannot
         // shadow names from outer scopes, so we can freely fallback from module search to search
-        // in outer scopes. For `early_resolve_ident_in_lexical_scope` to continue search in outer
+        // in outer scopes. For `resolve_ident_in_scope_set` to continue search in outer
         // scopes we return `Undetermined` with `Weak::Yes`.
 
         // Check if one of unexpanded macros can still define the name,
         // if it can then our "no resolution" result is not determined and can be invalidated.
-        if unexpanded_macros {
+        if !module.unexpanded_invocations.borrow().is_empty() {
             return Err((Undetermined, Weak::Yes));
         }
 
         // Check if one of glob imports can still define the name,
         // if it can then our "no resolution" result is not determined and can be invalidated.
         for glob_import in module.globs.borrow().iter() {
-            let Some(import_vis) = glob_import.vis.get() else {
+            if ignore_import == Some(*glob_import) {
                 continue;
-            };
-            if !self.is_accessible_from(import_vis, parent_scope.module) {
+            }
+            if !self.is_accessible_from(glob_import.vis, parent_scope.module) {
                 continue;
             }
             let module = match glob_import.imported_module.get() {
@@ -1043,28 +1001,186 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 Some(None) => {}
                 None => continue,
             };
-            let result = self.resolve_ident_in_module_unadjusted(
+            let result = self.reborrow().resolve_ident_in_module_unadjusted(
                 ModuleOrUniformRoot::Module(module),
                 ident,
                 ns,
                 adjusted_parent_scope,
+                Shadowing::Unrestricted,
                 None,
                 ignore_binding,
+                ignore_import,
             );
 
             match result {
-                Err(Determined) => continue,
+                Err((Determined, _)) => continue,
                 Ok(binding)
                     if !self.is_accessible_from(binding.vis, glob_import.parent_scope.module) =>
                 {
                     continue;
                 }
-                Ok(_) | Err(Undetermined) => return Err((Undetermined, Weak::Yes)),
+                Ok(_) | Err((Undetermined, _)) => return Err((Undetermined, Weak::Yes)),
             }
         }
 
         // No resolution and no one else can define the name - determinate error.
         Err((Determined, Weak::No))
+    }
+
+    fn finalize_module_binding(
+        &mut self,
+        ident: Ident,
+        binding: Option<NameBinding<'ra>>,
+        shadowed_glob: Option<NameBinding<'ra>>,
+        parent_scope: &ParentScope<'ra>,
+        module: Module<'ra>,
+        finalize: Finalize,
+        shadowing: Shadowing,
+    ) -> Result<NameBinding<'ra>, (Determinacy, Weak)> {
+        let Finalize { path_span, report_private, used, root_span, .. } = finalize;
+
+        let Some(binding) = binding else {
+            return Err((Determined, Weak::No));
+        };
+
+        if !self.is_accessible_from(binding.vis, parent_scope.module) {
+            if report_private {
+                self.privacy_errors.push(PrivacyError {
+                    ident,
+                    binding,
+                    dedup_span: path_span,
+                    outermost_res: None,
+                    source: None,
+                    parent_scope: *parent_scope,
+                    single_nested: path_span != root_span,
+                });
+            } else {
+                return Err((Determined, Weak::No));
+            }
+        }
+
+        // Forbid expanded shadowing to avoid time travel.
+        if let Some(shadowed_glob) = shadowed_glob
+            && shadowing == Shadowing::Restricted
+            && finalize.stage == Stage::Early
+            && binding.expansion != LocalExpnId::ROOT
+            && binding.res() != shadowed_glob.res()
+        {
+            self.ambiguity_errors.push(AmbiguityError {
+                kind: AmbiguityKind::GlobVsExpanded,
+                ident,
+                b1: binding,
+                b2: shadowed_glob,
+                warning: false,
+                misc1: AmbiguityErrorMisc::None,
+                misc2: AmbiguityErrorMisc::None,
+            });
+        }
+
+        if shadowing == Shadowing::Unrestricted
+            && binding.expansion != LocalExpnId::ROOT
+            && let NameBindingKind::Import { import, .. } = binding.kind
+            && matches!(import.kind, ImportKind::MacroExport)
+        {
+            self.macro_expanded_macro_export_errors.insert((path_span, binding.span));
+        }
+
+        // If we encounter a re-export for a type with private fields, it will not be able to
+        // be constructed through this re-export. We track that case here to expand later
+        // privacy errors with appropriate information.
+        if let Res::Def(_, def_id) = binding.res() {
+            let struct_ctor = match def_id.as_local() {
+                Some(def_id) => self.struct_constructors.get(&def_id).cloned(),
+                None => {
+                    let ctor = self.cstore().ctor_untracked(def_id);
+                    ctor.map(|(ctor_kind, ctor_def_id)| {
+                        let ctor_res = Res::Def(
+                            DefKind::Ctor(rustc_hir::def::CtorOf::Struct, ctor_kind),
+                            ctor_def_id,
+                        );
+                        let ctor_vis = self.tcx.visibility(ctor_def_id);
+                        let field_visibilities = self
+                            .tcx
+                            .associated_item_def_ids(def_id)
+                            .iter()
+                            .map(|field_id| self.tcx.visibility(field_id))
+                            .collect();
+                        (ctor_res, ctor_vis, field_visibilities)
+                    })
+                }
+            };
+            if let Some((_, _, fields)) = struct_ctor
+                && fields.iter().any(|vis| !self.is_accessible_from(*vis, module))
+            {
+                self.inaccessible_ctor_reexport.insert(path_span, binding.span);
+            }
+        }
+
+        self.record_use(ident, binding, used);
+        return Ok(binding);
+    }
+
+    // Checks if a single import can define the `Ident` corresponding to `binding`.
+    // This is used to check whether we can definitively accept a glob as a resolution.
+    fn single_import_can_define_name<'r>(
+        mut self: CmResolver<'r, 'ra, 'tcx>,
+        resolution: &NameResolution<'ra>,
+        binding: Option<NameBinding<'ra>>,
+        ns: Namespace,
+        ignore_import: Option<Import<'ra>>,
+        ignore_binding: Option<NameBinding<'ra>>,
+        parent_scope: &ParentScope<'ra>,
+    ) -> bool {
+        for single_import in &resolution.single_imports {
+            if ignore_import == Some(*single_import) {
+                continue;
+            }
+            if !self.is_accessible_from(single_import.vis, parent_scope.module) {
+                continue;
+            }
+            if let Some(ignored) = ignore_binding
+                && let NameBindingKind::Import { import, .. } = ignored.kind
+                && import == *single_import
+            {
+                continue;
+            }
+
+            let Some(module) = single_import.imported_module.get() else {
+                return true;
+            };
+            let ImportKind::Single { source, target, bindings, .. } = &single_import.kind else {
+                unreachable!();
+            };
+            if source != target {
+                if bindings.iter().all(|binding| binding.get().binding().is_none()) {
+                    return true;
+                } else if bindings[ns].get().binding().is_none() && binding.is_some() {
+                    return true;
+                }
+            }
+
+            match self.reborrow().resolve_ident_in_module(
+                module,
+                *source,
+                ns,
+                &single_import.parent_scope,
+                None,
+                ignore_binding,
+                ignore_import,
+            ) {
+                Err((Determined, _)) => continue,
+                Ok(binding)
+                    if !self.is_accessible_from(binding.vis, single_import.parent_scope.module) =>
+                {
+                    continue;
+                }
+                Ok(_) | Err((Undetermined, _)) => {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     /// Validate a local resolution (from ribs).
@@ -1076,19 +1192,19 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
         mut res: Res,
         finalize: Option<Span>,
         original_rib_ident_def: Ident,
-        all_ribs: &[Rib<'a>],
+        all_ribs: &[Rib<'ra>],
     ) -> Res {
-        const CG_BUG_STR: &str = "min_const_generics resolve check didn't stop compilation";
         debug!("validate_res_from_ribs({:?})", res);
         let ribs = &all_ribs[rib_index + 1..];
 
-        // An invalid forward use of a generic parameter from a previous default.
-        if let RibKind::ForwardGenericParamBan = all_ribs[rib_index].kind {
+        // An invalid forward use of a generic parameter from a previous default
+        // or in a const param ty.
+        if let RibKind::ForwardGenericParamBan(reason) = all_ribs[rib_index].kind {
             if let Some(span) = finalize {
                 let res_error = if rib_ident.name == kw::SelfUpper {
-                    ResolutionError::SelfInGenericParamDefault
+                    ResolutionError::ForwardDeclaredSelf(reason)
                 } else {
-                    ResolutionError::ForwardDeclaredGenericParam
+                    ResolutionError::ForwardDeclaredGenericParam(rib_ident.name, reason)
                 };
                 self.report_error(span, res_error);
             }
@@ -1104,13 +1220,14 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                 for rib in ribs {
                     match rib.kind {
                         RibKind::Normal
-                        | RibKind::ClosureOrAsync
+                        | RibKind::Block(..)
+                        | RibKind::FnOrCoroutine
                         | RibKind::Module(..)
                         | RibKind::MacroDefinition(..)
-                        | RibKind::ForwardGenericParamBan => {
+                        | RibKind::ForwardGenericParamBan(_) => {
                             // Nothing to do. Continue.
                         }
-                        RibKind::Item(_) | RibKind::AssocItem => {
+                        RibKind::Item(..) | RibKind::AssocItem => {
                             // This was an attempt to access an upvar inside a
                             // named function item. This is not allowed, so we
                             // report an error.
@@ -1125,35 +1242,57 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         RibKind::ConstantItem(_, item) => {
                             // Still doesn't deal with upvars
                             if let Some(span) = finalize {
-                                let (span, resolution_error) =
-                                    if let Some((ident, constant_item_kind)) = item {
-                                        let kind_str = match constant_item_kind {
-                                            ConstantItemKind::Const => "const",
-                                            ConstantItemKind::Static => "static",
+                                let (span, resolution_error) = match item {
+                                    None if rib_ident.name == kw::SelfLower => {
+                                        (span, LowercaseSelf)
+                                    }
+                                    None => {
+                                        // If we have a `let name = expr;`, we have the span for
+                                        // `name` and use that to see if it is followed by a type
+                                        // specifier. If not, then we know we need to suggest
+                                        // `const name: Ty = expr;`. This is a heuristic, it will
+                                        // break down in the presence of macros.
+                                        let sm = self.tcx.sess.source_map();
+                                        let type_span = match sm.span_look_ahead(
+                                            original_rib_ident_def.span,
+                                            ":",
+                                            None,
+                                        ) {
+                                            None => {
+                                                Some(original_rib_ident_def.span.shrink_to_hi())
+                                            }
+                                            Some(_) => None,
                                         };
                                         (
-                                            span,
-                                            AttemptToUseNonConstantValueInConstant(
-                                                ident, "let", kind_str,
-                                            ),
-                                        )
-                                    } else {
-                                        (
                                             rib_ident.span,
-                                            AttemptToUseNonConstantValueInConstant(
-                                                original_rib_ident_def,
-                                                "const",
-                                                "let",
-                                            ),
+                                            AttemptToUseNonConstantValueInConstant {
+                                                ident: original_rib_ident_def,
+                                                suggestion: "const",
+                                                current: "let",
+                                                type_span,
+                                            },
                                         )
-                                    };
+                                    }
+                                    Some((ident, kind)) => (
+                                        span,
+                                        AttemptToUseNonConstantValueInConstant {
+                                            ident,
+                                            suggestion: "let",
+                                            current: kind.as_str(),
+                                            type_span: None,
+                                        },
+                                    ),
+                                };
                                 self.report_error(span, resolution_error);
                             }
                             return Res::Err;
                         }
                         RibKind::ConstParamTy => {
                             if let Some(span) = finalize {
-                                self.report_error(span, ParamInTyOfConstParam(rib_ident.name));
+                                self.report_error(
+                                    span,
+                                    ParamInTyOfConstParam { name: rib_ident.name },
+                                );
                             }
                             return Res::Err;
                         }
@@ -1170,29 +1309,39 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     return Res::Err;
                 }
             }
-            Res::Def(DefKind::TyParam, _)
-            | Res::SelfTyParam { .. }
-            | Res::SelfTyAlias { .. }
-            | Res::SelfCtor(_) => {
+            Res::Def(DefKind::TyParam, _) | Res::SelfTyParam { .. } | Res::SelfTyAlias { .. } => {
                 for rib in ribs {
-                    let has_generic_params: HasGenericParams = match rib.kind {
+                    let (has_generic_params, def_kind) = match rib.kind {
                         RibKind::Normal
-                        | RibKind::ClosureOrAsync
+                        | RibKind::Block(..)
+                        | RibKind::FnOrCoroutine
                         | RibKind::Module(..)
                         | RibKind::MacroDefinition(..)
                         | RibKind::InlineAsmSym
                         | RibKind::AssocItem
-                        | RibKind::ForwardGenericParamBan => {
+                        | RibKind::ForwardGenericParamBan(_) => {
                             // Nothing to do. Continue.
                             continue;
                         }
 
+                        RibKind::ConstParamTy => {
+                            if !self.tcx.features().generic_const_parameter_types() {
+                                if let Some(span) = finalize {
+                                    self.report_error(
+                                        span,
+                                        ResolutionError::ParamInTyOfConstParam {
+                                            name: rib_ident.name,
+                                        },
+                                    );
+                                }
+                                return Res::Err;
+                            } else {
+                                continue;
+                            }
+                        }
+
                         RibKind::ConstantItem(trivial, _) => {
-                            let features = self.tcx.sess.features_untracked();
-                            // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
-                            if !(trivial == ConstantHasGenerics::Yes
-                                || features.generic_const_exprs)
-                            {
+                            if let ConstantHasGenerics::No(cause) = trivial {
                                 // HACK(min_const_generics): If we encounter `Self` in an anonymous
                                 // constant we can't easily tell if it's generic at this stage, so
                                 // we instead remember this and then enforce the self type to be
@@ -1210,14 +1359,22 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                                     }
                                 } else {
                                     if let Some(span) = finalize {
-                                        self.report_error(
-                                            span,
-                                            ResolutionError::ParamInNonTrivialAnonConst {
-                                                name: rib_ident.name,
-                                                is_type: true,
-                                            },
-                                        );
-                                        self.tcx.sess.delay_span_bug(span, CG_BUG_STR);
+                                        let error = match cause {
+                                            NoConstantGenericsReason::IsEnumDiscriminant => {
+                                                ResolutionError::ParamInEnumDiscriminant {
+                                                    name: rib_ident.name,
+                                                    param_kind: ParamKindInEnumDiscriminant::Type,
+                                                }
+                                            }
+                                            NoConstantGenericsReason::NonTrivialConstArg => {
+                                                ResolutionError::ParamInNonTrivialAnonConst {
+                                                    name: rib_ident.name,
+                                                    param_kind:
+                                                        ParamKindInNonTrivialAnonConst::Type,
+                                                }
+                                            }
+                                        };
+                                        let _: ErrorGuaranteed = self.report_error(span, error);
                                     }
 
                                     return Res::Err;
@@ -1228,24 +1385,18 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                         }
 
                         // This was an attempt to use a type parameter outside its scope.
-                        RibKind::Item(has_generic_params) => has_generic_params,
-                        RibKind::ConstParamTy => {
-                            if let Some(span) = finalize {
-                                self.report_error(
-                                    span,
-                                    ResolutionError::ParamInTyOfConstParam(rib_ident.name),
-                                );
-                            }
-                            return Res::Err;
+                        RibKind::Item(has_generic_params, def_kind) => {
+                            (has_generic_params, def_kind)
                         }
                     };
 
                     if let Some(span) = finalize {
                         self.report_error(
                             span,
-                            ResolutionError::GenericParamsFromOuterFunction(
+                            ResolutionError::GenericParamsFromOuterItem(
                                 res,
                                 has_generic_params,
+                                def_kind,
                             ),
                         );
                     }
@@ -1254,30 +1405,52 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             }
             Res::Def(DefKind::ConstParam, _) => {
                 for rib in ribs {
-                    let has_generic_params = match rib.kind {
+                    let (has_generic_params, def_kind) = match rib.kind {
                         RibKind::Normal
-                        | RibKind::ClosureOrAsync
+                        | RibKind::Block(..)
+                        | RibKind::FnOrCoroutine
                         | RibKind::Module(..)
                         | RibKind::MacroDefinition(..)
                         | RibKind::InlineAsmSym
                         | RibKind::AssocItem
-                        | RibKind::ForwardGenericParamBan => continue,
+                        | RibKind::ForwardGenericParamBan(_) => continue,
 
-                        RibKind::ConstantItem(trivial, _) => {
-                            let features = self.tcx.sess.features_untracked();
-                            // HACK(min_const_generics): We currently only allow `N` or `{ N }`.
-                            if !(trivial == ConstantHasGenerics::Yes
-                                || features.generic_const_exprs)
-                            {
+                        RibKind::ConstParamTy => {
+                            if !self.tcx.features().generic_const_parameter_types() {
                                 if let Some(span) = finalize {
                                     self.report_error(
                                         span,
-                                        ResolutionError::ParamInNonTrivialAnonConst {
+                                        ResolutionError::ParamInTyOfConstParam {
                                             name: rib_ident.name,
-                                            is_type: false,
                                         },
                                     );
-                                    self.tcx.sess.delay_span_bug(span, CG_BUG_STR);
+                                }
+                                return Res::Err;
+                            } else {
+                                continue;
+                            }
+                        }
+
+                        RibKind::ConstantItem(trivial, _) => {
+                            if let ConstantHasGenerics::No(cause) = trivial {
+                                if let Some(span) = finalize {
+                                    let error = match cause {
+                                        NoConstantGenericsReason::IsEnumDiscriminant => {
+                                            ResolutionError::ParamInEnumDiscriminant {
+                                                name: rib_ident.name,
+                                                param_kind: ParamKindInEnumDiscriminant::Const,
+                                            }
+                                        }
+                                        NoConstantGenericsReason::NonTrivialConstArg => {
+                                            ResolutionError::ParamInNonTrivialAnonConst {
+                                                name: rib_ident.name,
+                                                param_kind: ParamKindInNonTrivialAnonConst::Const {
+                                                    name: rib_ident.name,
+                                                },
+                                            }
+                                        }
+                                    };
+                                    self.report_error(span, error);
                                 }
 
                                 return Res::Err;
@@ -1286,15 +1459,8 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                             continue;
                         }
 
-                        RibKind::Item(has_generic_params) => has_generic_params,
-                        RibKind::ConstParamTy => {
-                            if let Some(span) = finalize {
-                                self.report_error(
-                                    span,
-                                    ResolutionError::ParamInTyOfConstParam(rib_ident.name),
-                                );
-                            }
-                            return Res::Err;
+                        RibKind::Item(has_generic_params, def_kind) => {
+                            (has_generic_params, def_kind)
                         }
                     };
 
@@ -1302,9 +1468,10 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     if let Some(span) = finalize {
                         self.report_error(
                             span,
-                            ResolutionError::GenericParamsFromOuterFunction(
+                            ResolutionError::GenericParamsFromOuterItem(
                                 res,
                                 has_generic_params,
+                                def_kind,
                             ),
                         );
                     }
@@ -1313,66 +1480,88 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             }
             _ => {}
         }
+
         res
     }
 
     #[instrument(level = "debug", skip(self))]
-    pub(crate) fn maybe_resolve_path(
-        &mut self,
+    pub(crate) fn maybe_resolve_path<'r>(
+        self: CmResolver<'r, 'ra, 'tcx>,
         path: &[Segment],
         opt_ns: Option<Namespace>, // `None` indicates a module path in import
-        parent_scope: &ParentScope<'a>,
-    ) -> PathResult<'a> {
-        self.resolve_path_with_ribs(path, opt_ns, parent_scope, None, None, None)
-    }
-
-    #[instrument(level = "debug", skip(self))]
-    pub(crate) fn resolve_path(
-        &mut self,
-        path: &[Segment],
-        opt_ns: Option<Namespace>, // `None` indicates a module path in import
-        parent_scope: &ParentScope<'a>,
-        finalize: Option<Finalize>,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> PathResult<'a> {
-        self.resolve_path_with_ribs(path, opt_ns, parent_scope, finalize, None, ignore_binding)
-    }
-
-    pub(crate) fn resolve_path_with_ribs(
-        &mut self,
-        path: &[Segment],
-        opt_ns: Option<Namespace>, // `None` indicates a module path in import
-        parent_scope: &ParentScope<'a>,
-        finalize: Option<Finalize>,
-        ribs: Option<&PerNS<Vec<Rib<'a>>>>,
-        ignore_binding: Option<&'a NameBinding<'a>>,
-    ) -> PathResult<'a> {
-        debug!(
-            "resolve_path(path={:?}, opt_ns={:?}, finalize={:?}) path_len: {}",
+        parent_scope: &ParentScope<'ra>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> PathResult<'ra> {
+        self.resolve_path_with_ribs(
             path,
             opt_ns,
+            parent_scope,
+            None,
+            None,
+            None,
+            None,
+            ignore_import,
+        )
+    }
+    #[instrument(level = "debug", skip(self))]
+    pub(crate) fn resolve_path<'r>(
+        self: CmResolver<'r, 'ra, 'tcx>,
+        path: &[Segment],
+        opt_ns: Option<Namespace>, // `None` indicates a module path in import
+        parent_scope: &ParentScope<'ra>,
+        finalize: Option<Finalize>,
+        ignore_binding: Option<NameBinding<'ra>>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> PathResult<'ra> {
+        self.resolve_path_with_ribs(
+            path,
+            opt_ns,
+            parent_scope,
+            None,
             finalize,
-            path.len()
-        );
+            None,
+            ignore_binding,
+            ignore_import,
+        )
+    }
 
+    pub(crate) fn resolve_path_with_ribs<'r>(
+        mut self: CmResolver<'r, 'ra, 'tcx>,
+        path: &[Segment],
+        opt_ns: Option<Namespace>, // `None` indicates a module path in import
+        parent_scope: &ParentScope<'ra>,
+        source: Option<PathSource<'_, '_, '_>>,
+        finalize: Option<Finalize>,
+        ribs: Option<&PerNS<Vec<Rib<'ra>>>>,
+        ignore_binding: Option<NameBinding<'ra>>,
+        ignore_import: Option<Import<'ra>>,
+    ) -> PathResult<'ra> {
         let mut module = None;
+        let mut module_had_parse_errors = false;
         let mut allow_super = true;
         let mut second_binding = None;
 
-        for (i, &Segment { ident, id, .. }) in path.iter().enumerate() {
-            debug!("resolve_path ident {} {:?} {:?}", i, ident, id);
-            let record_segment_res = |this: &mut Self, res| {
-                if finalize.is_some() {
-                    if let Some(id) = id {
-                        if !this.partial_res_map.contains_key(&id) {
-                            assert!(id != ast::DUMMY_NODE_ID, "Trying to resolve dummy id");
-                            this.record_partial_res(id, PartialRes::new(res));
-                        }
-                    }
-                }
-            };
+        // We'll provide more context to the privacy errors later, up to `len`.
+        let privacy_errors_len = self.privacy_errors.len();
+        fn record_segment_res<'r, 'ra, 'tcx>(
+            mut this: CmResolver<'r, 'ra, 'tcx>,
+            finalize: Option<Finalize>,
+            res: Res,
+            id: Option<NodeId>,
+        ) {
+            if finalize.is_some()
+                && let Some(id) = id
+                && !this.partial_res_map.contains_key(&id)
+            {
+                assert!(id != ast::DUMMY_NODE_ID, "Trying to resolve dummy id");
+                this.get_mut().record_partial_res(id, PartialRes::new(res));
+            }
+        }
 
-            let is_last = i + 1 == path.len();
+        for (segment_idx, &Segment { ident, id, .. }) in path.iter().enumerate() {
+            debug!("resolve_path ident {} {:?} {:?}", segment_idx, ident, id);
+
+            let is_last = segment_idx + 1 == path.len();
             let ns = if is_last { opt_ns.unwrap_or(TypeNS) } else { TypeNS };
             let name = ident.name;
 
@@ -1381,137 +1570,167 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
             if ns == TypeNS {
                 if allow_super && name == kw::Super {
                     let mut ctxt = ident.span.ctxt().normalize_to_macros_2_0();
-                    let self_module = match i {
+                    let self_module = match segment_idx {
                         0 => Some(self.resolve_self(&mut ctxt, parent_scope.module)),
                         _ => match module {
                             Some(ModuleOrUniformRoot::Module(module)) => Some(module),
                             _ => None,
                         },
                     };
-                    if let Some(self_module) = self_module {
-                        if let Some(parent) = self_module.parent {
-                            module = Some(ModuleOrUniformRoot::Module(
-                                self.resolve_self(&mut ctxt, parent),
-                            ));
-                            continue;
-                        }
-                    }
-                    return PathResult::failed(ident.span, false, finalize.is_some(), || {
-                        ("there are too many leading `super` keywords".to_string(), None)
-                    });
-                }
-                if i == 0 {
-                    if name == kw::SelfLower {
-                        let mut ctxt = ident.span.ctxt().normalize_to_macros_2_0();
-                        module = Some(ModuleOrUniformRoot::Module(
-                            self.resolve_self(&mut ctxt, parent_scope.module),
-                        ));
+                    if let Some(self_module) = self_module
+                        && let Some(parent) = self_module.parent
+                    {
+                        module =
+                            Some(ModuleOrUniformRoot::Module(self.resolve_self(&mut ctxt, parent)));
                         continue;
                     }
-                    if name == kw::PathRoot && ident.span.rust_2018() {
+                    return PathResult::failed(
+                        ident,
+                        false,
+                        finalize.is_some(),
+                        module_had_parse_errors,
+                        module,
+                        || ("there are too many leading `super` keywords".to_string(), None),
+                    );
+                }
+                if segment_idx == 0 {
+                    if name == kw::SelfLower {
+                        let mut ctxt = ident.span.ctxt().normalize_to_macros_2_0();
+                        let self_mod = self.resolve_self(&mut ctxt, parent_scope.module);
+                        if let Some(res) = self_mod.res() {
+                            record_segment_res(self.reborrow(), finalize, res, id);
+                        }
+                        module = Some(ModuleOrUniformRoot::Module(self_mod));
+                        continue;
+                    }
+                    if name == kw::PathRoot && ident.span.at_least_rust_2018() {
                         module = Some(ModuleOrUniformRoot::ExternPrelude);
                         continue;
                     }
                     if name == kw::PathRoot
                         && ident.span.is_rust_2015()
-                        && self.tcx.sess.rust_2018()
+                        && self.tcx.sess.at_least_rust_2018()
                     {
                         // `::a::b` from 2015 macro on 2018 global edition
-                        module = Some(ModuleOrUniformRoot::CrateRootAndExternPrelude);
+                        let crate_root = self.resolve_crate_root(ident);
+                        module = Some(ModuleOrUniformRoot::ModuleAndExternPrelude(crate_root));
                         continue;
                     }
                     if name == kw::PathRoot || name == kw::Crate || name == kw::DollarCrate {
                         // `::a::b`, `crate::a::b` or `$crate::a::b`
-                        module = Some(ModuleOrUniformRoot::Module(self.resolve_crate_root(ident)));
+                        let crate_root = self.resolve_crate_root(ident);
+                        if let Some(res) = crate_root.res() {
+                            record_segment_res(self.reborrow(), finalize, res, id);
+                        }
+                        module = Some(ModuleOrUniformRoot::Module(crate_root));
                         continue;
                     }
                 }
             }
 
             // Report special messages for path segment keywords in wrong positions.
-            if ident.is_path_segment_keyword() && i != 0 {
-                return PathResult::failed(ident.span, false, finalize.is_some(), || {
-                    let name_str = if name == kw::PathRoot {
-                        "crate root".to_string()
-                    } else {
-                        format!("`{}`", name)
-                    };
-                    let label = if i == 1 && path[0].ident.name == kw::PathRoot {
-                        format!("global paths cannot start with {}", name_str)
-                    } else {
-                        format!("{} in paths can only be used in start position", name_str)
-                    };
-                    (label, None)
-                });
+            if ident.is_path_segment_keyword() && segment_idx != 0 {
+                return PathResult::failed(
+                    ident,
+                    false,
+                    finalize.is_some(),
+                    module_had_parse_errors,
+                    module,
+                    || {
+                        let name_str = if name == kw::PathRoot {
+                            "crate root".to_string()
+                        } else {
+                            format!("`{name}`")
+                        };
+                        let label = if segment_idx == 1 && path[0].ident.name == kw::PathRoot {
+                            format!("global paths cannot start with {name_str}")
+                        } else {
+                            format!("{name_str} in paths can only be used in start position")
+                        };
+                        (label, None)
+                    },
+                );
             }
 
-            enum FindBindingResult<'a> {
-                Binding(Result<&'a NameBinding<'a>, Determinacy>),
-                Res(Res),
-            }
-            let find_binding_in_ns = |this: &mut Self, ns| {
-                let binding = if let Some(module) = module {
-                    this.resolve_ident_in_module(
+            let binding = if let Some(module) = module {
+                self.reborrow()
+                    .resolve_ident_in_module(
                         module,
                         ident,
                         ns,
                         parent_scope,
                         finalize,
                         ignore_binding,
+                        ignore_import,
                     )
-                } else if let Some(ribs) = ribs
-                    && let Some(TypeNS | ValueNS) = opt_ns
-                {
-                    match this.resolve_ident_in_lexical_scope(
-                        ident,
-                        ns,
-                        parent_scope,
-                        finalize,
-                        &ribs[ns],
-                        ignore_binding,
-                    ) {
-                        // we found a locally-imported or available item/module
-                        Some(LexicalScopeBinding::Item(binding)) => Ok(binding),
-                        // we found a local variable or type param
-                        Some(LexicalScopeBinding::Res(res)) => return FindBindingResult::Res(res),
-                        _ => Err(Determinacy::determined(finalize.is_some())),
+                    .map_err(|(determinacy, _)| determinacy)
+            } else if let Some(ribs) = ribs
+                && let Some(TypeNS | ValueNS) = opt_ns
+            {
+                assert!(ignore_import.is_none());
+                match self.get_mut().resolve_ident_in_lexical_scope(
+                    ident,
+                    ns,
+                    parent_scope,
+                    finalize,
+                    &ribs[ns],
+                    ignore_binding,
+                ) {
+                    // we found a locally-imported or available item/module
+                    Some(LexicalScopeBinding::Item(binding)) => Ok(binding),
+                    // we found a local variable or type param
+                    Some(LexicalScopeBinding::Res(res)) => {
+                        record_segment_res(self.reborrow(), finalize, res, id);
+                        return PathResult::NonModule(PartialRes::with_unresolved_segments(
+                            res,
+                            path.len() - 1,
+                        ));
                     }
-                } else {
-                    let scopes = ScopeSet::All(ns, opt_ns.is_none());
-                    this.early_resolve_ident_in_lexical_scope(
-                        ident,
-                        scopes,
-                        parent_scope,
-                        finalize,
-                        finalize.is_some(),
-                        ignore_binding,
-                    )
-                };
-                FindBindingResult::Binding(binding)
-            };
-            let binding = match find_binding_in_ns(self, ns) {
-                FindBindingResult::Res(res) => {
-                    record_segment_res(self, res);
-                    return PathResult::NonModule(PartialRes::with_unresolved_segments(
-                        res,
-                        path.len() - 1,
-                    ));
+                    _ => Err(Determinacy::determined(finalize.is_some())),
                 }
-                FindBindingResult::Binding(binding) => binding,
+            } else {
+                self.reborrow().resolve_ident_in_scope_set(
+                    ident,
+                    ScopeSet::All(ns),
+                    parent_scope,
+                    finalize,
+                    finalize.is_some(),
+                    ignore_binding,
+                    ignore_import,
+                )
             };
+
             match binding {
                 Ok(binding) => {
-                    if i == 1 {
+                    if segment_idx == 1 {
                         second_binding = Some(binding);
                     }
                     let res = binding.res();
+
+                    // Mark every privacy error in this path with the res to the last element. This allows us
+                    // to detect the item the user cares about and either find an alternative import, or tell
+                    // the user it is not accessible.
+                    if finalize.is_some() {
+                        for error in &mut self.get_mut().privacy_errors[privacy_errors_len..] {
+                            error.outermost_res = Some((res, ident));
+                            error.source = match source {
+                                Some(PathSource::Struct(Some(expr)))
+                                | Some(PathSource::Expr(Some(expr))) => Some(expr.clone()),
+                                _ => None,
+                            };
+                        }
+                    }
+
                     let maybe_assoc = opt_ns != Some(MacroNS) && PathSource::Type.is_expected(res);
-                    if let Some(next_module) = binding.module() {
-                        module = Some(ModuleOrUniformRoot::Module(next_module));
-                        record_segment_res(self, res);
+                    if let Some(def_id) = binding.res().module_like_def_id() {
+                        if self.mods_with_parse_errors.contains(&def_id) {
+                            module_had_parse_errors = true;
+                        }
+                        module = Some(ModuleOrUniformRoot::Module(self.expect_module(def_id)));
+                        record_segment_res(self.reborrow(), finalize, res, id);
                     } else if res == Res::ToolMod && !is_last && opt_ns.is_some() {
                         if binding.is_import() {
-                            self.tcx.sess.emit_err(errors::ToolModuleImported {
+                            self.dcx().emit_err(errors::ToolModuleImported {
                                 span: ident.span,
                                 import: binding.span,
                             });
@@ -1521,51 +1740,76 @@ impl<'a, 'tcx> Resolver<'a, 'tcx> {
                     } else if res == Res::Err {
                         return PathResult::NonModule(PartialRes::new(Res::Err));
                     } else if opt_ns.is_some() && (is_last || maybe_assoc) {
-                        self.lint_if_path_starts_with_module(finalize, path, second_binding);
-                        record_segment_res(self, res);
+                        if let Some(finalize) = finalize {
+                            self.get_mut().lint_if_path_starts_with_module(
+                                finalize,
+                                path,
+                                second_binding,
+                            );
+                        }
+                        record_segment_res(self.reborrow(), finalize, res, id);
                         return PathResult::NonModule(PartialRes::with_unresolved_segments(
                             res,
-                            path.len() - i - 1,
+                            path.len() - segment_idx - 1,
                         ));
                     } else {
-                        return PathResult::failed(ident.span, is_last, finalize.is_some(), || {
-                            let label = format!(
-                                "`{ident}` is {} {}, not a module",
-                                res.article(),
-                                res.descr()
-                            );
-                            (label, None)
-                        });
+                        return PathResult::failed(
+                            ident,
+                            is_last,
+                            finalize.is_some(),
+                            module_had_parse_errors,
+                            module,
+                            || {
+                                let label = format!(
+                                    "`{ident}` is {} {}, not a module",
+                                    res.article(),
+                                    res.descr()
+                                );
+                                (label, None)
+                            },
+                        );
                     }
                 }
                 Err(Undetermined) => return PathResult::Indeterminate,
                 Err(Determined) => {
-                    if let Some(ModuleOrUniformRoot::Module(module)) = module {
-                        if opt_ns.is_some() && !module.is_normal() {
-                            return PathResult::NonModule(PartialRes::with_unresolved_segments(
-                                module.res().unwrap(),
-                                path.len() - i,
-                            ));
-                        }
+                    if let Some(ModuleOrUniformRoot::Module(module)) = module
+                        && opt_ns.is_some()
+                        && !module.is_normal()
+                    {
+                        return PathResult::NonModule(PartialRes::with_unresolved_segments(
+                            module.res().unwrap(),
+                            path.len() - segment_idx,
+                        ));
                     }
 
-                    return PathResult::failed(ident.span, is_last, finalize.is_some(), || {
-                        self.report_path_resolution_error(
-                            path,
-                            opt_ns,
-                            parent_scope,
-                            ribs,
-                            ignore_binding,
-                            module,
-                            i,
-                            ident,
-                        )
-                    });
+                    let mut this = self.reborrow();
+                    return PathResult::failed(
+                        ident,
+                        is_last,
+                        finalize.is_some(),
+                        module_had_parse_errors,
+                        module,
+                        || {
+                            this.get_mut().report_path_resolution_error(
+                                path,
+                                opt_ns,
+                                parent_scope,
+                                ribs,
+                                ignore_binding,
+                                ignore_import,
+                                module,
+                                segment_idx,
+                                ident,
+                            )
+                        },
+                    );
                 }
             }
         }
 
-        self.lint_if_path_starts_with_module(finalize, path, second_binding);
+        if let Some(finalize) = finalize {
+            self.get_mut().lint_if_path_starts_with_module(finalize, path, second_binding);
+        }
 
         PathResult::Module(match module {
             Some(module) => module,

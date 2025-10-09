@@ -1,11 +1,10 @@
-// ignore-wasm32 compiled with panic=abort by default
-// compile-flags: -Zmir-opt-level=1
+// skip-filecheck
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
+//@ compile-flags: -Zmir-opt-level=1
 
 fn foo<T>() {
     if let (Some(a), None) = (Option::<u8>::None, Option::<T>::None) {
-        if a > 42u8 {
-
-        }
+        if a > 42u8 {}
     }
 }
 

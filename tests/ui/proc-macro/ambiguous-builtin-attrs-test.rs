@@ -1,5 +1,6 @@
-// aux-build:builtin-attrs.rs
-// compile-flags:--test
+//@ proc-macro: builtin-attrs.rs
+//@ compile-flags:--test
+//@ ignore-backends: gcc
 
 #![feature(decl_macro, test)]
 

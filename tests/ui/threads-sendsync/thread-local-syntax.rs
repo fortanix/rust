@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![deny(missing_docs)]
 //! this tests the syntax of `thread_local!`
 
@@ -13,7 +13,7 @@ mod foo {
 
             // look at these restrictions!!
             pub(crate) static BAZ: usize = 0;
-            pub(in foo) static QUUX: usize = 0;
+            pub(in crate::foo) static QUUX: usize = 0;
         }
         thread_local!(static SPLOK: u32 = 0);
     }

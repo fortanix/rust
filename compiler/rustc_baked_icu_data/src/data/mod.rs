@@ -1,122 +1,40 @@
 // @generated
-#[clippy::msrv = "1.61"]
-mod fallback;
-#[clippy::msrv = "1.61"]
-mod list;
-#[clippy::msrv = "1.61"]
-use icu_provider::prelude::*;
-/// Implement [`DataProvider<M>`] on the given struct using the data
-/// hardcoded in this module. This allows the struct to be used with
-/// `icu`'s `_unstable` constructors.
+include!("list_and_v1.rs.data");
+/// Marks a type as a data provider. You can then use macros like
+/// `impl_core_helloworld_v1` to add implementations.
 ///
-/// This macro can only be called from its definition-site, i.e. right
-/// after `include!`-ing the generated module.
-///
-/// ```compile_fail
-/// struct MyDataProvider;
-/// include!("/path/to/generated/mod.rs");
-/// impl_data_provider(MyDataProvider);
+/// ```ignore
+/// struct MyProvider;
+/// const _: () = {
+///     include!("path/to/generated/macros.rs");
+///     make_provider!(MyProvider);
+///     impl_core_helloworld_v1!(MyProvider);
+/// }
 /// ```
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __make_provider {
+    ($ name : ty) => {
+        #[clippy::msrv = "1.82"]
+        impl $name {
+            #[allow(dead_code)]
+            pub(crate) const MUST_USE_MAKE_PROVIDER_MACRO: () = ();
+        }
+        icu_provider::marker::impl_data_provider_never_marker!($name);
+    };
+}
+#[doc(inline)]
+pub use __make_provider as make_provider;
+/// This macro requires the following crates:
+/// * `icu_list`
+/// * `icu_locale/compiled_data`
+/// * `icu_provider`
+/// * `icu_provider/baked`
+/// * `zerovec`
 #[allow(unused_macros)]
 macro_rules! impl_data_provider {
-    ($ provider : path) => {
-        #[clippy::msrv = "1.61"]
-        impl DataProvider<::icu_list::provider::AndListV1Marker> for $provider {
-            fn load(&self, req: DataRequest) -> Result<DataResponse<::icu_list::provider::AndListV1Marker>, DataError> {
-                list::and_v1::lookup(&req.locale)
-                    .map(zerofrom::ZeroFrom::zero_from)
-                    .map(DataPayload::from_owned)
-                    .map(|payload| DataResponse { metadata: Default::default(), payload: Some(payload) })
-                    .ok_or_else(|| DataErrorKind::MissingLocale.with_req(::icu_list::provider::AndListV1Marker::KEY, req))
-            }
-        }
-        #[clippy::msrv = "1.61"]
-        impl DataProvider<::icu_provider_adapters::fallback::provider::CollationFallbackSupplementV1Marker> for $provider {
-            fn load(
-                &self,
-                req: DataRequest,
-            ) -> Result<DataResponse<::icu_provider_adapters::fallback::provider::CollationFallbackSupplementV1Marker>, DataError> {
-                fallback::supplement::co_v1::lookup(&req.locale)
-                    .map(zerofrom::ZeroFrom::zero_from)
-                    .map(DataPayload::from_owned)
-                    .map(|payload| DataResponse { metadata: Default::default(), payload: Some(payload) })
-                    .ok_or_else(|| {
-                        DataErrorKind::MissingLocale
-                            .with_req(::icu_provider_adapters::fallback::provider::CollationFallbackSupplementV1Marker::KEY, req)
-                    })
-            }
-        }
-        #[clippy::msrv = "1.61"]
-        impl DataProvider<::icu_provider_adapters::fallback::provider::LocaleFallbackLikelySubtagsV1Marker> for $provider {
-            fn load(
-                &self,
-                req: DataRequest,
-            ) -> Result<DataResponse<::icu_provider_adapters::fallback::provider::LocaleFallbackLikelySubtagsV1Marker>, DataError> {
-                fallback::likelysubtags_v1::lookup(&req.locale)
-                    .map(zerofrom::ZeroFrom::zero_from)
-                    .map(DataPayload::from_owned)
-                    .map(|payload| DataResponse { metadata: Default::default(), payload: Some(payload) })
-                    .ok_or_else(|| {
-                        DataErrorKind::MissingLocale
-                            .with_req(::icu_provider_adapters::fallback::provider::LocaleFallbackLikelySubtagsV1Marker::KEY, req)
-                    })
-            }
-        }
-        #[clippy::msrv = "1.61"]
-        impl DataProvider<::icu_provider_adapters::fallback::provider::LocaleFallbackParentsV1Marker> for $provider {
-            fn load(
-                &self,
-                req: DataRequest,
-            ) -> Result<DataResponse<::icu_provider_adapters::fallback::provider::LocaleFallbackParentsV1Marker>, DataError> {
-                fallback::parents_v1::lookup(&req.locale)
-                    .map(zerofrom::ZeroFrom::zero_from)
-                    .map(DataPayload::from_owned)
-                    .map(|payload| DataResponse { metadata: Default::default(), payload: Some(payload) })
-                    .ok_or_else(|| {
-                        DataErrorKind::MissingLocale.with_req(::icu_provider_adapters::fallback::provider::LocaleFallbackParentsV1Marker::KEY, req)
-                    })
-            }
-        }
+    ($ provider : ty) => {
+        make_provider!($provider);
+        impl_list_and_v1!($provider);
     };
 }
-/// Implement [`AnyProvider`] on the given struct using the data
-/// hardcoded in this module. This allows the struct to be used with
-/// `icu`'s `_any` constructors.
-///
-/// This macro can only be called from its definition-site, i.e. right
-/// after `include!`-ing the generated module.
-///
-/// ```compile_fail
-/// struct MyAnyProvider;
-/// include!("/path/to/generated/mod.rs");
-/// impl_any_provider(MyAnyProvider);
-/// ```
-#[allow(unused_macros)]
-macro_rules! impl_any_provider {
-    ($ provider : path) => {
-        #[clippy::msrv = "1.61"]
-        impl AnyProvider for $provider {
-            fn load_any(&self, key: DataKey, req: DataRequest) -> Result<AnyResponse, DataError> {
-                const ANDLISTV1MARKER: ::icu_provider::DataKeyHash = ::icu_list::provider::AndListV1Marker::KEY.hashed();
-                const COLLATIONFALLBACKSUPPLEMENTV1MARKER: ::icu_provider::DataKeyHash =
-                    ::icu_provider_adapters::fallback::provider::CollationFallbackSupplementV1Marker::KEY.hashed();
-                const LOCALEFALLBACKLIKELYSUBTAGSV1MARKER: ::icu_provider::DataKeyHash =
-                    ::icu_provider_adapters::fallback::provider::LocaleFallbackLikelySubtagsV1Marker::KEY.hashed();
-                const LOCALEFALLBACKPARENTSV1MARKER: ::icu_provider::DataKeyHash =
-                    ::icu_provider_adapters::fallback::provider::LocaleFallbackParentsV1Marker::KEY.hashed();
-                match key.hashed() {
-                    ANDLISTV1MARKER => list::and_v1::lookup(&req.locale).map(AnyPayload::from_static_ref),
-                    COLLATIONFALLBACKSUPPLEMENTV1MARKER => fallback::supplement::co_v1::lookup(&req.locale).map(AnyPayload::from_static_ref),
-                    LOCALEFALLBACKLIKELYSUBTAGSV1MARKER => fallback::likelysubtags_v1::lookup(&req.locale).map(AnyPayload::from_static_ref),
-                    LOCALEFALLBACKPARENTSV1MARKER => fallback::parents_v1::lookup(&req.locale).map(AnyPayload::from_static_ref),
-                    _ => return Err(DataErrorKind::MissingDataKey.with_req(key, req)),
-                }
-                .map(|payload| AnyResponse { payload: Some(payload), metadata: Default::default() })
-                .ok_or_else(|| DataErrorKind::MissingLocale.with_req(key, req))
-            }
-        }
-    };
-}
-#[clippy::msrv = "1.61"]
-pub struct BakedDataProvider;
-impl_data_provider!(BakedDataProvider);

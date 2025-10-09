@@ -1,42 +1,24 @@
+use rustc_abi::ExternAbi;
+use rustc_attr_parsing::AttributeParser;
+use rustc_errors::Applicability;
+use rustc_hir::attrs::{AttributeKind, ReprAttr};
+use rustc_hir::def::{DefKind, Res};
+use rustc_hir::def_id::DefId;
+use rustc_hir::intravisit::{FnKind, Visitor};
+use rustc_hir::{Attribute, GenericParamKind, PatExprKind, PatKind, find_attr};
+use rustc_middle::hir::nested_filter::All;
+use rustc_middle::ty::AssocContainer;
+use rustc_session::config::CrateType;
+use rustc_session::{declare_lint, declare_lint_pass};
+use rustc_span::def_id::LocalDefId;
+use rustc_span::{BytePos, Ident, Span, sym};
+use {rustc_ast as ast, rustc_hir as hir};
+
 use crate::lints::{
     NonCamelCaseType, NonCamelCaseTypeSub, NonSnakeCaseDiag, NonSnakeCaseDiagSub,
-    NonUpperCaseGlobal, NonUpperCaseGlobalSub,
+    NonUpperCaseGlobal, NonUpperCaseGlobalSub, NonUpperCaseGlobalSubTool,
 };
 use crate::{EarlyContext, EarlyLintPass, LateContext, LateLintPass, LintContext};
-use rustc_ast as ast;
-use rustc_attr as attr;
-use rustc_hir as hir;
-use rustc_hir::def::{DefKind, Res};
-use rustc_hir::intravisit::FnKind;
-use rustc_hir::{GenericParamKind, PatKind};
-use rustc_middle::ty;
-use rustc_span::def_id::LocalDefId;
-use rustc_span::symbol::{sym, Ident};
-use rustc_span::{BytePos, Span};
-use rustc_target::spec::abi::Abi;
-
-#[derive(PartialEq)]
-pub enum MethodLateContext {
-    TraitAutoImpl,
-    TraitImpl,
-    PlainImpl,
-}
-
-pub fn method_context(cx: &LateContext<'_>, id: LocalDefId) -> MethodLateContext {
-    let item = cx.tcx.associated_item(id);
-    match item.container {
-        ty::TraitContainer => MethodLateContext::TraitAutoImpl,
-        ty::ImplContainer => match cx.tcx.impl_trait_ref(item.container_id(cx.tcx)) {
-            Some(_) => MethodLateContext::TraitImpl,
-            None => MethodLateContext::PlainImpl,
-        },
-    }
-}
-
-fn assoc_item_in_trait_impl(cx: &LateContext<'_>, ii: &hir::ImplItem<'_>) -> bool {
-    let item = cx.tcx.associated_item(ii.owner_id);
-    item.trait_item_def_id.is_some()
-}
 
 declare_lint! {
     /// The `non_camel_case_types` lint detects types, variants, traits and
@@ -150,7 +132,7 @@ impl NonCamelCaseTypes {
             } else {
                 NonCamelCaseTypeSub::Label { span: ident.span }
             };
-            cx.emit_spanned_lint(
+            cx.emit_span_lint(
                 NON_CAMEL_CASE_TYPES,
                 ident.span,
                 NonCamelCaseType { sort, name, sub },
@@ -161,30 +143,32 @@ impl NonCamelCaseTypes {
 
 impl EarlyLintPass for NonCamelCaseTypes {
     fn check_item(&mut self, cx: &EarlyContext<'_>, it: &ast::Item) {
-        let has_repr_c = it
-            .attrs
-            .iter()
-            .any(|attr| attr::find_repr_attrs(cx.sess(), attr).contains(&attr::ReprC));
+        let has_repr_c = matches!(
+            AttributeParser::parse_limited(cx.sess(), &it.attrs, sym::repr, it.span, it.id, None),
+            Some(Attribute::Parsed(AttributeKind::Repr { reprs, ..})) if reprs.iter().any(|(r, _)| r == &ReprAttr::ReprC)
+        );
 
         if has_repr_c {
             return;
         }
 
         match &it.kind {
-            ast::ItemKind::TyAlias(..)
-            | ast::ItemKind::Enum(..)
-            | ast::ItemKind::Struct(..)
-            | ast::ItemKind::Union(..) => self.check_case(cx, "type", &it.ident),
-            ast::ItemKind::Trait(..) => self.check_case(cx, "trait", &it.ident),
-            ast::ItemKind::TraitAlias(..) => self.check_case(cx, "trait alias", &it.ident),
+            ast::ItemKind::TyAlias(box ast::TyAlias { ident, .. })
+            | ast::ItemKind::Enum(ident, ..)
+            | ast::ItemKind::Struct(ident, ..)
+            | ast::ItemKind::Union(ident, ..) => self.check_case(cx, "type", ident),
+            ast::ItemKind::Trait(box ast::Trait { ident, .. }) => {
+                self.check_case(cx, "trait", ident)
+            }
+            ast::ItemKind::TraitAlias(ident, _, _) => self.check_case(cx, "trait alias", ident),
 
             // N.B. This check is only for inherent associated types, so that we don't lint against
             // trait impls where we should have warned for the trait definition already.
-            ast::ItemKind::Impl(box ast::Impl { of_trait: None, items, .. }) => {
+            ast::ItemKind::Impl(ast::Impl { of_trait: None, items, .. }) => {
                 for it in items {
                     // FIXME: this doesn't respect `#[allow(..)]` on the item itself.
-                    if let ast::AssocItemKind::Type(..) = it.kind {
-                        self.check_case(cx, "associated type", &it.ident);
+                    if let ast::AssocItemKind::Type(alias) = &it.kind {
+                        self.check_case(cx, "associated type", &alias.ident);
                     }
                 }
             }
@@ -193,8 +177,8 @@ impl EarlyLintPass for NonCamelCaseTypes {
     }
 
     fn check_trait_item(&mut self, cx: &EarlyContext<'_>, it: &ast::AssocItem) {
-        if let ast::AssocItemKind::Type(..) = it.kind {
-            self.check_case(cx, "associated type", &it.ident);
+        if let ast::AssocItemKind::Type(alias) = &it.kind {
+            self.check_case(cx, "associated type", &alias.ident);
         }
     }
 
@@ -234,10 +218,10 @@ declare_lint! {
 declare_lint_pass!(NonSnakeCase => [NON_SNAKE_CASE]);
 
 impl NonSnakeCase {
-    fn to_snake_case(mut str: &str) -> String {
+    fn to_snake_case(mut name: &str) -> String {
         let mut words = vec![];
         // Preserve leading underscores
-        str = str.trim_start_matches(|c: char| {
+        name = name.trim_start_matches(|c: char| {
             if c == '_' {
                 words.push(String::new());
                 true
@@ -245,7 +229,7 @@ impl NonSnakeCase {
                 false
             }
         });
-        for s in str.split('_') {
+        for s in name.split('_') {
             let mut last_upper = false;
             let mut buf = String::new();
             if s.is_empty() {
@@ -273,18 +257,13 @@ impl NonSnakeCase {
             let ident = ident.trim_start_matches('\'');
             let ident = ident.trim_matches('_');
 
-            let mut allow_underscore = true;
-            ident.chars().all(|c| {
-                allow_underscore = match c {
-                    '_' if !allow_underscore => return false,
-                    '_' => false,
-                    // It would be more obvious to use `c.is_lowercase()`,
-                    // but some characters do not have a lowercase form
-                    c if !c.is_uppercase() => true,
-                    _ => return false,
-                };
-                true
-            })
+            if ident.contains("__") {
+                return false;
+            }
+
+            // This correctly handles letters in languages with and without
+            // cases, as well as numbers and underscores.
+            !ident.chars().any(char::is_uppercase)
         }
 
         let name = ident.name.as_str();
@@ -295,14 +274,14 @@ impl NonSnakeCase {
             // We cannot provide meaningful suggestions
             // if the characters are in the category of "Uppercase Letter".
             let sub = if name != sc {
-                // We have a valid span in almost all cases, but we don't have one when linting a crate
-                // name provided via the command line.
+                // We have a valid span in almost all cases, but we don't have one when linting a
+                // crate name provided via the command line.
                 if !span.is_dummy() {
                     let sc_ident = Ident::from_str_and_span(&sc, span);
                     if sc_ident.is_reserved() {
-                        // We shouldn't suggest a reserved identifier to fix non-snake-case identifiers.
-                        // Instead, recommend renaming the identifier entirely or, if permitted,
-                        // escaping it to create a raw identifier.
+                        // We shouldn't suggest a reserved identifier to fix non-snake-case
+                        // identifiers. Instead, recommend renaming the identifier entirely or, if
+                        // permitted, escaping it to create a raw identifier.
                         if sc_ident.name.can_be_raw() {
                             NonSnakeCaseDiagSub::RenameOrConvertSuggestion {
                                 span,
@@ -320,7 +299,7 @@ impl NonSnakeCase {
             } else {
                 NonSnakeCaseDiagSub::Label { span }
             };
-            cx.emit_spanned_lint(NON_SNAKE_CASE, span, NonSnakeCaseDiag { sort, name, sc, sub });
+            cx.emit_span_lint(NON_SNAKE_CASE, span, NonSnakeCaseDiag { sort, name, sc, sub });
         }
     }
 }
@@ -331,39 +310,39 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
             return;
         }
 
+        // Issue #45127: don't enforce `snake_case` for binary crates as binaries are not intended
+        // to be distributed and depended on like libraries. The lint is not suppressed for cdylib
+        // or staticlib because it's not clear what the desired lint behavior for those are.
+        if cx.tcx.crate_types().iter().all(|&crate_type| crate_type == CrateType::Executable) {
+            return;
+        }
+
         let crate_ident = if let Some(name) = &cx.tcx.sess.opts.crate_name {
             Some(Ident::from_str(name))
         } else {
-            attr::find_by_name(&cx.tcx.hir().attrs(hir::CRATE_HIR_ID), sym::crate_name)
-                .and_then(|attr| attr.meta())
-                .and_then(|meta| {
-                    meta.name_value_literal().and_then(|lit| {
-                        if let ast::LitKind::Str(name, ..) = lit.kind {
-                            // Discard the double quotes surrounding the literal.
-                            let sp = cx
-                                .sess()
-                                .source_map()
-                                .span_to_snippet(lit.span)
-                                .ok()
-                                .and_then(|snippet| {
-                                    let left = snippet.find('"')?;
-                                    let right =
-                                        snippet.rfind('"').map(|pos| snippet.len() - pos)?;
+            find_attr!(cx.tcx.hir_attrs(hir::CRATE_HIR_ID), AttributeKind::CrateName{name, name_span,..} => (name, name_span)).map(
+                |(&name, &span)| {
+                    // Discard the double quotes surrounding the literal.
+                    let sp = cx
+                        .sess()
+                        .source_map()
+                        .span_to_snippet(span)
+                        .ok()
+                        .and_then(|snippet| {
+                            let left = snippet.find('"')?;
+                            let right = snippet.rfind('"').map(|pos| snippet.len() - pos)?;
 
-                                    Some(
-                                        lit.span
-                                            .with_lo(lit.span.lo() + BytePos(left as u32 + 1))
-                                            .with_hi(lit.span.hi() - BytePos(right as u32)),
-                                    )
-                                })
-                                .unwrap_or(lit.span);
+                            Some(
+                                span
+                                    .with_lo(span.lo() + BytePos(left as u32 + 1))
+                                    .with_hi(span.hi() - BytePos(right as u32)),
+                            )
+                        })
+                        .unwrap_or(span);
 
-                            Some(Ident::new(name, sp))
-                        } else {
-                            None
-                        }
-                    })
-                })
+                    Ident::new(name, sp)
+                },
+            )
         };
 
         if let Some(ident) = &crate_ident {
@@ -387,21 +366,25 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
         id: LocalDefId,
     ) {
         match &fk {
-            FnKind::Method(ident, sig, ..) => match method_context(cx, id) {
-                MethodLateContext::PlainImpl => {
-                    if sig.header.abi != Abi::Rust && cx.tcx.has_attr(id, sym::no_mangle) {
+            FnKind::Method(ident, sig, ..) => match cx.tcx.associated_item(id).container {
+                AssocContainer::InherentImpl => {
+                    if sig.header.abi != ExternAbi::Rust
+                        && find_attr!(cx.tcx.get_all_attrs(id), AttributeKind::NoMangle(..))
+                    {
                         return;
                     }
                     self.check_snake_case(cx, "method", ident);
                 }
-                MethodLateContext::TraitAutoImpl => {
+                AssocContainer::Trait => {
                     self.check_snake_case(cx, "trait method", ident);
                 }
-                _ => (),
+                AssocContainer::TraitImpl(_) => {}
             },
             FnKind::ItemFn(ident, _, header) => {
                 // Skip foreign-ABI #[no_mangle] functions (Issue #31924)
-                if header.abi != Abi::Rust && cx.tcx.has_attr(id, sym::no_mangle) {
+                if header.abi != ExternAbi::Rust
+                    && find_attr!(cx.tcx.get_all_attrs(id), AttributeKind::NoMangle(..))
+                {
                     return;
                 }
                 self.check_snake_case(cx, "function", ident);
@@ -411,23 +394,35 @@ impl<'tcx> LateLintPass<'tcx> for NonSnakeCase {
     }
 
     fn check_item(&mut self, cx: &LateContext<'_>, it: &hir::Item<'_>) {
-        if let hir::ItemKind::Mod(_) = it.kind {
-            self.check_snake_case(cx, "module", &it.ident);
+        if let hir::ItemKind::Mod(ident, _) = it.kind {
+            self.check_snake_case(cx, "module", &ident);
+        }
+    }
+
+    fn check_ty(&mut self, cx: &LateContext<'_>, ty: &hir::Ty<'_, hir::AmbigArg>) {
+        if let hir::TyKind::FnPtr(hir::FnPtrTy { param_idents, .. }) = &ty.kind {
+            for param_ident in *param_idents {
+                if let Some(param_ident) = param_ident {
+                    self.check_snake_case(cx, "variable", param_ident);
+                }
+            }
         }
     }
 
     fn check_trait_item(&mut self, cx: &LateContext<'_>, item: &hir::TraitItem<'_>) {
-        if let hir::TraitItemKind::Fn(_, hir::TraitFn::Required(pnames)) = item.kind {
+        if let hir::TraitItemKind::Fn(_, hir::TraitFn::Required(param_idents)) = item.kind {
             self.check_snake_case(cx, "trait method", &item.ident);
-            for param_name in pnames {
-                self.check_snake_case(cx, "variable", param_name);
+            for param_ident in param_idents {
+                if let Some(param_ident) = param_ident {
+                    self.check_snake_case(cx, "variable", param_ident);
+                }
             }
         }
     }
 
     fn check_pat(&mut self, cx: &LateContext<'_>, p: &hir::Pat<'_>) {
         if let PatKind::Binding(_, hid, ident, _) = p.kind {
-            if let hir::Node::PatField(field) = cx.tcx.hir().get_parent(hid) {
+            if let hir::Node::PatField(field) = cx.tcx.parent_hir_node(hid) {
                 if !field.is_shorthand {
                     // Only check if a new name has been introduced, to avoid warning
                     // on both the struct definition and this pattern.
@@ -470,35 +465,107 @@ declare_lint! {
 declare_lint_pass!(NonUpperCaseGlobals => [NON_UPPER_CASE_GLOBALS]);
 
 impl NonUpperCaseGlobals {
-    fn check_upper_case(cx: &LateContext<'_>, sort: &str, ident: &Ident) {
+    fn check_upper_case(cx: &LateContext<'_>, sort: &str, did: Option<LocalDefId>, ident: &Ident) {
         let name = ident.name.as_str();
         if name.chars().any(|c| c.is_lowercase()) {
-            let uc = NonSnakeCase::to_snake_case(&name).to_uppercase();
+            let uc = NonSnakeCase::to_snake_case(name).to_uppercase();
+
+            // If the item is exported, suggesting changing it's name would be breaking-change
+            // and could break users without a "nice" applicable fix, so let's avoid it.
+            let can_change_usages = if let Some(did) = did {
+                !cx.tcx.effective_visibilities(()).is_exported(did)
+            } else {
+                false
+            };
+
             // We cannot provide meaningful suggestions
             // if the characters are in the category of "Lowercase Letter".
             let sub = if *name != uc {
-                NonUpperCaseGlobalSub::Suggestion { span: ident.span, replace: uc }
+                NonUpperCaseGlobalSub::Suggestion {
+                    span: ident.span,
+                    replace: uc.clone(),
+                    applicability: if can_change_usages {
+                        Applicability::MachineApplicable
+                    } else {
+                        Applicability::MaybeIncorrect
+                    },
+                }
             } else {
                 NonUpperCaseGlobalSub::Label { span: ident.span }
             };
-            cx.emit_spanned_lint(
-                NON_UPPER_CASE_GLOBALS,
-                ident.span,
-                NonUpperCaseGlobal { sort, name, sub },
-            );
+
+            struct UsageCollector<'a, 'tcx> {
+                cx: &'tcx LateContext<'a>,
+                did: DefId,
+                collected: Vec<Span>,
+            }
+
+            impl<'v, 'tcx> Visitor<'v> for UsageCollector<'v, 'tcx> {
+                type NestedFilter = All;
+
+                fn maybe_tcx(&mut self) -> Self::MaybeTyCtxt {
+                    self.cx.tcx
+                }
+
+                fn visit_path(
+                    &mut self,
+                    path: &rustc_hir::Path<'v>,
+                    _id: rustc_hir::HirId,
+                ) -> Self::Result {
+                    if let Some(final_seg) = path.segments.last()
+                        && final_seg.res.opt_def_id() == Some(self.did)
+                    {
+                        self.collected.push(final_seg.ident.span);
+                    }
+                }
+            }
+
+            cx.emit_span_lint_lazy(NON_UPPER_CASE_GLOBALS, ident.span, || {
+                // Compute usages lazily as it can expansive and useless when the lint is allowed.
+                // cf. https://github.com/rust-lang/rust/pull/142645#issuecomment-2993024625
+                let usages = if can_change_usages
+                    && *name != uc
+                    && let Some(did) = did
+                {
+                    let mut usage_collector =
+                        UsageCollector { cx, did: did.to_def_id(), collected: Vec::new() };
+                    cx.tcx.hir_walk_toplevel_module(&mut usage_collector);
+                    usage_collector
+                        .collected
+                        .into_iter()
+                        .map(|span| NonUpperCaseGlobalSubTool { span, replace: uc.clone() })
+                        .collect()
+                } else {
+                    vec![]
+                };
+
+                NonUpperCaseGlobal { sort, name, sub, usages }
+            });
         }
     }
 }
 
 impl<'tcx> LateLintPass<'tcx> for NonUpperCaseGlobals {
     fn check_item(&mut self, cx: &LateContext<'_>, it: &hir::Item<'_>) {
-        let attrs = cx.tcx.hir().attrs(it.hir_id());
+        let attrs = cx.tcx.hir_attrs(it.hir_id());
         match it.kind {
-            hir::ItemKind::Static(..) if !attr::contains_name(attrs, sym::no_mangle) => {
-                NonUpperCaseGlobals::check_upper_case(cx, "static variable", &it.ident);
+            hir::ItemKind::Static(_, ident, ..)
+                if !find_attr!(attrs, AttributeKind::NoMangle(..)) =>
+            {
+                NonUpperCaseGlobals::check_upper_case(
+                    cx,
+                    "static variable",
+                    Some(it.owner_id.def_id),
+                    &ident,
+                );
             }
-            hir::ItemKind::Const(..) => {
-                NonUpperCaseGlobals::check_upper_case(cx, "constant", &it.ident);
+            hir::ItemKind::Const(ident, ..) => {
+                NonUpperCaseGlobals::check_upper_case(
+                    cx,
+                    "constant",
+                    Some(it.owner_id.def_id),
+                    &ident,
+                );
             }
             _ => {}
         }
@@ -506,34 +573,46 @@ impl<'tcx> LateLintPass<'tcx> for NonUpperCaseGlobals {
 
     fn check_trait_item(&mut self, cx: &LateContext<'_>, ti: &hir::TraitItem<'_>) {
         if let hir::TraitItemKind::Const(..) = ti.kind {
-            NonUpperCaseGlobals::check_upper_case(cx, "associated constant", &ti.ident);
+            NonUpperCaseGlobals::check_upper_case(cx, "associated constant", None, &ti.ident);
         }
     }
 
     fn check_impl_item(&mut self, cx: &LateContext<'_>, ii: &hir::ImplItem<'_>) {
-        if let hir::ImplItemKind::Const(..) = ii.kind && !assoc_item_in_trait_impl(cx, ii) {
-            NonUpperCaseGlobals::check_upper_case(cx, "associated constant", &ii.ident);
+        if let hir::ImplItemKind::Const(..) = ii.kind
+            && let hir::ImplItemImplKind::Inherent { .. } = ii.impl_kind
+        {
+            NonUpperCaseGlobals::check_upper_case(cx, "associated constant", None, &ii.ident);
         }
     }
 
     fn check_pat(&mut self, cx: &LateContext<'_>, p: &hir::Pat<'_>) {
         // Lint for constants that look like binding identifiers (#7526)
-        if let PatKind::Path(hir::QPath::Resolved(None, ref path)) = p.kind {
-            if let Res::Def(DefKind::Const, _) = path.res {
-                if path.segments.len() == 1 {
-                    NonUpperCaseGlobals::check_upper_case(
-                        cx,
-                        "constant in pattern",
-                        &path.segments[0].ident,
-                    );
-                }
+        if let PatKind::Expr(hir::PatExpr {
+            kind: PatExprKind::Path(hir::QPath::Resolved(None, path)),
+            ..
+        }) = p.kind
+        {
+            if let Res::Def(DefKind::Const, _) = path.res
+                && let [segment] = path.segments
+            {
+                NonUpperCaseGlobals::check_upper_case(
+                    cx,
+                    "constant in pattern",
+                    None,
+                    &segment.ident,
+                );
             }
         }
     }
 
     fn check_generic_param(&mut self, cx: &LateContext<'_>, param: &hir::GenericParam<'_>) {
         if let GenericParamKind::Const { .. } = param.kind {
-            NonUpperCaseGlobals::check_upper_case(cx, "const parameter", &param.name.ident());
+            NonUpperCaseGlobals::check_upper_case(
+                cx,
+                "const parameter",
+                Some(param.def_id),
+                &param.name.ident(),
+            );
         }
     }
 }

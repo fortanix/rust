@@ -1,9 +1,11 @@
+//@ dont-require-annotations: SUGGESTION
+
 struct X(usize);
 
 impl X {
     fn zap(&self) {
         //~^ HELP
-        //~| SUGGESTION &mut self
+        //~| SUGGESTION mut
         self.0 = 32;
         //~^ ERROR
     }
@@ -12,12 +14,10 @@ impl X {
 fn main() {
     let ref foo = 16;
     //~^ HELP
-    //~| SUGGESTION ref mut foo
     *foo = 32;
     //~^ ERROR
     if let Some(ref bar) = Some(16) {
         //~^ HELP
-        //~| SUGGESTION ref mut bar
         *bar = 32;
         //~^ ERROR
     }
@@ -25,6 +25,5 @@ fn main() {
         ref quo => { *quo = 32; },
         //~^ ERROR
         //~| HELP
-        //~| SUGGESTION ref mut quo
     }
 }

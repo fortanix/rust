@@ -1,10 +1,11 @@
-//@run-rustfix
-#![feature(lint_reasons)]
 #![allow(
     unused,
+    non_local_definitions,
     clippy::uninlined_format_args,
     clippy::unnecessary_mut_passed,
-    clippy::unnecessary_to_owned
+    clippy::unnecessary_to_owned,
+    clippy::unnecessary_literal_unwrap,
+    clippy::needless_lifetimes
 )]
 #![warn(clippy::needless_borrow)]
 
@@ -13,10 +14,14 @@ fn main() {
     let ref_a = &a;
     let _ = x(&a); // no warning
     let _ = x(&&a); // warn
+    //
+    //~^^ needless_borrow
 
     let mut b = 5;
     mut_ref(&mut b); // no warning
     mut_ref(&mut &mut b); // warn
+    //
+    //~^^ needless_borrow
 
     let s = &String::from("hi");
     let s_ident = f(&s); // should not error, because `&String` implements Copy, but `String` does not
@@ -29,14 +34,17 @@ fn main() {
         45 => {
             println!("foo");
             &&a
+            //~^ needless_borrow
         },
         46 => &&a,
+        //~^ needless_borrow
         47 => {
             println!("foo");
             loop {
                 println!("{}", a);
                 if a == 25 {
                     break &ref_a;
+                    //~^ needless_borrow
                 }
             }
         },
@@ -44,12 +52,17 @@ fn main() {
     };
 
     let _ = x(&&&a);
+    //~^ needless_borrow
     let _ = x(&mut &&a);
+    //~^ needless_borrow
     let _ = x(&&&mut b);
+    //~^ needless_borrow
     let _ = x(&&ref_a);
+    //~^ needless_borrow
     {
         let b = &mut b;
         x(&b);
+        //~^ needless_borrow
     }
 
     // Issue #8191
@@ -57,9 +70,13 @@ fn main() {
     let mut x = &mut x;
 
     mut_ref(&mut x);
+    //~^ needless_borrow
     mut_ref(&mut &mut x);
+    //~^ needless_borrow
     let y: &mut i32 = &mut x;
+    //~^ needless_borrow
     let y: &mut i32 = &mut &mut x;
+    //~^ needless_borrow
 
     let y = match 0 {
         // Don't lint. Removing the borrow would move 'x'
@@ -69,12 +86,14 @@ fn main() {
     let y: &mut i32 = match 0 {
         // Lint here. The type given above triggers auto-borrow.
         0 => &mut x,
+        //~^ needless_borrow
         _ => &mut *x,
     };
     fn ref_mut_i32(_: &mut i32) {}
     ref_mut_i32(match 0 {
         // Lint here. The type given above triggers auto-borrow.
         0 => &mut x,
+        //~^ needless_borrow
         _ => &mut *x,
     });
     // use 'x' after to make sure it's still usable in the fixed code.
@@ -87,8 +106,7 @@ fn main() {
 
     let x = (1, 2);
     let _ = (&x).0;
-    let x = &x as *const (i32, i32);
-    let _ = unsafe { (&*x).0 };
+    //~^ needless_borrow
 
     // Issue #8367
     trait Foo {
@@ -99,6 +117,7 @@ fn main() {
     }
     (&()).foo(); // Don't lint. `()` doesn't implement `Foo`
     (&&()).foo();
+    //~^ needless_borrow
 
     impl Foo for i32 {
         fn foo(self) {}
@@ -108,6 +127,7 @@ fn main() {
     }
     (&5).foo(); // Don't lint. `5` will call `<i32 as Foo>::foo`
     (&&5).foo();
+    //~^ needless_borrow
 
     trait FooRef {
         fn foo_ref(&self);
@@ -132,20 +152,9 @@ fn main() {
         }
     }
 
-    let _ = std::process::Command::new("ls").args(&["-a", "-l"]).status().unwrap();
-    let _ = std::path::Path::new(".").join(&&".");
-    deref_target_is_x(&X);
-    multiple_constraints(&[[""]]);
-    multiple_constraints_normalizes_to_same(&X, X);
-    let _ = Some("").unwrap_or(&"");
-    let _ = std::fs::write("x", &"".to_string());
-
-    only_sized(&""); // Don't lint. `Sized` is only bound
-    let _ = std::any::Any::type_id(&""); // Don't lint. `Any` is only bound
-    let _ = Box::new(&""); // Don't lint. Type parameter appears in return type
-    ref_as_ref_path(&""); // Don't lint. Argument type is not a type parameter
-    refs_only(&()); // Don't lint. `&T` implements trait, but `T` doesn't
-    multiple_constraints_normalizes_to_different(&[[""]], &[""]); // Don't lint. Projected type appears in arguments
+    // issue #11786
+    let x: (&str,) = (&"",);
+    //~^ needless_borrow
 }
 
 #[allow(clippy::needless_borrowed_reference)]
@@ -188,6 +197,7 @@ mod issue9160 {
     {
         fn calls_field(&self) -> T {
             (&self.f)()
+            //~^ needless_borrow
         }
     }
 
@@ -197,104 +207,8 @@ mod issue9160 {
     {
         fn calls_mut_field(&mut self) -> T {
             (&mut self.f)()
+            //~^ needless_borrow
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct X;
-
-impl std::ops::Deref for X {
-    type Target = X;
-    fn deref(&self) -> &Self::Target {
-        self
-    }
-}
-
-fn deref_target_is_x<T>(_: T)
-where
-    T: std::ops::Deref<Target = X>,
-{
-}
-
-fn multiple_constraints<T, U, V, X, Y>(_: T)
-where
-    T: IntoIterator<Item = U> + IntoIterator<Item = X>,
-    U: IntoIterator<Item = V>,
-    V: AsRef<str>,
-    X: IntoIterator<Item = Y>,
-    Y: AsRef<std::ffi::OsStr>,
-{
-}
-
-fn multiple_constraints_normalizes_to_same<T, U, V>(_: T, _: V)
-where
-    T: std::ops::Deref<Target = U>,
-    U: std::ops::Deref<Target = V>,
-{
-}
-
-fn only_sized<T>(_: T) {}
-
-fn ref_as_ref_path<T: 'static>(_: &'static T)
-where
-    &'static T: AsRef<std::path::Path>,
-{
-}
-
-trait RefsOnly {
-    type Referent;
-}
-
-impl<T> RefsOnly for &T {
-    type Referent = T;
-}
-
-fn refs_only<T, U>(_: T)
-where
-    T: RefsOnly<Referent = U>,
-{
-}
-
-fn multiple_constraints_normalizes_to_different<T, U, V>(_: T, _: U)
-where
-    T: IntoIterator<Item = U>,
-    U: IntoIterator<Item = V>,
-    V: AsRef<str>,
-{
-}
-
-// https://github.com/rust-lang/rust-clippy/pull/9136#pullrequestreview-1037379321
-mod copyable_iterator {
-    #[derive(Clone, Copy)]
-    struct Iter;
-    impl Iterator for Iter {
-        type Item = ();
-        fn next(&mut self) -> Option<Self::Item> {
-            None
-        }
-    }
-    fn takes_iter(_: impl Iterator) {}
-    fn dont_warn(mut x: Iter) {
-        takes_iter(&mut x);
-    }
-    #[allow(unused_mut)]
-    fn warn(mut x: &mut Iter) {
-        takes_iter(&mut x)
-    }
-}
-
-#[clippy::msrv = "1.52.0"]
-mod under_msrv {
-    fn foo() {
-        let _ = std::process::Command::new("ls").args(&["-a", "-l"]).status().unwrap();
-    }
-}
-
-#[clippy::msrv = "1.53.0"]
-mod meets_msrv {
-    fn foo() {
-        let _ = std::process::Command::new("ls").args(&["-a", "-l"]).status().unwrap();
     }
 }
 
@@ -302,192 +216,85 @@ fn issue9383() {
     // Should not lint because unions need explicit deref when accessing field
     use std::mem::ManuallyDrop;
 
-    union Coral {
-        crab: ManuallyDrop<Vec<i32>>,
+    #[derive(Clone, Copy)]
+    struct Wrap<T>(T);
+    impl<T> core::ops::Deref for Wrap<T> {
+        type Target = T;
+        fn deref(&self) -> &T {
+            &self.0
+        }
+    }
+    impl<T> core::ops::DerefMut for Wrap<T> {
+        fn deref_mut(&mut self) -> &mut T {
+            &mut self.0
+        }
     }
 
-    union Ocean {
-        coral: ManuallyDrop<Coral>,
+    union U<T: Copy> {
+        u: T,
     }
 
-    let mut ocean = Ocean {
-        coral: ManuallyDrop::new(Coral {
-            crab: ManuallyDrop::new(vec![1, 2, 3]),
-        }),
-    };
+    #[derive(Clone, Copy)]
+    struct Foo {
+        x: u32,
+    }
 
     unsafe {
-        ManuallyDrop::drop(&mut (&mut ocean.coral).crab);
+        let mut x = U {
+            u: ManuallyDrop::new(Foo { x: 0 }),
+        };
+        let _ = &mut (&mut x.u).x;
+        let _ = &mut (&mut { x.u }).x;
+        //~^ needless_borrow
+        let _ = &mut ({ &mut x.u }).x;
 
-        (*ocean.coral).crab = ManuallyDrop::new(vec![4, 5, 6]);
-        ManuallyDrop::drop(&mut (*ocean.coral).crab);
+        let mut x = U {
+            u: Wrap(ManuallyDrop::new(Foo { x: 0 })),
+        };
+        let _ = &mut (&mut x.u).x;
+        let _ = &mut (&mut { x.u }).x;
+        //~^ needless_borrow
+        let _ = &mut ({ &mut x.u }).x;
 
-        ManuallyDrop::drop(&mut ocean.coral);
+        let mut x = U { u: Wrap(Foo { x: 0 }) };
+        let _ = &mut (&mut x.u).x;
+        //~^ needless_borrow
+        let _ = &mut (&mut { x.u }).x;
+        //~^ needless_borrow
+        let _ = &mut ({ &mut x.u }).x;
     }
 }
 
-fn closure_test() {
-    let env = "env".to_owned();
-    let arg = "arg".to_owned();
-    let f = |arg| {
-        let loc = "loc".to_owned();
-        let _ = std::fs::write("x", &env); // Don't lint. In environment
-        let _ = std::fs::write("x", &arg);
-        let _ = std::fs::write("x", &loc);
-    };
-    let _ = std::fs::write("x", &env); // Don't lint. Borrowed by `f`
-    f(arg);
-}
-
-mod significant_drop {
-    #[derive(Debug)]
-    struct X;
-
-    #[derive(Debug)]
-    struct Y;
-
-    impl Drop for Y {
-        fn drop(&mut self) {}
-    }
-
-    fn foo(x: X, y: Y) {
-        debug(&x);
-        debug(&y); // Don't lint. Has significant drop
-    }
-
-    fn debug(_: impl std::fmt::Debug) {}
-}
-
-mod used_exactly_once {
-    fn foo(x: String) {
-        use_x(&x);
-    }
-    fn use_x(_: impl AsRef<str>) {}
-}
-
-mod used_more_than_once {
-    fn foo(x: String) {
-        use_x(&x);
-        use_x_again(&x);
-    }
-    fn use_x(_: impl AsRef<str>) {}
-    fn use_x_again(_: impl AsRef<str>) {}
-}
-
-// https://github.com/rust-lang/rust-clippy/issues/9111#issuecomment-1277114280
-mod issue_9111 {
-    struct A;
-
-    impl Extend<u8> for A {
-        fn extend<T: IntoIterator<Item = u8>>(&mut self, _: T) {
-            unimplemented!()
-        }
-    }
-
-    impl<'a> Extend<&'a u8> for A {
-        fn extend<T: IntoIterator<Item = &'a u8>>(&mut self, _: T) {
-            unimplemented!()
-        }
-    }
-
-    fn main() {
-        let mut a = A;
-        a.extend(&[]); // vs a.extend([]);
-    }
-}
-
-mod issue_9710 {
-    fn main() {
-        let string = String::new();
-        for _i in 0..10 {
-            f(&string);
-        }
-    }
-
-    fn f<T: AsRef<str>>(_: T) {}
-}
-
-mod issue_9739 {
-    fn foo<D: std::fmt::Display>(_it: impl IntoIterator<Item = D>) {}
-
-    fn main() {
-        foo(if std::env::var_os("HI").is_some() {
-            &[0]
-        } else {
-            &[] as &[u32]
-        });
-    }
-}
-
-mod issue_9739_method_variant {
+mod issue_10253 {
     struct S;
-
-    impl S {
-        fn foo<D: std::fmt::Display>(&self, _it: impl IntoIterator<Item = D>) {}
+    trait X {
+        fn f<T>(&self);
     }
-
-    fn main() {
-        S.foo(if std::env::var_os("HI").is_some() {
-            &[0]
-        } else {
-            &[] as &[u32]
-        });
+    impl X for &S {
+        fn f<T>(&self) {}
+    }
+    fn f() {
+        (&S).f::<()>();
     }
 }
 
-mod issue_9782 {
-    fn foo<T: AsRef<[u8]>>(t: T) {
-        println!("{}", std::mem::size_of::<T>());
-        let _t: &[u8] = t.as_ref();
-    }
+fn issue_12268() {
+    let option = Some((&1,));
+    let x = (&1,);
+    option.unwrap_or((&x.0,));
+    //~^ needless_borrow
 
-    fn main() {
-        let a: [u8; 100] = [0u8; 100];
-
-        // 100
-        foo::<[u8; 100]>(a);
-        foo(a);
-
-        // 16
-        foo::<&[u8]>(&a);
-        foo(a.as_slice());
-
-        // 8
-        foo::<&[u8; 100]>(&a);
-        foo(&a);
-    }
+    // compiler
 }
 
-mod issue_9782_type_relative_variant {
-    struct S;
+fn issue_14743<T>(slice: &[T]) {
+    let _ = (&slice).len();
+    //~^ needless_borrow
 
-    impl S {
-        fn foo<T: AsRef<[u8]>>(t: T) {
-            println!("{}", std::mem::size_of::<T>());
-            let _t: &[u8] = t.as_ref();
-        }
-    }
+    let slice = slice as *const [T];
+    let _ = unsafe { (&*slice).len() };
 
-    fn main() {
-        let a: [u8; 100] = [0u8; 100];
-
-        S::foo::<&[u8; 100]>(&a);
-    }
-}
-
-mod issue_9782_method_variant {
-    struct S;
-
-    impl S {
-        fn foo<T: AsRef<[u8]>>(&self, t: T) {
-            println!("{}", std::mem::size_of::<T>());
-            let _t: &[u8] = t.as_ref();
-        }
-    }
-
-    fn main() {
-        let a: [u8; 100] = [0u8; 100];
-
-        S.foo::<&[u8; 100]>(&a);
-    }
+    // Check that rustc would actually warn if Clippy had suggested removing the reference
+    #[expect(dangerous_implicit_autorefs)]
+    let _ = unsafe { (*slice).len() };
 }

@@ -1,32 +1,36 @@
-use crate::mir::interpret::ErrorHandled;
-use crate::ty;
-use crate::ty::util::{Discr, IntTypeExt};
-use rustc_data_structures::captures::Captures;
-use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::fx::FxHashMap;
-use rustc_data_structures::intern::Interned;
-use rustc_data_structures::stable_hasher::HashingControls;
-use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
-use rustc_hir as hir;
-use rustc_hir::def::{CtorKind, DefKind, Res};
-use rustc_hir::def_id::DefId;
-use rustc_index::{IndexSlice, IndexVec};
-use rustc_query_system::ich::StableHashingContext;
-use rustc_session::DataTypeKind;
-use rustc_span::symbol::sym;
-use rustc_target::abi::{ReprOptions, VariantIdx, FIRST_VARIANT};
-
 use std::cell::RefCell;
-use std::cmp::Ordering;
 use std::hash::{Hash, Hasher};
 use std::ops::Range;
 use std::str;
 
-use super::{Destructor, FieldDef, GenericPredicates, Ty, TyCtxt, VariantDef, VariantDiscr};
+use rustc_abi::{FIRST_VARIANT, ReprOptions, VariantIdx};
+use rustc_data_structures::fingerprint::Fingerprint;
+use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::intern::Interned;
+use rustc_data_structures::stable_hasher::{HashStable, HashingControls, StableHasher};
+use rustc_errors::ErrorGuaranteed;
+use rustc_hir::attrs::AttributeKind;
+use rustc_hir::def::{CtorKind, DefKind, Res};
+use rustc_hir::def_id::DefId;
+use rustc_hir::{self as hir, LangItem, find_attr};
+use rustc_index::{IndexSlice, IndexVec};
+use rustc_macros::{HashStable, TyDecodable, TyEncodable};
+use rustc_query_system::ich::StableHashingContext;
+use rustc_session::DataTypeKind;
+use rustc_type_ir::solve::AdtDestructorKind;
+use tracing::{debug, info, trace};
 
-bitflags! {
-    #[derive(HashStable, TyEncodable, TyDecodable)]
-    pub struct AdtFlags: u32 {
+use super::{
+    AsyncDestructor, Destructor, FieldDef, GenericPredicates, Ty, TyCtxt, VariantDef, VariantDiscr,
+};
+use crate::mir::interpret::ErrorHandled;
+use crate::ty;
+use crate::ty::util::{Discr, IntTypeExt};
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, HashStable, TyEncodable, TyDecodable)]
+pub struct AdtFlags(u16);
+bitflags::bitflags! {
+    impl AdtFlags: u16 {
         const NO_ADT_FLAGS        = 0;
         /// Indicates whether the ADT is an enum.
         const IS_ENUM             = 1 << 0;
@@ -49,8 +53,11 @@ bitflags! {
         const IS_VARIANT_LIST_NON_EXHAUSTIVE = 1 << 8;
         /// Indicates whether the type is `UnsafeCell`.
         const IS_UNSAFE_CELL              = 1 << 9;
+        /// Indicates whether the type is `UnsafePinned`.
+        const IS_UNSAFE_PINNED              = 1 << 10;
     }
 }
+rustc_data_structures::external_bitflags_debug! { AdtFlags }
 
 /// The definition of a user-defined type, e.g., a `struct`, `enum`, or `union`.
 ///
@@ -97,26 +104,30 @@ pub struct AdtDefData {
     repr: ReprOptions,
 }
 
-impl PartialOrd for AdtDefData {
-    fn partial_cmp(&self, other: &AdtDefData) -> Option<Ordering> {
-        Some(self.cmp(&other))
-    }
-}
-
-/// There should be only one AdtDef for each `did`, therefore
-/// it is fine to implement `Ord` only based on `did`.
-impl Ord for AdtDefData {
-    fn cmp(&self, other: &AdtDefData) -> Ordering {
-        self.did.cmp(&other.did)
-    }
-}
-
-/// There should be only one AdtDef for each `did`, therefore
-/// it is fine to implement `PartialEq` only based on `did`.
 impl PartialEq for AdtDefData {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
-        self.did == other.did
+        // There should be only one `AdtDefData` for each `def_id`, therefore
+        // it is fine to implement `PartialEq` only based on `def_id`.
+        //
+        // Below, we exhaustively destructure `self` and `other` so that if the
+        // definition of `AdtDefData` changes, a compile-error will be produced,
+        // reminding us to revisit this assumption.
+
+        let Self { did: self_def_id, variants: _, flags: _, repr: _ } = self;
+        let Self { did: other_def_id, variants: _, flags: _, repr: _ } = other;
+
+        let res = self_def_id == other_def_id;
+
+        // Double check that implicit assumption detailed above.
+        if cfg!(debug_assertions) && res {
+            let deep = self.flags == other.flags
+                && self.repr == other.repr
+                && self.variants == other.variants;
+            assert!(deep, "AdtDefData for the same def-id has differing data");
+        }
+
+        res
     }
 }
 
@@ -157,7 +168,7 @@ impl<'a> HashStable<StableHashingContext<'a>> for AdtDefData {
     }
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Ord, PartialOrd, HashStable)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, HashStable)]
 #[rustc_pass_by_value]
 pub struct AdtDef<'tcx>(pub Interned<'tcx, AdtDefData>);
 
@@ -188,6 +199,56 @@ impl<'tcx> AdtDef<'tcx> {
     }
 }
 
+impl<'tcx> rustc_type_ir::inherent::AdtDef<TyCtxt<'tcx>> for AdtDef<'tcx> {
+    fn def_id(self) -> DefId {
+        self.did()
+    }
+
+    fn is_struct(self) -> bool {
+        self.is_struct()
+    }
+
+    fn struct_tail_ty(self, interner: TyCtxt<'tcx>) -> Option<ty::EarlyBinder<'tcx, Ty<'tcx>>> {
+        Some(interner.type_of(self.non_enum_variant().tail_opt()?.did))
+    }
+
+    fn is_phantom_data(self) -> bool {
+        self.is_phantom_data()
+    }
+
+    fn is_manually_drop(self) -> bool {
+        self.is_manually_drop()
+    }
+
+    fn all_field_tys(
+        self,
+        tcx: TyCtxt<'tcx>,
+    ) -> ty::EarlyBinder<'tcx, impl IntoIterator<Item = Ty<'tcx>>> {
+        ty::EarlyBinder::bind(
+            self.all_fields().map(move |field| tcx.type_of(field.did).skip_binder()),
+        )
+    }
+
+    fn sizedness_constraint(
+        self,
+        tcx: TyCtxt<'tcx>,
+        sizedness: ty::SizedTraitKind,
+    ) -> Option<ty::EarlyBinder<'tcx, Ty<'tcx>>> {
+        self.sizedness_constraint(tcx, sizedness)
+    }
+
+    fn is_fundamental(self) -> bool {
+        self.is_fundamental()
+    }
+
+    fn destructor(self, tcx: TyCtxt<'tcx>) -> Option<AdtDestructorKind> {
+        Some(match tcx.constness(self.destructor(tcx)?.did) {
+            hir::Constness::Const => AdtDestructorKind::Const,
+            hir::Constness::NotConst => AdtDestructorKind::NotConst,
+        })
+    }
+}
+
 #[derive(Copy, Clone, Debug, Eq, PartialEq, HashStable, TyEncodable, TyDecodable)]
 pub enum AdtKind {
     Struct,
@@ -195,9 +256,9 @@ pub enum AdtKind {
     Enum,
 }
 
-impl Into<DataTypeKind> for AdtKind {
-    fn into(self) -> DataTypeKind {
-        match self {
+impl From<AdtKind> for DataTypeKind {
+    fn from(val: AdtKind) -> Self {
+        match val {
             AdtKind::Struct => DataTypeKind::Struct,
             AdtKind::Union => DataTypeKind::Union,
             AdtKind::Enum => DataTypeKind::Enum,
@@ -217,7 +278,9 @@ impl AdtDefData {
         debug!("AdtDef::new({:?}, {:?}, {:?}, {:?})", did, kind, variants, repr);
         let mut flags = AdtFlags::NO_ADT_FLAGS;
 
-        if kind == AdtKind::Enum && tcx.has_attr(did, sym::non_exhaustive) {
+        if kind == AdtKind::Enum
+            && find_attr!(tcx.get_all_attrs(did), AttributeKind::NonExhaustive(..))
+        {
             debug!("found non-exhaustive variant list for {:?}", did);
             flags = flags | AdtFlags::IS_VARIANT_LIST_NON_EXHAUSTIVE;
         }
@@ -232,20 +295,23 @@ impl AdtDefData {
             flags |= AdtFlags::HAS_CTOR;
         }
 
-        if tcx.has_attr(did, sym::fundamental) {
+        if find_attr!(tcx.get_all_attrs(did), AttributeKind::Fundamental) {
             flags |= AdtFlags::IS_FUNDAMENTAL;
         }
-        if Some(did) == tcx.lang_items().phantom_data() {
+        if tcx.is_lang_item(did, LangItem::PhantomData) {
             flags |= AdtFlags::IS_PHANTOM_DATA;
         }
-        if Some(did) == tcx.lang_items().owned_box() {
+        if tcx.is_lang_item(did, LangItem::OwnedBox) {
             flags |= AdtFlags::IS_BOX;
         }
-        if Some(did) == tcx.lang_items().manually_drop() {
+        if tcx.is_lang_item(did, LangItem::ManuallyDrop) {
             flags |= AdtFlags::IS_MANUALLY_DROP;
         }
-        if Some(did) == tcx.lang_items().unsafe_cell_type() {
+        if tcx.is_lang_item(did, LangItem::UnsafeCell) {
             flags |= AdtFlags::IS_UNSAFE_CELL;
+        }
+        if tcx.is_lang_item(did, LangItem::UnsafePinned) {
+            flags |= AdtFlags::IS_UNSAFE_PINNED;
         }
 
         AdtDefData { did, variants, flags, repr }
@@ -272,9 +338,20 @@ impl<'tcx> AdtDef<'tcx> {
     }
 
     /// Returns `true` if the variant list of this ADT is `#[non_exhaustive]`.
+    ///
+    /// Note that this function will return `true` even if the ADT has been
+    /// defined in the crate currently being compiled. If that's not what you
+    /// want, see [`Self::variant_list_has_applicable_non_exhaustive`].
     #[inline]
     pub fn is_variant_list_non_exhaustive(self) -> bool {
         self.flags().contains(AdtFlags::IS_VARIANT_LIST_NON_EXHAUSTIVE)
+    }
+
+    /// Returns `true` if the variant list of this ADT is `#[non_exhaustive]`
+    /// and has been defined in another crate.
+    #[inline]
+    pub fn variant_list_has_applicable_non_exhaustive(self) -> bool {
+        self.is_variant_list_non_exhaustive() && !self.did().is_local()
     }
 
     /// Returns the kind of the ADT.
@@ -339,6 +416,12 @@ impl<'tcx> AdtDef<'tcx> {
         self.flags().contains(AdtFlags::IS_UNSAFE_CELL)
     }
 
+    /// Returns `true` if this is `UnsafePinned<T>`.
+    #[inline]
+    pub fn is_unsafe_pinned(self) -> bool {
+        self.flags().contains(AdtFlags::IS_UNSAFE_PINNED)
+    }
+
     /// Returns `true` if this is `ManuallyDrop<T>`.
     #[inline]
     pub fn is_manually_drop(self) -> bool {
@@ -350,14 +433,10 @@ impl<'tcx> AdtDef<'tcx> {
         self.destructor(tcx).is_some()
     }
 
-    pub fn has_non_const_dtor(self, tcx: TyCtxt<'tcx>) -> bool {
-        matches!(self.destructor(tcx), Some(Destructor { constness: hir::Constness::NotConst, .. }))
-    }
-
     /// Asserts this is a struct or union and returns its unique variant.
     pub fn non_enum_variant(self) -> &'tcx VariantDef {
         assert!(self.is_struct() || self.is_union());
-        &self.variant(FIRST_VARIANT)
+        self.variant(FIRST_VARIANT)
     }
 
     #[inline]
@@ -366,7 +445,7 @@ impl<'tcx> AdtDef<'tcx> {
     }
 
     /// Returns an iterator over all fields contained
-    /// by this ADT.
+    /// by this ADT (nested unnamed fields are not expanded).
     #[inline]
     pub fn all_fields(self) -> impl Iterator<Item = &'tcx FieldDef> + Clone {
         self.variants().iter().flat_map(|v| v.fields.iter())
@@ -440,31 +519,38 @@ impl<'tcx> AdtDef<'tcx> {
     }
 
     #[inline]
-    pub fn eval_explicit_discr(self, tcx: TyCtxt<'tcx>, expr_did: DefId) -> Option<Discr<'tcx>> {
+    pub fn eval_explicit_discr(
+        self,
+        tcx: TyCtxt<'tcx>,
+        expr_did: DefId,
+    ) -> Result<Discr<'tcx>, ErrorGuaranteed> {
         assert!(self.is_enum());
-        let param_env = tcx.param_env(expr_did);
+
         let repr_type = self.repr().discr_type();
         match tcx.const_eval_poly(expr_did) {
             Ok(val) => {
+                let typing_env = ty::TypingEnv::post_analysis(tcx, expr_did);
                 let ty = repr_type.to_ty(tcx);
-                if let Some(b) = val.try_to_bits_for_ty(tcx, param_env, ty) {
+                if let Some(b) = val.try_to_bits_for_ty(tcx, typing_env, ty) {
                     trace!("discriminants: {} ({:?})", b, repr_type);
-                    Some(Discr { val: b, ty })
+                    Ok(Discr { val: b, ty })
                 } else {
                     info!("invalid enum discriminant: {:#?}", val);
-                    tcx.sess.emit_err(crate::error::ConstEvalNonIntError {
+                    let guar = tcx.dcx().emit_err(crate::error::ConstEvalNonIntError {
                         span: tcx.def_span(expr_did),
                     });
-                    None
+                    Err(guar)
                 }
             }
             Err(err) => {
-                let msg = match err {
-                    ErrorHandled::Reported(_) => "enum discriminant evaluation failed",
-                    ErrorHandled::TooGeneric => "enum discriminant depends on generics",
+                let guar = match err {
+                    ErrorHandled::Reported(info, _) => info.into(),
+                    ErrorHandled::TooGeneric(..) => tcx.dcx().span_delayed_bug(
+                        tcx.def_span(expr_did),
+                        "enum discriminant depends on generics",
+                    ),
                 };
-                tcx.sess.delay_span_bug(tcx.def_span(expr_did), msg);
-                None
+                Err(guar)
             }
         }
     }
@@ -473,17 +559,17 @@ impl<'tcx> AdtDef<'tcx> {
     pub fn discriminants(
         self,
         tcx: TyCtxt<'tcx>,
-    ) -> impl Iterator<Item = (VariantIdx, Discr<'tcx>)> + Captures<'tcx> {
+    ) -> impl Iterator<Item = (VariantIdx, Discr<'tcx>)> {
         assert!(self.is_enum());
         let repr_type = self.repr().discr_type();
         let initial = repr_type.initial_discriminant(tcx);
         let mut prev_discr = None::<Discr<'tcx>>;
         self.variants().iter_enumerated().map(move |(i, v)| {
             let mut discr = prev_discr.map_or(initial, |d| d.wrap_incr(tcx));
-            if let VariantDiscr::Explicit(expr_did) = v.discr {
-                if let Some(new_discr) = self.eval_explicit_discr(tcx, expr_did) {
-                    discr = new_discr;
-                }
+            if let VariantDiscr::Explicit(expr_did) = v.discr
+                && let Ok(new_discr) = self.eval_explicit_discr(tcx, expr_did)
+            {
+                discr = new_discr;
             }
             prev_discr = Some(discr);
 
@@ -509,9 +595,13 @@ impl<'tcx> AdtDef<'tcx> {
     ) -> Discr<'tcx> {
         assert!(self.is_enum());
         let (val, offset) = self.discriminant_def_for_variant(variant_index);
-        let explicit_value = val
-            .and_then(|expr_did| self.eval_explicit_discr(tcx, expr_did))
-            .unwrap_or_else(|| self.repr().discr_type().initial_discriminant(tcx));
+        let explicit_value = if let Some(expr_did) = val
+            && let Ok(val) = self.eval_explicit_discr(tcx, expr_did)
+        {
+            val
+        } else {
+            self.repr().discr_type().initial_discriminant(tcx)
+        };
         explicit_value.checked_add(tcx, offset as u128).0
     }
 
@@ -544,24 +634,26 @@ impl<'tcx> AdtDef<'tcx> {
         tcx.adt_destructor(self.did())
     }
 
-    /// Returns a list of types such that `Self: Sized` if and only
-    /// if that type is `Sized`, or `TyErr` if this type is recursive.
-    ///
-    /// Oddly enough, checking that the sized-constraint is `Sized` is
-    /// actually more expressive than checking all members:
-    /// the `Sized` trait is inductive, so an associated type that references
-    /// `Self` would prevent its containing ADT from being `Sized`.
-    ///
-    /// Due to normalization being eager, this applies even if
-    /// the associated type is behind a pointer (e.g., issue #31299).
-    pub fn sized_constraint(self, tcx: TyCtxt<'tcx>) -> ty::EarlyBinder<&'tcx [Ty<'tcx>]> {
-        ty::EarlyBinder(tcx.adt_sized_constraint(self.did()))
+    // FIXME: consider combining this method with `AdtDef::destructor` and removing
+    // this version
+    pub fn async_destructor(self, tcx: TyCtxt<'tcx>) -> Option<AsyncDestructor> {
+        tcx.adt_async_destructor(self.did())
+    }
+
+    /// If this ADT is a struct, returns a type such that `Self: {Meta,Pointee,}Sized` if and only
+    /// if that type is `{Meta,Pointee,}Sized`, or `None` if this ADT is always
+    /// `{Meta,Pointee,}Sized`.
+    pub fn sizedness_constraint(
+        self,
+        tcx: TyCtxt<'tcx>,
+        sizedness: ty::SizedTraitKind,
+    ) -> Option<ty::EarlyBinder<'tcx, Ty<'tcx>>> {
+        if self.is_struct() { tcx.adt_sizedness_constraint((self.did(), sizedness)) } else { None }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-#[derive(HashStable)]
+#[derive(Clone, Copy, Debug, HashStable)]
 pub enum Representability {
     Representable,
-    Infinite,
+    Infinite(ErrorGuaranteed),
 }

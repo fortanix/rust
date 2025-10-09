@@ -1,22 +1,27 @@
 use either::Either;
-use ide_db::imports::merge_imports::{try_merge_imports, try_merge_trees, MergeBehavior};
+use ide_db::imports::{
+    insert_use::{ImportGranularity, InsertUseConfig},
+    merge_imports::{MergeBehavior, try_merge_imports, try_merge_trees},
+};
 use syntax::{
+    AstNode, SyntaxElement, SyntaxNode,
     algo::neighbor,
-    ast::{self, edit_in_place::Removable},
-    match_ast, ted, AstNode, SyntaxElement, SyntaxNode,
+    ast::{self, syntax_factory::SyntaxFactory},
+    match_ast,
+    syntax_editor::Removable,
 };
 
 use crate::{
+    AssistId,
     assist_context::{AssistContext, Assists},
     utils::next_prev,
-    AssistId, AssistKind,
 };
 
 use Edit::*;
 
 // Assist: merge_imports
 //
-// Merges two imports with a common prefix.
+// Merges neighbor imports with a common prefix.
 //
 // ```
 // use std::$0fmt::Formatter;
@@ -29,16 +34,13 @@ use Edit::*;
 pub(crate) fn merge_imports(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     let (target, edits) = if ctx.has_empty_selection() {
         // Merge a neighbor
-        let tree: ast::UseTree = ctx.find_node_at_offset()?;
+        cov_mark::hit!(merge_with_use_item_neighbors);
+        let tree = ctx.find_node_at_offset::<ast::UseTree>()?.top_use_tree();
         let target = tree.syntax().text_range();
 
-        let edits = if let Some(use_item) = tree.syntax().parent().and_then(ast::Use::cast) {
-            let mut neighbor = next_prev().find_map(|dir| neighbor(&use_item, dir)).into_iter();
-            use_item.try_merge_from(&mut neighbor)
-        } else {
-            let mut neighbor = next_prev().find_map(|dir| neighbor(&tree, dir)).into_iter();
-            tree.try_merge_from(&mut neighbor)
-        };
+        let use_item = tree.syntax().parent().and_then(ast::Use::cast)?;
+        let mut neighbor = next_prev().find_map(|dir| neighbor(&use_item, dir)).into_iter();
+        let edits = use_item.try_merge_from(&mut neighbor, &ctx.config.insert_use);
         (target, edits?)
     } else {
         // Merge selected
@@ -54,10 +56,12 @@ pub(crate) fn merge_imports(acc: &mut Assists, ctx: &AssistContext<'_>) -> Optio
         let edits = match_ast! {
             match first_selected {
                 ast::Use(use_item) => {
-                    use_item.try_merge_from(&mut selected_nodes.filter_map(ast::Use::cast))
+                    cov_mark::hit!(merge_with_selected_use_item_neighbors);
+                    use_item.try_merge_from(&mut selected_nodes.filter_map(ast::Use::cast), &ctx.config.insert_use)
                 },
                 ast::UseTree(use_tree) => {
-                    use_tree.try_merge_from(&mut selected_nodes.filter_map(ast::UseTree::cast))
+                    cov_mark::hit!(merge_with_selected_use_tree_neighbors);
+                    use_tree.try_merge_from(&mut selected_nodes.filter_map(ast::UseTree::cast), &ctx.config.insert_use)
                 },
                 _ => return None,
             }
@@ -65,35 +69,45 @@ pub(crate) fn merge_imports(acc: &mut Assists, ctx: &AssistContext<'_>) -> Optio
         (selection_range, edits?)
     };
 
-    acc.add(
-        AssistId("merge_imports", AssistKind::RefactorRewrite),
-        "Merge imports",
-        target,
-        |builder| {
-            let edits_mut: Vec<Edit> = edits
-                .into_iter()
-                .map(|it| match it {
-                    Remove(Either::Left(it)) => Remove(Either::Left(builder.make_mut(it))),
-                    Remove(Either::Right(it)) => Remove(Either::Right(builder.make_mut(it))),
-                    Replace(old, new) => Replace(builder.make_syntax_mut(old), new),
-                })
-                .collect();
-            for edit in edits_mut {
-                match edit {
-                    Remove(it) => it.as_ref().either(Removable::remove, Removable::remove),
-                    Replace(old, new) => ted::replace(old, new),
+    let parent_node = match ctx.covering_element() {
+        SyntaxElement::Node(n) => n,
+        SyntaxElement::Token(t) => t.parent()?,
+    };
+
+    acc.add(AssistId::refactor_rewrite("merge_imports"), "Merge imports", target, |builder| {
+        let make = SyntaxFactory::with_mappings();
+        let mut editor = builder.make_editor(&parent_node);
+
+        for edit in edits {
+            match edit {
+                Remove(it) => {
+                    let node = it.as_ref();
+                    if let Some(left) = node.left() {
+                        left.remove(&mut editor);
+                    } else if let Some(right) = node.right() {
+                        right.remove(&mut editor);
+                    }
+                }
+                Replace(old, new) => {
+                    editor.replace(old, &new);
                 }
             }
-        },
-    )
+        }
+        editor.add_mappings(make.finish_with_mappings());
+        builder.add_file_edits(ctx.vfs_file_id(), editor);
+    })
 }
 
 trait Merge: AstNode + Clone {
-    fn try_merge_from(self, items: &mut dyn Iterator<Item = Self>) -> Option<Vec<Edit>> {
+    fn try_merge_from(
+        self,
+        items: &mut dyn Iterator<Item = Self>,
+        cfg: &InsertUseConfig,
+    ) -> Option<Vec<Edit>> {
         let mut edits = Vec::new();
         let mut merged = self.clone();
         for item in items {
-            merged = merged.try_merge(&item)?;
+            merged = merged.try_merge(&item, cfg)?;
             edits.push(Edit::Remove(item.into_either()));
         }
         if !edits.is_empty() {
@@ -103,13 +117,17 @@ trait Merge: AstNode + Clone {
             None
         }
     }
-    fn try_merge(&self, other: &Self) -> Option<Self>;
+    fn try_merge(&self, other: &Self, cfg: &InsertUseConfig) -> Option<Self>;
     fn into_either(self) -> Either<ast::Use, ast::UseTree>;
 }
 
 impl Merge for ast::Use {
-    fn try_merge(&self, other: &Self) -> Option<Self> {
-        try_merge_imports(self, other, MergeBehavior::Crate)
+    fn try_merge(&self, other: &Self, cfg: &InsertUseConfig) -> Option<Self> {
+        let mb = match cfg.granularity {
+            ImportGranularity::One => MergeBehavior::One,
+            _ => MergeBehavior::Crate,
+        };
+        try_merge_imports(self, other, mb)
     }
     fn into_either(self) -> Either<ast::Use, ast::UseTree> {
         Either::Left(self)
@@ -117,7 +135,7 @@ impl Merge for ast::Use {
 }
 
 impl Merge for ast::UseTree {
-    fn try_merge(&self, other: &Self) -> Option<Self> {
+    fn try_merge(&self, other: &Self, _: &InsertUseConfig) -> Option<Self> {
         try_merge_trees(self, other, MergeBehavior::Crate)
     }
     fn into_either(self) -> Either<ast::Use, ast::UseTree> {
@@ -125,6 +143,7 @@ impl Merge for ast::UseTree {
     }
 }
 
+#[derive(Debug)]
 enum Edit {
     Remove(Either<ast::Use, ast::UseTree>),
     Replace(SyntaxNode, SyntaxNode),
@@ -138,12 +157,41 @@ impl Edit {
 
 #[cfg(test)]
 mod tests {
-    use crate::tests::{check_assist, check_assist_not_applicable};
+    use crate::tests::{
+        check_assist, check_assist_import_one, check_assist_not_applicable,
+        check_assist_not_applicable_for_import_one,
+    };
 
     use super::*;
 
+    macro_rules! check_assist_import_one_variations {
+        ($first: literal, $second: literal, $expected: literal) => {
+            check_assist_import_one(
+                merge_imports,
+                concat!(concat!("use ", $first, ";"), concat!("use ", $second, ";")),
+                $expected,
+            );
+            check_assist_import_one(
+                merge_imports,
+                concat!(concat!("use {", $first, "};"), concat!("use ", $second, ";")),
+                $expected,
+            );
+            check_assist_import_one(
+                merge_imports,
+                concat!(concat!("use ", $first, ";"), concat!("use {", $second, "};")),
+                $expected,
+            );
+            check_assist_import_one(
+                merge_imports,
+                concat!(concat!("use {", $first, "};"), concat!("use {", $second, "};")),
+                $expected,
+            );
+        };
+    }
+
     #[test]
     fn test_merge_equal() {
+        cov_mark::check!(merge_with_use_item_neighbors);
         check_assist(
             merge_imports,
             r"
@@ -151,9 +199,18 @@ use std::fmt$0::{Display, Debug};
 use std::fmt::{Display, Debug};
 ",
             r"
-use std::fmt::{Display, Debug};
+use std::fmt::{Debug, Display};
 ",
-        )
+        );
+
+        // The assist macro below calls `check_assist_import_one` 4 times with different input
+        // use item variations based on the first 2 input parameters.
+        cov_mark::check_count!(merge_with_use_item_neighbors, 4);
+        check_assist_import_one_variations!(
+            "std::fmt$0::{Display, Debug}",
+            "std::fmt::{Display, Debug}",
+            "use {std::fmt::{Debug, Display}};"
+        );
     }
 
     #[test]
@@ -167,7 +224,12 @@ use std::fmt::Display;
             r"
 use std::fmt::{Debug, Display};
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "std::fmt$0::Debug",
+            "std::fmt::Display",
+            "use {std::fmt::{Debug, Display}};"
+        );
     }
 
     #[test]
@@ -179,13 +241,18 @@ use std::fmt::Debug;
 use std::fmt$0::Display;
 ",
             r"
-use std::fmt::{Display, Debug};
+use std::fmt::{Debug, Display};
 ",
+        );
+        check_assist_import_one_variations!(
+            "std::fmt::Debug",
+            "std::fmt$0::Display",
+            "use {std::fmt::{Debug, Display}};"
         );
     }
 
     #[test]
-    fn merge_self1() {
+    fn merge_self() {
         check_assist(
             merge_imports,
             r"
@@ -196,18 +263,19 @@ use std::fmt::Display;
 use std::fmt::{self, Display};
 ",
         );
+        check_assist_import_one_variations!(
+            "std::fmt$0",
+            "std::fmt::Display",
+            "use {std::fmt::{self, Display}};"
+        );
     }
 
     #[test]
-    fn merge_self2() {
-        check_assist(
+    fn not_applicable_to_single_import() {
+        check_assist_not_applicable(merge_imports, "use std::{fmt, $0fmt::Display};");
+        check_assist_not_applicable_for_import_one(
             merge_imports,
-            r"
-use std::{fmt, $0fmt::Display};
-",
-            r"
-use std::{fmt::{Display, self}};
-",
+            "use {std::{fmt, $0fmt::Display}};",
         );
     }
 
@@ -302,10 +370,11 @@ pub(in this::path) use std::fmt::{Debug, Display};
         check_assist(
             merge_imports,
             r"
-use std::{fmt$0::Debug, fmt::Display};
+use std::{fmt$0::Debug, fmt::Error};
+use std::{fmt::Write, fmt::Display};
 ",
             r"
-use std::{fmt::{Debug, Display}};
+use std::fmt::{Debug, Display, Error, Write};
 ",
         );
     }
@@ -315,10 +384,11 @@ use std::{fmt::{Debug, Display}};
         check_assist(
             merge_imports,
             r"
-use std::{fmt::Debug, fmt$0::Display};
+use std::{fmt::Debug, fmt$0::Error};
+use std::{fmt::Write, fmt::Display};
 ",
             r"
-use std::{fmt::{Display, Debug}};
+use std::fmt::{Debug, Display, Error, Write};
 ",
         );
     }
@@ -332,8 +402,13 @@ use std$0::{fmt::{Write, Display}};
 use std::{fmt::{self, Debug}};
 ",
             r"
-use std::{fmt::{Write, Display, self, Debug}};
+use std::fmt::{self, Debug, Display, Write};
 ",
+        );
+        check_assist_import_one_variations!(
+            "std$0::{fmt::{Write, Display}}",
+            "std::{fmt::{self, Debug}}",
+            "use {std::fmt::{self, Debug, Display, Write}};"
         );
     }
 
@@ -346,21 +421,13 @@ use std$0::{fmt::{self, Debug}};
 use std::{fmt::{Write, Display}};
 ",
             r"
-use std::{fmt::{self, Debug, Write, Display}};
+use std::fmt::{self, Debug, Display, Write};
 ",
         );
-    }
-
-    #[test]
-    fn test_merge_self_with_nested_self_item() {
-        check_assist(
-            merge_imports,
-            r"
-use std::{fmt$0::{self, Debug}, fmt::{Write, Display}};
-",
-            r"
-use std::{fmt::{self, Debug, Write, Display}};
-",
+        check_assist_import_one_variations!(
+            "std$0::{fmt::{self, Debug}}",
+            "std::{fmt::{Write, Display}}",
+            "use {std::fmt::{self, Debug, Display, Write}};"
         );
     }
 
@@ -373,9 +440,14 @@ use foo::$0{bar::{self}};
 use foo::{bar};
 ",
             r"
-use foo::{bar::{self}};
+use foo::bar;
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "foo::$0{bar::{self}}",
+            "foo::{bar}",
+            "use {foo::bar};"
+        );
     }
 
     #[test]
@@ -387,9 +459,33 @@ use foo::$0{bar};
 use foo::{bar::{self}};
 ",
             r"
-use foo::{bar::{self}};
+use foo::bar;
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "foo::$0{bar}",
+            "foo::{bar::{self}}",
+            "use {foo::bar};"
+        );
+    }
+
+    #[test]
+    fn test_merge_nested_empty_and_self_with_other() {
+        check_assist(
+            merge_imports,
+            r"
+use foo::$0{bar};
+use foo::{bar::{self, other}};
+",
+            r"
+use foo::bar::{self, other};
+",
+        );
+        check_assist_import_one_variations!(
+            "foo::$0{bar}",
+            "foo::{bar::{self, other}}",
+            "use {foo::bar::{self, other}};"
+        );
     }
 
     #[test]
@@ -401,9 +497,14 @@ use std$0::{fmt::*};
 use std::{fmt::{self, Display}};
 ",
             r"
-use std::{fmt::{*, self, Display}};
+use std::fmt::{self, Display, *};
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "std$0::{fmt::*}",
+            "std::{fmt::{self, Display}}",
+            "use {std::fmt::{self, Display, *}};"
+        );
     }
 
     #[test]
@@ -417,7 +518,12 @@ use std::str;
             r"
 use std::{cell::*, str};
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "std$0::cell::*",
+            "std::str",
+            "use {std::{cell::*, str}};"
+        );
     }
 
     #[test]
@@ -431,7 +537,12 @@ use std::str::*;
             r"
 use std::{cell::*, str::*};
 ",
-        )
+        );
+        check_assist_import_one_variations!(
+            "std$0::cell::*",
+            "std::str::*",
+            "use {std::{cell::*, str::*}};"
+        );
     }
 
     #[test]
@@ -457,29 +568,27 @@ use foo::{bar, baz};
         check_assist(
             merge_imports,
             r"
-use {
-    foo$0::bar,
-    foo::baz,
+use foo$0::{
+    bar, baz,
 };
+use foo::qux;
 ",
             r"
-use {
-    foo::{bar, baz},
+use foo::{
+    bar, baz, qux,
 };
 ",
         );
         check_assist(
             merge_imports,
             r"
-use {
-    foo::baz,
-    foo$0::bar,
+use foo::{
+    baz, bar,
 };
+use foo$0::qux;
 ",
             r"
-use {
-    foo::{bar, baz},
-};
+use foo::{bar, baz, qux};
 ",
         );
     }
@@ -521,13 +630,19 @@ use foo::$0*;
 use foo::bar::Baz;
 ",
             r"
-use foo::{*, bar::Baz};
+use foo::{bar::Baz, *};
 ",
+        );
+        check_assist_import_one_variations!(
+            "foo::$0*",
+            "foo::bar::Baz",
+            "use {foo::{bar::Baz, *}};"
         );
     }
 
     #[test]
     fn merge_selection_uses() {
+        cov_mark::check!(merge_with_selected_use_item_neighbors);
         check_assist(
             merge_imports,
             r"
@@ -539,7 +654,24 @@ $0use std::fmt::Result;
 ",
             r"
 use std::fmt::Error;
-use std::fmt::{Display, Debug, Write};
+use std::fmt::{Debug, Display, Write};
+use std::fmt::Result;
+",
+        );
+
+        cov_mark::check!(merge_with_selected_use_item_neighbors);
+        check_assist_import_one(
+            merge_imports,
+            r"
+use std::fmt::Error;
+$0use std::fmt::Display;
+use std::fmt::Debug;
+use std::fmt::Write;
+$0use std::fmt::Result;
+",
+            r"
+use std::fmt::Error;
+use {std::fmt::{Debug, Display, Write}};
 use std::fmt::Result;
 ",
         );
@@ -547,6 +679,7 @@ use std::fmt::Result;
 
     #[test]
     fn merge_selection_use_trees() {
+        cov_mark::check!(merge_with_selected_use_tree_neighbors);
         check_assist(
             merge_imports,
             r"
@@ -560,15 +693,91 @@ use std::{
             r"
 use std::{
     fmt::Error,
-    fmt::{Display, Debug, Write},
+    fmt::{Debug, Display, Write},
     fmt::Result,
 };",
         );
-        // FIXME: Remove redundant braces. See also unnecessary-braces diagnostic.
+
+        cov_mark::check!(merge_with_selected_use_tree_neighbors);
+        check_assist(
+            merge_imports,
+            r"use std::{fmt::Result, $0fmt::Display, fmt::Debug$0};",
+            r"use std::{fmt::Result, fmt::{Debug, Display}};",
+        );
+
+        cov_mark::check!(merge_with_selected_use_tree_neighbors);
         check_assist(
             merge_imports,
             r"use std::$0{fmt::Display, fmt::Debug}$0;",
-            r"use std::{fmt::{Display, Debug}};",
+            r"use std::{fmt::{Debug, Display}};",
+        );
+    }
+
+    #[test]
+    fn test_merge_with_synonymous_imports_1() {
+        check_assist(
+            merge_imports,
+            r"
+mod top {
+    pub(crate) mod a {
+        pub(crate) struct A;
+    }
+    pub(crate) mod b {
+        pub(crate) struct B;
+        pub(crate) struct D;
+    }
+}
+
+use top::a::A;
+use $0top::b::{B, B as C};
+",
+            r"
+mod top {
+    pub(crate) mod a {
+        pub(crate) struct A;
+    }
+    pub(crate) mod b {
+        pub(crate) struct B;
+        pub(crate) struct D;
+    }
+}
+
+use top::{a::A, b::{B, B as C}};
+",
+        );
+    }
+
+    #[test]
+    fn test_merge_with_synonymous_imports_2() {
+        check_assist(
+            merge_imports,
+            r"
+mod top {
+    pub(crate) mod a {
+        pub(crate) struct A;
+    }
+    pub(crate) mod b {
+        pub(crate) struct B;
+        pub(crate) struct D;
+    }
+}
+
+use top::a::A;
+use $0top::b::{B as D, B as C};
+",
+            r"
+mod top {
+    pub(crate) mod a {
+        pub(crate) struct A;
+    }
+    pub(crate) mod b {
+        pub(crate) struct B;
+        pub(crate) struct D;
+    }
+}
+
+use top::{a::A, b::{B as D, B as C}};
+",
         );
     }
 }

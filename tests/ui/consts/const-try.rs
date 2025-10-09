@@ -1,4 +1,6 @@
-// known-bug: #110395
+//@ check-pass
+//@ revisions: current next
+//@[next] compile-flags: -Znext-solver
 
 // Demonstrates what's needed to make use of `?` in const contexts.
 

@@ -1,9 +1,10 @@
-// run-pass
-// needs-unwind
+//@ run-pass
+//@ needs-unwind
 #![allow(dead_code)]
 #![allow(non_upper_case_globals)]
 
-// ignore-emscripten no threads support
+//@ needs-threads
+//@ ignore-backends: gcc
 
 use std::thread;
 

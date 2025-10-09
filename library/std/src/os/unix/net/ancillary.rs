@@ -1,9 +1,9 @@
 // FIXME: This is currently disabled on *BSD.
 
-use super::{sockaddr_un, SocketAddr};
+use super::{SocketAddr, sockaddr_un};
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::marker::PhantomData;
-use crate::mem::{size_of, zeroed};
+use crate::mem::zeroed;
 use crate::os::unix::io::RawFd;
 use crate::path::Path;
 use crate::ptr::{eq, read_unaligned};
@@ -11,12 +11,20 @@ use crate::slice::from_raw_parts;
 use crate::sys::net::Socket;
 
 // FIXME(#43348): Make libc adapt #[doc(cfg(...))] so we don't need these fake definitions here?
-#[cfg(all(doc, not(target_os = "linux"), not(target_os = "android"), not(target_os = "netbsd")))]
+#[cfg(all(
+    doc,
+    not(target_os = "linux"),
+    not(target_os = "android"),
+    not(target_os = "netbsd"),
+    not(target_os = "freebsd"),
+    not(target_os = "cygwin"),
+))]
 #[allow(non_camel_case_types)]
 mod libc {
-    pub use libc::c_int;
+    pub use core::ffi::c_int;
     pub struct ucred;
     pub struct cmsghdr;
+    pub struct sockcred2;
     pub type pid_t = i32;
     pub type gid_t = u32;
     pub type uid_t = u32;
@@ -30,7 +38,7 @@ pub(super) fn recv_vectored_with_ancillary_from(
     unsafe {
         let mut msg_name: libc::sockaddr_un = zeroed();
         let mut msg: libc::msghdr = zeroed();
-        msg.msg_name = &mut msg_name as *mut _ as *mut _;
+        msg.msg_name = (&raw mut msg_name) as *mut _;
         msg.msg_namelen = size_of::<libc::sockaddr_un>() as libc::socklen_t;
         msg.msg_iov = bufs.as_mut_ptr().cast();
         msg.msg_iovlen = bufs.len() as _;
@@ -63,7 +71,7 @@ pub(super) fn send_vectored_with_ancillary_to(
             if let Some(path) = path { sockaddr_un(path)? } else { (zeroed(), 0) };
 
         let mut msg: libc::msghdr = zeroed();
-        msg.msg_name = &mut msg_name as *mut _ as *mut _;
+        msg.msg_name = (&raw mut msg_name) as *mut _;
         msg.msg_namelen = msg_namelen;
         msg.msg_iov = bufs.as_ptr() as *mut _;
         msg.msg_iovlen = bufs.len() as _;
@@ -157,7 +165,7 @@ struct AncillaryDataIter<'a, T> {
 }
 
 impl<'a, T> AncillaryDataIter<'a, T> {
-    /// Create `AncillaryDataIter` struct to iterate through the data unit in the control message.
+    /// Creates `AncillaryDataIter` struct to iterate through the data unit in the control message.
     ///
     /// # Safety
     ///
@@ -188,14 +196,15 @@ impl<'a, T> Iterator for AncillaryDataIter<'a, T> {
     not(target_os = "android"),
     not(target_os = "linux"),
     not(target_os = "netbsd"),
-    not(target_os = "freebsd")
+    not(target_os = "freebsd"),
+    not(target_os = "cygwin"),
 ))]
 #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
 #[derive(Clone)]
 pub struct SocketCred(());
 
 /// Unix credential.
-#[cfg(any(target_os = "android", target_os = "linux",))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
 #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
 #[derive(Clone)]
 pub struct SocketCred(libc::ucred);
@@ -210,10 +219,10 @@ pub struct SocketCred(libc::sockcred);
 #[derive(Clone)]
 pub struct SocketCred(libc::sockcred2);
 
-#[doc(cfg(any(target_os = "android", target_os = "linux")))]
-#[cfg(any(target_os = "android", target_os = "linux"))]
+#[doc(cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin")))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
 impl SocketCred {
-    /// Create a Unix credential struct.
+    /// Creates a Unix credential struct.
     ///
     /// PID, UID and GID is set to 0.
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
@@ -228,7 +237,7 @@ impl SocketCred {
         self.0.pid = pid;
     }
 
-    /// Get the current PID.
+    /// Gets the current PID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_pid(&self) -> libc::pid_t {
@@ -241,7 +250,7 @@ impl SocketCred {
         self.0.uid = uid;
     }
 
-    /// Get the current UID.
+    /// Gets the current UID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_uid(&self) -> libc::uid_t {
@@ -254,7 +263,7 @@ impl SocketCred {
         self.0.gid = gid;
     }
 
-    /// Get the current GID.
+    /// Gets the current GID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_gid(&self) -> libc::gid_t {
@@ -264,7 +273,7 @@ impl SocketCred {
 
 #[cfg(target_os = "freebsd")]
 impl SocketCred {
-    /// Create a Unix credential struct.
+    /// Creates a Unix credential struct.
     ///
     /// PID, UID and GID is set to 0.
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
@@ -288,7 +297,7 @@ impl SocketCred {
         self.0.sc_pid = pid;
     }
 
-    /// Get the current PID.
+    /// Gets the current PID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_pid(&self) -> libc::pid_t {
@@ -301,7 +310,7 @@ impl SocketCred {
         self.0.sc_euid = uid;
     }
 
-    /// Get the current UID.
+    /// Gets the current UID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_uid(&self) -> libc::uid_t {
@@ -314,7 +323,7 @@ impl SocketCred {
         self.0.sc_egid = gid;
     }
 
-    /// Get the current GID.
+    /// Gets the current GID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_gid(&self) -> libc::gid_t {
@@ -324,7 +333,7 @@ impl SocketCred {
 
 #[cfg(target_os = "netbsd")]
 impl SocketCred {
-    /// Create a Unix credential struct.
+    /// Creates a Unix credential struct.
     ///
     /// PID, UID and GID is set to 0.
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
@@ -346,7 +355,7 @@ impl SocketCred {
         self.0.sc_pid = pid;
     }
 
-    /// Get the current PID.
+    /// Gets the current PID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_pid(&self) -> libc::pid_t {
@@ -359,7 +368,7 @@ impl SocketCred {
         self.0.sc_uid = uid;
     }
 
-    /// Get the current UID.
+    /// Gets the current UID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_uid(&self) -> libc::uid_t {
@@ -372,7 +381,7 @@ impl SocketCred {
         self.0.sc_gid = gid;
     }
 
-    /// Get the current GID.
+    /// Gets the current GID.
     #[must_use]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn get_gid(&self) -> libc::gid_t {
@@ -400,7 +409,8 @@ impl<'a> Iterator for ScmRights<'a> {
     not(target_os = "android"),
     not(target_os = "linux"),
     not(target_os = "netbsd"),
-    not(target_os = "freebsd")
+    not(target_os = "freebsd"),
+    not(target_os = "cygwin"),
 ))]
 #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
 pub struct ScmCredentials<'a>(AncillaryDataIter<'a, ()>);
@@ -408,7 +418,7 @@ pub struct ScmCredentials<'a>(AncillaryDataIter<'a, ()>);
 /// This control message contains unix credentials.
 ///
 /// The level is equal to `SOL_SOCKET` and the type is equal to `SCM_CREDENTIALS` or `SCM_CREDS`.
-#[cfg(any(target_os = "android", target_os = "linux",))]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
 #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
 pub struct ScmCredentials<'a>(AncillaryDataIter<'a, libc::ucred>);
 
@@ -425,7 +435,8 @@ pub struct ScmCredentials<'a>(AncillaryDataIter<'a, libc::sockcred>);
     target_os = "android",
     target_os = "linux",
     target_os = "netbsd",
-    target_os = "freebsd"
+    target_os = "freebsd",
+    target_os = "cygwin",
 ))]
 #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
 impl<'a> Iterator for ScmCredentials<'a> {
@@ -453,13 +464,14 @@ pub enum AncillaryData<'a> {
         target_os = "android",
         target_os = "linux",
         target_os = "netbsd",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "cygwin",
     ))]
     ScmCredentials(ScmCredentials<'a>),
 }
 
 impl<'a> AncillaryData<'a> {
-    /// Create an `AncillaryData::ScmRights` variant.
+    /// Creates an `AncillaryData::ScmRights` variant.
     ///
     /// # Safety
     ///
@@ -471,7 +483,7 @@ impl<'a> AncillaryData<'a> {
         AncillaryData::ScmRights(scm_rights)
     }
 
-    /// Create an `AncillaryData::ScmCredentials` variant.
+    /// Creates an `AncillaryData::ScmCredentials` variant.
     ///
     /// # Safety
     ///
@@ -482,7 +494,8 @@ impl<'a> AncillaryData<'a> {
         target_os = "android",
         target_os = "linux",
         target_os = "netbsd",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "cygwin",
     ))]
     unsafe fn as_credentials(data: &'a [u8]) -> Self {
         let ancillary_data_iter = AncillaryDataIter::new(data);
@@ -500,7 +513,7 @@ impl<'a> AncillaryData<'a> {
             match (*cmsg).cmsg_level {
                 libc::SOL_SOCKET => match (*cmsg).cmsg_type {
                     libc::SCM_RIGHTS => Ok(AncillaryData::as_rights(data)),
-                    #[cfg(any(target_os = "android", target_os = "linux",))]
+                    #[cfg(any(target_os = "android", target_os = "linux", target_os = "cygwin"))]
                     libc::SCM_CREDENTIALS => Ok(AncillaryData::as_credentials(data)),
                     #[cfg(target_os = "freebsd")]
                     libc::SCM_CREDS2 => Ok(AncillaryData::as_credentials(data)),
@@ -598,7 +611,7 @@ pub struct SocketAncillary<'a> {
 }
 
 impl<'a> SocketAncillary<'a> {
-    /// Create an ancillary data with the given buffer.
+    /// Creates an ancillary data with the given buffer.
     ///
     /// # Example
     ///
@@ -722,7 +735,8 @@ impl<'a> SocketAncillary<'a> {
         target_os = "android",
         target_os = "linux",
         target_os = "netbsd",
-        target_os = "freebsd"
+        target_os = "freebsd",
+        target_os = "cygwin",
     ))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn add_creds(&mut self, creds: &[SocketCred]) -> bool {

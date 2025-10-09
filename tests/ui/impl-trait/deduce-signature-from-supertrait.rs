@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 
@@ -8,8 +8,11 @@ impl<T: Fn(i32)> SuperExpectation for T {}
 
 type Foo = impl SuperExpectation;
 
-fn main() {
+#[define_opaque(Foo)]
+fn bop() {
     let _: Foo = |x| {
         let _ = x.to_string();
     };
 }
+
+fn main() {}

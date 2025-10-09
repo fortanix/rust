@@ -1,17 +1,87 @@
 //! Server-side traits.
 
-use super::*;
-
 use std::cell::Cell;
 use std::marker::PhantomData;
 
-// FIXME(eddyb) generate the definition of `HandleStore` in `server.rs`.
-use super::client::HandleStore;
+use super::*;
+
+macro_rules! define_server_handles {
+    (
+        'owned: $($oty:ident,)*
+        'interned: $($ity:ident,)*
+    ) => {
+        #[allow(non_snake_case)]
+        pub(super) struct HandleStore<S: Types> {
+            $($oty: handle::OwnedStore<S::$oty>,)*
+            $($ity: handle::InternedStore<S::$ity>,)*
+        }
+
+        impl<S: Types> HandleStore<S> {
+            fn new(handle_counters: &'static client::HandleCounters) -> Self {
+                HandleStore {
+                    $($oty: handle::OwnedStore::new(&handle_counters.$oty),)*
+                    $($ity: handle::InternedStore::new(&handle_counters.$ity),)*
+                }
+            }
+        }
+
+        $(
+            impl<S: Types> Encode<HandleStore<MarkedTypes<S>>> for Marked<S::$oty, client::$oty> {
+                fn encode(self, w: &mut Writer, s: &mut HandleStore<MarkedTypes<S>>) {
+                    s.$oty.alloc(self).encode(w, s);
+                }
+            }
+
+            impl<S: Types> DecodeMut<'_, '_, HandleStore<MarkedTypes<S>>>
+                for Marked<S::$oty, client::$oty>
+            {
+                fn decode(r: &mut Reader<'_>, s: &mut HandleStore<MarkedTypes<S>>) -> Self {
+                    s.$oty.take(handle::Handle::decode(r, &mut ()))
+                }
+            }
+
+            impl<'s, S: Types> DecodeMut<'_, 's, HandleStore<MarkedTypes<S>>>
+                for &'s Marked<S::$oty, client::$oty>
+            {
+                fn decode(r: &mut Reader<'_>, s: &'s mut HandleStore<MarkedTypes<S>>) -> Self {
+                    &s.$oty[handle::Handle::decode(r, &mut ())]
+                }
+            }
+
+            impl<'s, S: Types> DecodeMut<'_, 's, HandleStore<MarkedTypes<S>>>
+                for &'s mut Marked<S::$oty, client::$oty>
+            {
+                fn decode(
+                    r: &mut Reader<'_>,
+                    s: &'s mut HandleStore<MarkedTypes<S>>
+                ) -> Self {
+                    &mut s.$oty[handle::Handle::decode(r, &mut ())]
+                }
+            }
+        )*
+
+        $(
+            impl<S: Types> Encode<HandleStore<MarkedTypes<S>>> for Marked<S::$ity, client::$ity> {
+                fn encode(self, w: &mut Writer, s: &mut HandleStore<MarkedTypes<S>>) {
+                    s.$ity.alloc(self).encode(w, s);
+                }
+            }
+
+            impl<S: Types> DecodeMut<'_, '_, HandleStore<MarkedTypes<S>>>
+                for Marked<S::$ity, client::$ity>
+            {
+                fn decode(r: &mut Reader<'_>, s: &mut HandleStore<MarkedTypes<S>>) -> Self {
+                    s.$ity.copy(handle::Handle::decode(r, &mut ()))
+                }
+            }
+        )*
+    }
+}
+with_api_handle_types!(define_server_handles);
 
 pub trait Types {
     type FreeFunctions: 'static;
     type TokenStream: 'static + Clone;
-    type SourceFile: 'static + Clone;
     type Span: 'static + Copy + Eq + Hash;
     type Symbol: 'static;
 }
@@ -108,7 +178,7 @@ macro_rules! define_dispatcher_impl {
                     $(api_tags::Method::$name(m) => match m {
                         $(api_tags::$name::$method => {
                             let mut call_method = || {
-                                reverse_decode!(reader, handle_store; $($arg: $arg_ty),*);
+                                $(let $arg = <$arg_ty>::decode(&mut reader, handle_store);)*
                                 $name::$method(server, $($arg),*)
                             };
                             // HACK(eddyb) don't use `panic::catch_unwind` in a panic.
@@ -152,7 +222,7 @@ thread_local! {
     /// This is required as the thread-local state in the proc_macro client does
     /// not handle being re-entered, and will invalidate all `Symbol`s when
     /// entering a nested macro.
-    static ALREADY_RUNNING_SAME_THREAD: Cell<bool> = Cell::new(false);
+    static ALREADY_RUNNING_SAME_THREAD: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Keep `ALREADY_RUNNING_SAME_THREAD` (see also its documentation)
@@ -225,12 +295,7 @@ impl ExecutionStrategy for SameThread {
 
         let mut dispatch = |buf| dispatcher.dispatch(buf);
 
-        run_client(BridgeConfig {
-            input,
-            dispatch: (&mut dispatch).into(),
-            force_show_panics,
-            _marker: marker::PhantomData,
-        })
+        run_client(BridgeConfig { input, dispatch: (&mut dispatch).into(), force_show_panics })
     }
 }
 
@@ -261,12 +326,7 @@ where
                 client.recv().expect("server died while client waiting for reply")
             };
 
-            run_client(BridgeConfig {
-                input,
-                dispatch: (&mut dispatch).into(),
-                force_show_panics,
-                _marker: marker::PhantomData,
-            })
+            run_client(BridgeConfig { input, dispatch: (&mut dispatch).into(), force_show_panics })
         });
 
         while let Some(b) = server.recv() {
@@ -279,7 +339,7 @@ where
 
 /// A message pipe used for communicating between server and client threads.
 pub trait MessagePipe<T>: Sized {
-    /// Create a new pair of endpoints for the message pipe.
+    /// Creates a new pair of endpoints for the message pipe.
     fn new() -> (Self, Self);
 
     /// Send a message to the other endpoint of this pipe.
@@ -329,10 +389,10 @@ impl client::Client<crate::TokenStream, crate::TokenStream> {
         S: Server,
         S::TokenStream: Default,
     {
-        let client::Client { get_handle_counters, run, _marker } = *self;
+        let client::Client { handle_counters, run, _marker } = *self;
         run_server(
             strategy,
-            get_handle_counters(),
+            handle_counters,
             server,
             <MarkedTypes<S> as Types>::TokenStream::mark(input),
             run,
@@ -355,10 +415,10 @@ impl client::Client<(crate::TokenStream, crate::TokenStream), crate::TokenStream
         S: Server,
         S::TokenStream: Default,
     {
-        let client::Client { get_handle_counters, run, _marker } = *self;
+        let client::Client { handle_counters, run, _marker } = *self;
         run_server(
             strategy,
-            get_handle_counters(),
+            handle_counters,
             server,
             (
                 <MarkedTypes<S> as Types>::TokenStream::mark(input),

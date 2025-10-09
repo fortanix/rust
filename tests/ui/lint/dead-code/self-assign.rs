@@ -1,9 +1,16 @@
-// Test that dead code warnings are issued for superfluous assignments of
-// fields or variables to themselves (issue #75356).
+//! Test that dead code warnings are issued for superfluous assignments of fields or variables to
+//! themselves (issue #75356).
+//!
+//! # History of this test (to aid relanding of a fixed version of #81473)
+//!
+//! - Original lint request was about self-assignments not triggering sth like `dead_code`.
+//! - `dead_code` lint expansion for self-assignments was implemented in #87129.
+//! - Unfortunately implementation components of #87129 had to be disabled as part of reverts
+//!   #86212, #83171 (to revert #81473) to address regressions #81626 and #81658.
+//! - Re-enabled in current version to properly detect self-assignments.
 
-// ignore-test FIXME(81658, 83171)
+//@ check-pass
 
-// check-pass
 #![allow(unused_assignments)]
 #![warn(dead_code)]
 
@@ -22,7 +29,7 @@ fn main() {
     struct S<'a> { f: &'a str }
     let mut s = S { f: "abc" };
     s = s;
-    //~^ WARNING: useless assignment of variable of type `S` to itself
+    //~^ WARNING: useless assignment of variable of type `S<'_>` to itself
 
     s.f = s.f;
     //~^ WARNING: useless assignment of field of type `&str` to itself

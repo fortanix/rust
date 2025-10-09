@@ -1,6 +1,9 @@
-use syntax::ast::{self, AstNode, BinExpr};
+use syntax::{
+    SyntaxKind, T,
+    ast::{self, AstNode, BinExpr, syntax_factory::SyntaxFactory},
+};
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: flip_binexpr
 //
@@ -19,11 +22,17 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // ```
 pub(crate) fn flip_binexpr(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     let expr = ctx.find_node_at_offset::<BinExpr>()?;
-    let lhs = expr.lhs()?.syntax().clone();
-    let rhs = expr.rhs()?.syntax().clone();
-    let op_range = expr.op_token()?.text_range();
+    let lhs = expr.lhs()?;
+    let rhs = expr.rhs()?;
+
+    let lhs = match &lhs {
+        ast::Expr::BinExpr(bin_expr) if bin_expr.op_kind() == expr.op_kind() => bin_expr.rhs()?,
+        _ => lhs,
+    };
+
+    let op_token = expr.op_token()?;
     // The assist should be applied only if the cursor is on the operator
-    let cursor_in_range = op_range.contains_range(ctx.selection_trimmed());
+    let cursor_in_range = op_token.text_range().contains_range(ctx.selection_trimmed());
     if !cursor_in_range {
         return None;
     }
@@ -34,15 +43,19 @@ pub(crate) fn flip_binexpr(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option
     }
 
     acc.add(
-        AssistId("flip_binexpr", AssistKind::RefactorRewrite),
+        AssistId::refactor_rewrite("flip_binexpr"),
         "Flip binary expression",
-        op_range,
-        |edit| {
-            if let FlipAction::FlipAndReplaceOp(new_op) = action {
-                edit.replace(op_range, new_op);
-            }
-            edit.replace(lhs.text_range(), rhs.text());
-            edit.replace(rhs.text_range(), lhs.text());
+        op_token.text_range(),
+        |builder| {
+            let mut editor = builder.make_editor(&expr.syntax().parent().unwrap());
+            let make = SyntaxFactory::with_mappings();
+            if let FlipAction::FlipAndReplaceOp(binary_op) = action {
+                editor.replace(op_token, make.token(binary_op))
+            };
+            editor.replace(lhs.syntax(), rhs.syntax());
+            editor.replace(rhs.syntax(), lhs.syntax());
+            editor.add_mappings(make.finish_with_mappings());
+            builder.add_file_edits(ctx.vfs_file_id(), editor);
         },
     )
 }
@@ -51,7 +64,7 @@ enum FlipAction {
     // Flip the expression
     Flip,
     // Flip the expression and replace the operator with this string
-    FlipAndReplaceOp(&'static str),
+    FlipAndReplaceOp(SyntaxKind),
     // Do not flip the expression
     DontFlip,
 }
@@ -62,10 +75,10 @@ impl From<ast::BinaryOp> for FlipAction {
             ast::BinaryOp::Assignment { .. } => FlipAction::DontFlip,
             ast::BinaryOp::CmpOp(ast::CmpOp::Ord { ordering, strict }) => {
                 let rev_op = match (ordering, strict) {
-                    (ast::Ordering::Less, true) => ">",
-                    (ast::Ordering::Less, false) => ">=",
-                    (ast::Ordering::Greater, true) => "<",
-                    (ast::Ordering::Greater, false) => "<=",
+                    (ast::Ordering::Less, true) => T![>],
+                    (ast::Ordering::Less, false) => T![>=],
+                    (ast::Ordering::Greater, true) => T![<],
+                    (ast::Ordering::Greater, false) => T![<=],
                 };
                 FlipAction::FlipAndReplaceOp(rev_op)
             }
@@ -111,6 +124,24 @@ mod tests {
             flip_binexpr,
             "fn f() { let res = (1 + 1) ==$0 (2 + 2); }",
             "fn f() { let res = (2 + 2) == (1 + 1); }",
+        )
+    }
+
+    #[test]
+    fn flip_binexpr_works_for_lhs_arith() {
+        check_assist(
+            flip_binexpr,
+            r"fn f() { let res = 1 + (2 - 3) +$0 4 + 5; }",
+            r"fn f() { let res = 1 + 4 + (2 - 3) + 5; }",
+        )
+    }
+
+    #[test]
+    fn flip_binexpr_works_for_lhs_cmp() {
+        check_assist(
+            flip_binexpr,
+            r"fn f() { let res = 1 + (2 - 3) >$0 4 + 5; }",
+            r"fn f() { let res = 4 + 5 < 1 + (2 - 3); }",
         )
     }
 

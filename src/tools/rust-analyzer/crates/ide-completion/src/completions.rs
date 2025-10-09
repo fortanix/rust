@@ -2,8 +2,10 @@
 
 pub(crate) mod attribute;
 pub(crate) mod dot;
+pub(crate) mod env_vars;
 pub(crate) mod expr;
 pub(crate) mod extern_abi;
+pub(crate) mod extern_crate;
 pub(crate) mod field;
 pub(crate) mod flyimport;
 pub(crate) mod fn_param;
@@ -19,32 +21,32 @@ pub(crate) mod snippet;
 pub(crate) mod r#type;
 pub(crate) mod use_;
 pub(crate) mod vis;
-pub(crate) mod env_vars;
 
 use std::iter;
 
-use hir::{known, ScopeDef, Variant};
-use ide_db::{imports::import_assets::LocatedImport, SymbolKind};
-use syntax::ast;
+use hir::{HasAttrs, Name, ScopeDef, Variant, sym};
+use ide_db::{RootDatabase, SymbolKind, imports::import_assets::LocatedImport};
+use syntax::{SmolStr, ToSmolStr, ast};
 
 use crate::{
+    CompletionContext, CompletionItem, CompletionItemKind,
     context::{
         DotAccess, ItemListKind, NameContext, NameKind, NameRefContext, NameRefKind,
         PathCompletionCtx, PathKind, PatternContext, TypeLocation, Visible,
     },
     item::Builder,
     render::{
+        RenderContext,
         const_::render_const,
         function::{render_fn, render_method},
         literal::{render_struct_literal, render_variant_lit},
         macro_::render_macro,
         pattern::{render_struct_pat, render_variant_pat},
-        render_field, render_path_resolution, render_pattern_resolution, render_tuple_field,
+        render_expr, render_field, render_path_resolution, render_pattern_resolution,
+        render_tuple_field,
         type_alias::{render_type_alias, render_type_alias_with_eq},
         union_literal::render_union_literal,
-        RenderContext,
     },
-    CompletionContext, CompletionItem, CompletionItemKind,
 };
 
 /// Represents an in-progress set of completions being built.
@@ -62,8 +64,8 @@ impl From<Completions> for Vec<CompletionItem> {
 impl Builder {
     /// Convenience method, which allows to add a freshly created completion into accumulator
     /// without binding it to the variable.
-    pub(crate) fn add_to(self, acc: &mut Completions) {
-        acc.add(self.build())
+    pub(crate) fn add_to(self, acc: &mut Completions, db: &RootDatabase) {
+        acc.add(self.build(db))
     }
 }
 
@@ -78,17 +80,14 @@ impl Completions {
         }
     }
 
-    pub(crate) fn add_all<I>(&mut self, items: I)
-    where
-        I: IntoIterator,
-        I::Item: Into<CompletionItem>,
-    {
-        items.into_iter().for_each(|item| self.add(item.into()))
-    }
-
     pub(crate) fn add_keyword(&mut self, ctx: &CompletionContext<'_>, keyword: &'static str) {
-        let item = CompletionItem::new(CompletionItemKind::Keyword, ctx.source_range(), keyword);
-        item.add_to(self);
+        let item = CompletionItem::new(
+            CompletionItemKind::Keyword,
+            ctx.source_range(),
+            SmolStr::new_static(keyword),
+            ctx.edition,
+        );
+        item.add_to(self, ctx.db);
     }
 
     pub(crate) fn add_nameref_keywords_with_colon(&mut self, ctx: &CompletionContext<'_>) {
@@ -112,10 +111,11 @@ impl Completions {
         ctx: &CompletionContext<'_>,
         super_chain_len: Option<usize>,
     ) {
-        if let Some(len) = super_chain_len {
-            if len > 0 && len < ctx.depth_from_crate_root {
-                self.add_keyword(ctx, "super::");
-            }
+        if let Some(len) = super_chain_len
+            && len > 0
+            && len < ctx.depth_from_crate_root
+        {
+            self.add_keyword(ctx, "super::");
         }
     }
 
@@ -126,7 +126,8 @@ impl Completions {
         kw: &str,
         snippet: &str,
     ) {
-        let mut item = CompletionItem::new(CompletionItemKind::Keyword, ctx.source_range(), kw);
+        let mut item =
+            CompletionItem::new(CompletionItemKind::Keyword, ctx.source_range(), kw, ctx.edition);
 
         match ctx.config.snippet_cap {
             Some(cap) => {
@@ -142,7 +143,7 @@ impl Completions {
                 item.insert_text(if snippet.contains('$') { kw } else { snippet });
             }
         };
-        item.add_to(self);
+        item.add_to(self, ctx.db);
     }
 
     pub(crate) fn add_keyword_snippet(
@@ -151,23 +152,34 @@ impl Completions {
         kw: &str,
         snippet: &str,
     ) {
-        let mut item = CompletionItem::new(CompletionItemKind::Keyword, ctx.source_range(), kw);
+        let mut item =
+            CompletionItem::new(CompletionItemKind::Keyword, ctx.source_range(), kw, ctx.edition);
 
         match ctx.config.snippet_cap {
             Some(cap) => item.insert_snippet(cap, snippet),
             None => item.insert_text(if snippet.contains('$') { kw } else { snippet }),
         };
-        item.add_to(self);
+        item.add_to(self, ctx.db);
+    }
+
+    pub(crate) fn add_expr(
+        &mut self,
+        ctx: &CompletionContext<'_>,
+        expr: &hir::term_search::Expr<'_>,
+    ) {
+        if let Some(item) = render_expr(ctx, expr) {
+            item.add_to(self, ctx.db)
+        }
     }
 
     pub(crate) fn add_crate_roots(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
     ) {
-        ctx.process_all_names(&mut |name, res| match res {
-            ScopeDef::ModuleDef(hir::ModuleDef::Module(m)) if m.is_crate_root(ctx.db) => {
-                self.add_module(ctx, path_ctx, m, name);
+        ctx.process_all_names(&mut |name, res, doc_aliases| match res {
+            ScopeDef::ModuleDef(hir::ModuleDef::Module(m)) if m.is_crate_root() => {
+                self.add_module(ctx, path_ctx, m, name, doc_aliases);
             }
             _ => (),
         });
@@ -176,9 +188,10 @@ impl Completions {
     pub(crate) fn add_path_resolution(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         local_name: hir::Name,
         resolution: hir::ScopeDef,
+        doc_aliases: Vec<syntax::SmolStr>,
     ) {
         let is_private_editable = match ctx.def_is_visible(&resolution) {
             Visible::Yes => false,
@@ -187,12 +200,14 @@ impl Completions {
         };
         self.add(
             render_path_resolution(
-                RenderContext::new(ctx).private_editable(is_private_editable),
+                RenderContext::new(ctx)
+                    .private_editable(is_private_editable)
+                    .doc_aliases(doc_aliases),
                 path_ctx,
                 local_name,
                 resolution,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
@@ -215,16 +230,19 @@ impl Completions {
                 local_name,
                 resolution,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
     pub(crate) fn add_enum_variants(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         e: hir::Enum,
     ) {
+        if !ctx.check_stability_and_hidden(e) {
+            return;
+        }
         e.variants(ctx.db)
             .into_iter()
             .for_each(|variant| self.add_enum_variant(ctx, path_ctx, variant, None));
@@ -233,22 +251,24 @@ impl Completions {
     pub(crate) fn add_module(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         module: hir::Module,
         local_name: hir::Name,
+        doc_aliases: Vec<syntax::SmolStr>,
     ) {
         self.add_path_resolution(
             ctx,
             path_ctx,
             local_name,
             hir::ScopeDef::ModuleDef(module.into()),
+            doc_aliases,
         );
     }
 
     pub(crate) fn add_macro(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         mac: hir::Macro,
         local_name: hir::Name,
     ) {
@@ -264,14 +284,14 @@ impl Completions {
                 local_name,
                 mac,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
     pub(crate) fn add_function(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         func: hir::Function,
         local_name: Option<hir::Name>,
     ) {
@@ -280,23 +300,26 @@ impl Completions {
             Visible::Editable => true,
             Visible::No => return,
         };
+        let doc_aliases = ctx.doc_aliases(&func);
         self.add(
             render_fn(
-                RenderContext::new(ctx).private_editable(is_private_editable),
+                RenderContext::new(ctx)
+                    .private_editable(is_private_editable)
+                    .doc_aliases(doc_aliases),
                 path_ctx,
                 local_name,
                 func,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
     pub(crate) fn add_method(
         &mut self,
         ctx: &CompletionContext<'_>,
-        dot_access: &DotAccess,
+        dot_access: &DotAccess<'_>,
         func: hir::Function,
-        receiver: Option<hir::Name>,
+        receiver: Option<SmolStr>,
         local_name: Option<hir::Name>,
     ) {
         let is_private_editable = match ctx.is_visible(&func) {
@@ -304,22 +327,25 @@ impl Completions {
             Visible::Editable => true,
             Visible::No => return,
         };
+        let doc_aliases = ctx.doc_aliases(&func);
         self.add(
             render_method(
-                RenderContext::new(ctx).private_editable(is_private_editable),
+                RenderContext::new(ctx)
+                    .private_editable(is_private_editable)
+                    .doc_aliases(doc_aliases),
                 dot_access,
                 receiver,
                 local_name,
                 func,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
     pub(crate) fn add_method_with_import(
         &mut self,
         ctx: &CompletionContext<'_>,
-        dot_access: &DotAccess,
+        dot_access: &DotAccess<'_>,
         func: hir::Function,
         import: LocatedImport,
     ) {
@@ -328,17 +354,19 @@ impl Completions {
             Visible::Editable => true,
             Visible::No => return,
         };
+        let doc_aliases = ctx.doc_aliases(&func);
         self.add(
             render_method(
                 RenderContext::new(ctx)
                     .private_editable(is_private_editable)
+                    .doc_aliases(doc_aliases)
                     .import_to_add(Some(import)),
                 dot_access,
                 None,
                 None,
                 func,
             )
-            .build(),
+            .build(ctx.db),
         );
     }
 
@@ -375,30 +403,39 @@ impl Completions {
         ctx: &CompletionContext<'_>,
         type_alias: hir::TypeAlias,
     ) {
+        if !ctx.check_stability(Some(&type_alias.attrs(ctx.db))) {
+            return;
+        }
         self.add_opt(render_type_alias_with_eq(RenderContext::new(ctx), type_alias));
     }
 
     pub(crate) fn add_qualified_enum_variant(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         variant: hir::Variant,
         path: hir::ModPath,
     ) {
+        if !ctx.check_stability_and_hidden(variant) {
+            return;
+        }
         if let Some(builder) =
             render_variant_lit(RenderContext::new(ctx), path_ctx, None, variant, Some(path))
         {
-            self.add(builder.build());
+            self.add(builder.build(ctx.db));
         }
     }
 
     pub(crate) fn add_enum_variant(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         variant: hir::Variant,
         local_name: Option<hir::Name>,
     ) {
+        if !ctx.check_stability_and_hidden(variant) {
+            return;
+        }
         if let PathCompletionCtx { kind: PathKind::Pat { pat_ctx }, .. } = path_ctx {
             cov_mark::hit!(enum_variant_pattern_path);
             self.add_variant_pat(ctx, pat_ctx, Some(path_ctx), variant, local_name);
@@ -408,25 +445,26 @@ impl Completions {
         if let Some(builder) =
             render_variant_lit(RenderContext::new(ctx), path_ctx, local_name, variant, None)
         {
-            self.add(builder.build());
+            self.add(builder.build(ctx.db));
         }
     }
 
     pub(crate) fn add_field(
         &mut self,
         ctx: &CompletionContext<'_>,
-        dot_access: &DotAccess,
-        receiver: Option<hir::Name>,
+        dot_access: &DotAccess<'_>,
+        receiver: Option<SmolStr>,
         field: hir::Field,
-        ty: &hir::Type,
+        ty: &hir::Type<'_>,
     ) {
         let is_private_editable = match ctx.is_visible(&field) {
             Visible::Yes => false,
             Visible::Editable => true,
             Visible::No => return,
         };
+        let doc_aliases = ctx.doc_aliases(&field);
         let item = render_field(
-            RenderContext::new(ctx).private_editable(is_private_editable),
+            RenderContext::new(ctx).private_editable(is_private_editable).doc_aliases(doc_aliases),
             dot_access,
             receiver,
             field,
@@ -438,15 +476,24 @@ impl Completions {
     pub(crate) fn add_struct_literal(
         &mut self,
         ctx: &CompletionContext<'_>,
-        path_ctx: &PathCompletionCtx,
+        path_ctx: &PathCompletionCtx<'_>,
         strukt: hir::Struct,
         path: Option<hir::ModPath>,
         local_name: Option<hir::Name>,
     ) {
-        if let Some(builder) =
-            render_struct_literal(RenderContext::new(ctx), path_ctx, strukt, path, local_name)
-        {
-            self.add(builder.build());
+        let is_private_editable = match ctx.is_visible(&strukt) {
+            Visible::Yes => false,
+            Visible::Editable => true,
+            Visible::No => return,
+        };
+        if let Some(builder) = render_struct_literal(
+            RenderContext::new(ctx).private_editable(is_private_editable),
+            path_ctx,
+            strukt,
+            path,
+            local_name,
+        ) {
+            self.add(builder.build(ctx.db));
         }
     }
 
@@ -457,38 +504,64 @@ impl Completions {
         path: Option<hir::ModPath>,
         local_name: Option<hir::Name>,
     ) {
-        let item = render_union_literal(RenderContext::new(ctx), un, path, local_name);
+        let is_private_editable = match ctx.is_visible(&un) {
+            Visible::Yes => false,
+            Visible::Editable => true,
+            Visible::No => return,
+        };
+        let item = render_union_literal(
+            RenderContext::new(ctx).private_editable(is_private_editable),
+            un,
+            path,
+            local_name,
+        );
         self.add_opt(item);
     }
 
     pub(crate) fn add_tuple_field(
         &mut self,
         ctx: &CompletionContext<'_>,
-        receiver: Option<hir::Name>,
+        receiver: Option<SmolStr>,
         field: usize,
-        ty: &hir::Type,
+        ty: &hir::Type<'_>,
     ) {
+        // Only used for (unnamed) tuples, whose all fields *are* stable. No need to check
+        // stability here.
         let item = render_tuple_field(RenderContext::new(ctx), receiver, field, ty);
         self.add(item);
     }
 
     pub(crate) fn add_lifetime(&mut self, ctx: &CompletionContext<'_>, name: hir::Name) {
-        CompletionItem::new(SymbolKind::LifetimeParam, ctx.source_range(), name.to_smol_str())
-            .add_to(self)
+        CompletionItem::new(
+            SymbolKind::LifetimeParam,
+            ctx.source_range(),
+            name.display_no_db(ctx.edition).to_smolstr(),
+            ctx.edition,
+        )
+        .add_to(self, ctx.db)
     }
 
     pub(crate) fn add_label(&mut self, ctx: &CompletionContext<'_>, name: hir::Name) {
-        CompletionItem::new(SymbolKind::Label, ctx.source_range(), name.to_smol_str()).add_to(self)
+        CompletionItem::new(
+            SymbolKind::Label,
+            ctx.source_range(),
+            name.display_no_db(ctx.edition).to_smolstr(),
+            ctx.edition,
+        )
+        .add_to(self, ctx.db)
     }
 
     pub(crate) fn add_variant_pat(
         &mut self,
         ctx: &CompletionContext<'_>,
         pattern_ctx: &PatternContext,
-        path_ctx: Option<&PathCompletionCtx>,
+        path_ctx: Option<&PathCompletionCtx<'_>>,
         variant: hir::Variant,
         local_name: Option<hir::Name>,
     ) {
+        if !ctx.check_stability_and_hidden(variant) {
+            return;
+        }
         self.add_opt(render_variant_pat(
             RenderContext::new(ctx),
             pattern_ctx,
@@ -506,6 +579,9 @@ impl Completions {
         variant: hir::Variant,
         path: hir::ModPath,
     ) {
+        if !ctx.check_stability_and_hidden(variant) {
+            return;
+        }
         let path = Some(&path);
         self.add_opt(render_variant_pat(
             RenderContext::new(ctx),
@@ -524,7 +600,27 @@ impl Completions {
         strukt: hir::Struct,
         local_name: Option<hir::Name>,
     ) {
-        self.add_opt(render_struct_pat(RenderContext::new(ctx), pattern_ctx, strukt, local_name));
+        let is_private_editable = match ctx.is_visible(&strukt) {
+            Visible::Yes => false,
+            Visible::Editable => true,
+            Visible::No => return,
+        };
+        self.add_opt(render_struct_pat(
+            RenderContext::new(ctx).private_editable(is_private_editable),
+            pattern_ctx,
+            strukt,
+            local_name,
+        ));
+    }
+
+    pub(crate) fn suggest_name(&mut self, ctx: &CompletionContext<'_>, name: &str) {
+        let item = CompletionItem::new(
+            CompletionItemKind::Binding,
+            ctx.source_range(),
+            SmolStr::from(name),
+            ctx.edition,
+        );
+        item.add_to(self, ctx.db);
     }
 }
 
@@ -540,7 +636,7 @@ fn enum_variants_with_paths(
     let mut process_variant = |variant: Variant| {
         let self_path = hir::ModPath::from_segments(
             hir::PathKind::Plain,
-            iter::once(known::SELF_TYPE).chain(iter::once(variant.name(ctx.db))),
+            iter::once(Name::new_symbol_root(sym::Self_)).chain(iter::once(variant.name(ctx.db))),
         );
 
         cb(acc, ctx, variant, self_path);
@@ -548,17 +644,17 @@ fn enum_variants_with_paths(
 
     let variants = enum_.variants(ctx.db);
 
-    if let Some(impl_) = impl_.as_ref().and_then(|impl_| ctx.sema.to_def(impl_)) {
-        if impl_.self_ty(ctx.db).as_adt() == Some(hir::Adt::Enum(enum_)) {
-            variants.iter().for_each(|variant| process_variant(*variant));
-        }
+    if let Some(impl_) = impl_.as_ref().and_then(|impl_| ctx.sema.to_def(impl_))
+        && impl_.self_ty(ctx.db).as_adt() == Some(hir::Adt::Enum(enum_))
+    {
+        variants.iter().for_each(|variant| process_variant(*variant));
     }
 
     for variant in variants {
-        if let Some(path) = ctx.module.find_use_path(
+        if let Some(path) = ctx.module.find_path(
             ctx.db,
             hir::ModuleDef::from(variant),
-            ctx.config.prefer_no_std,
+            ctx.config.find_path_config(ctx.is_nightly),
         ) {
             // Variants with trivial paths are already added by the existing completion logic,
             // so we should avoid adding these twice
@@ -595,6 +691,9 @@ pub(super) fn complete_name(
         NameKind::RecordField => {
             field::complete_field_list_record_variant(acc, ctx);
         }
+        NameKind::TypeParam => {
+            acc.add_keyword_snippet(ctx, "const", "const $1: $0");
+        }
         NameKind::ConstParam
         | NameKind::Enum
         | NameKind::MacroDef
@@ -604,7 +703,6 @@ pub(super) fn complete_name(
         | NameKind::Static
         | NameKind::Struct
         | NameKind::Trait
-        | NameKind::TypeParam
         | NameKind::Union
         | NameKind::Variant => (),
     }
@@ -613,7 +711,7 @@ pub(super) fn complete_name(
 pub(super) fn complete_name_ref(
     acc: &mut Completions,
     ctx: &CompletionContext<'_>,
-    NameRefContext { nameref, kind }: &NameRefContext,
+    NameRefContext { nameref, kind }: &NameRefContext<'_>,
 ) {
     match kind {
         NameRefKind::Path(path_ctx) => {
@@ -622,6 +720,7 @@ pub(super) fn complete_name_ref(
             match &path_ctx.kind {
                 PathKind::Expr { expr_ctx } => {
                     expr::complete_expr_path(acc, ctx, path_ctx, expr_ctx);
+                    expr::complete_expr(acc, ctx);
 
                     dot::complete_undotted_self(acc, ctx, path_ctx, expr_ctx);
                     item_list::complete_item_list_in_expr(acc, ctx, path_ctx, expr_ctx);
@@ -637,7 +736,9 @@ pub(super) fn complete_name_ref(
                         TypeLocation::TypeAscription(ascription) => {
                             r#type::complete_ascribed_type(acc, ctx, path_ctx, ascription);
                         }
-                        TypeLocation::GenericArgList(_)
+                        TypeLocation::GenericArg { .. }
+                        | TypeLocation::AssocConstEq
+                        | TypeLocation::AssocTypeEq
                         | TypeLocation::TypeBound
                         | TypeLocation::ImplTarget
                         | TypeLocation::ImplTrait
@@ -671,6 +772,7 @@ pub(super) fn complete_name_ref(
                 }
             }
         }
+        NameRefKind::ExternCrate => extern_crate::complete_extern_crate(acc, ctx),
         NameRefKind::DotAccess(dot_access) => {
             flyimport::import_on_the_fly_dot(acc, ctx, dot_access);
             dot::complete_dot(acc, ctx, dot_access);

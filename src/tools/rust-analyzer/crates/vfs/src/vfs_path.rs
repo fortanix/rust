@@ -39,6 +39,13 @@ impl VfsPath {
         }
     }
 
+    pub fn into_abs_path(self) -> Option<AbsPathBuf> {
+        match self.0 {
+            VfsPathRepr::PathBuf(it) => Some(it),
+            VfsPathRepr::VirtualPath(_) => None,
+        }
+    }
+
     /// Creates a new `VfsPath` with `path` adjoined to `self`.
     pub fn join(&self, path: &str) -> Option<VfsPath> {
         match &self.0 {
@@ -59,7 +66,7 @@ impl VfsPath {
     ///
     /// # Example
     ///
-    /// ```
+    /// ```ignore
     /// # use vfs::{AbsPathBuf, VfsPath};
     /// let mut path = VfsPath::from(AbsPathBuf::assert("/foo/bar".into()));
     /// assert!(path.pop());
@@ -97,20 +104,13 @@ impl VfsPath {
     /// Returns [`None`] if the path is a root or prefix.
     pub fn parent(&self) -> Option<VfsPath> {
         let mut parent = self.clone();
-        if parent.pop() {
-            Some(parent)
-        } else {
-            None
-        }
+        if parent.pop() { Some(parent) } else { None }
     }
 
     /// Returns `self`'s base name and file extension.
     pub fn name_and_extension(&self) -> Option<(&str, Option<&str>)> {
         match &self.0 {
-            VfsPathRepr::PathBuf(p) => Some((
-                p.file_stem()?.to_str()?,
-                p.extension().and_then(|extension| extension.to_str()),
-            )),
+            VfsPathRepr::PathBuf(p) => p.name_and_extension(),
             VfsPathRepr::VirtualPath(p) => p.name_and_extension(),
         }
     }
@@ -295,8 +295,8 @@ impl From<AbsPathBuf> for VfsPath {
 impl fmt::Display for VfsPath {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.0 {
-            VfsPathRepr::PathBuf(it) => fmt::Display::fmt(&it.display(), f),
-            VfsPathRepr::VirtualPath(VirtualPath(it)) => fmt::Display::fmt(it, f),
+            VfsPathRepr::PathBuf(it) => it.fmt(f),
+            VfsPathRepr::VirtualPath(VirtualPath(it)) => it.fmt(f),
         }
     }
 }
@@ -310,9 +310,23 @@ impl fmt::Debug for VfsPath {
 impl fmt::Debug for VfsPathRepr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
-            VfsPathRepr::PathBuf(it) => fmt::Debug::fmt(&it.display(), f),
-            VfsPathRepr::VirtualPath(VirtualPath(it)) => fmt::Debug::fmt(&it, f),
+            VfsPathRepr::PathBuf(it) => it.fmt(f),
+            VfsPathRepr::VirtualPath(VirtualPath(it)) => it.fmt(f),
         }
+    }
+}
+
+impl PartialEq<AbsPath> for VfsPath {
+    fn eq(&self, other: &AbsPath) -> bool {
+        match &self.0 {
+            VfsPathRepr::PathBuf(lhs) => lhs == other,
+            VfsPathRepr::VirtualPath(_) => false,
+        }
+    }
+}
+impl PartialEq<VfsPath> for AbsPath {
+    fn eq(&self, other: &VfsPath) -> bool {
+        other == self
     }
 }
 
@@ -329,7 +343,7 @@ impl VirtualPath {
     }
 
     fn strip_prefix(&self, base: &VirtualPath) -> Option<&RelPath> {
-        <_ as AsRef<std::path::Path>>::as_ref(&self.0)
+        <_ as AsRef<paths::Utf8Path>>::as_ref(&self.0)
             .strip_prefix(&base.0)
             .ok()
             .map(RelPath::new_unchecked)
@@ -387,8 +401,7 @@ impl VirtualPath {
     ///
     /// # Returns
     /// - `None` if `self` ends with `"//"`.
-    /// - `Some((name, None))` if `self`'s base contains no `.`, or only one `.` at
-    /// the start.
+    /// - `Some((name, None))` if `self`'s base contains no `.`, or only one `.` at the start.
     /// - `Some((name, Some(extension))` else.
     ///
     /// # Note

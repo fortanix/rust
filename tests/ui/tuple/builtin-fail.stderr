@@ -9,7 +9,7 @@ note: required by a bound in `assert_is_tuple`
    |
 LL | fn assert_is_tuple<T: std::marker::Tuple + ?Sized>() {}
    |                       ^^^^^^^^^^^^^^^^^^ required by this bound in `assert_is_tuple`
-help: consider restricting type parameter `T`
+help: consider restricting type parameter `T` with unstable trait `Tuple`
    |
 LL | fn from_param_env<T: std::marker::Tuple>() {
    |                    ++++++++++++++++++++
@@ -42,8 +42,13 @@ error[E0277]: `TupleStruct` is not a tuple
   --> $DIR/builtin-fail.rs:17:23
    |
 LL |     assert_is_tuple::<TupleStruct>();
-   |                       ^^^^^^^^^^^ the trait `Tuple` is not implemented for `TupleStruct`
+   |                       ^^^^^^^^^^^ unsatisfied trait bound
    |
+help: the trait `Tuple` is not implemented for `TupleStruct`
+  --> $DIR/builtin-fail.rs:5:1
+   |
+LL | struct TupleStruct(i32, i32);
+   | ^^^^^^^^^^^^^^^^^^
 note: required by a bound in `assert_is_tuple`
   --> $DIR/builtin-fail.rs:3:23
    |

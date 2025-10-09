@@ -1,4 +1,4 @@
-// build-fail
+//@ build-fail
 
 //
 #![crate_type="rlib"]
@@ -9,5 +9,5 @@ static HELLO: u8 = 0;
 
 #[export_name="fail"]
 pub fn b() {
-//~^ symbol `fail` is already defined
+//~^ ERROR symbol `fail` is already defined
 }

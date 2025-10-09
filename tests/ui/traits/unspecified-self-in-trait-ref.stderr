@@ -5,9 +5,9 @@ LL |     let a = Foo::lol();
    |             ^^^
    |
    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!
-   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>
-   = note: `#[warn(bare_trait_objects)]` on by default
-help: use `dyn`
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2021/warnings-promoted-to-error.html>
+   = note: `#[warn(bare_trait_objects)]` (part of `#[warn(rust_2021_compatibility)]`) on by default
+help: if this is a dyn-compatible trait, use `dyn`
    |
 LL |     let a = <dyn Foo>::lol();
    |             ++++    +
@@ -25,8 +25,8 @@ LL |     let b = Foo::<_>::lol();
    |             ^^^^^^^^
    |
    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!
-   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>
-help: use `dyn`
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2021/warnings-promoted-to-error.html>
+help: if this is a dyn-compatible trait, use `dyn`
    |
 LL |     let b = <dyn Foo::<_>>::lol();
    |             ++++         +
@@ -44,8 +44,8 @@ LL |     let c = Bar::lol();
    |             ^^^
    |
    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!
-   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>
-help: use `dyn`
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2021/warnings-promoted-to-error.html>
+help: if this is a dyn-compatible trait, use `dyn`
    |
 LL |     let c = <dyn Bar>::lol();
    |             ++++    +
@@ -63,8 +63,8 @@ LL |     let d = Bar::<usize, _>::lol();
    |             ^^^^^^^^^^^^^^^
    |
    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!
-   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>
-help: use `dyn`
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2021/warnings-promoted-to-error.html>
+help: if this is a dyn-compatible trait, use `dyn`
    |
 LL |     let d = <dyn Bar::<usize, _>>::lol();
    |             ++++                +
@@ -82,8 +82,8 @@ LL |     let e = Bar::<usize>::lol();
    |             ^^^^^^^^^^^^
    |
    = warning: this is accepted in the current edition (Rust 2015) but is a hard error in Rust 2021!
-   = note: for more information, see <https://doc.rust-lang.org/nightly/edition-guide/rust-2021/warnings-promoted-to-error.html>
-help: use `dyn`
+   = note: for more information, see <https://doc.rust-lang.org/edition-guide/rust-2021/warnings-promoted-to-error.html>
+help: if this is a dyn-compatible trait, use `dyn`
    |
 LL |     let e = <dyn Bar::<usize>>::lol();
    |             ++++             +
@@ -97,7 +97,7 @@ LL | pub trait Bar<X=usize, A=Self> {
 LL |     let e = Bar::<usize>::lol();
    |             ^^^^^^^^^^^^ missing reference to `A`
    |
-   = note: because of the default `Self` reference, type parameters must be specified on object types
+   = note: because the parameter default references `Self`, the parameter must be specified on the object type
 
 error: aborting due to 5 previous errors; 5 warnings emitted
 

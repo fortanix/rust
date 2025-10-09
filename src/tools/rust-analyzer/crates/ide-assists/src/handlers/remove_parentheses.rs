@@ -1,6 +1,10 @@
-use syntax::{ast, AstNode};
+use syntax::{
+    AstNode, SyntaxKind, T,
+    ast::{self, syntax_factory::SyntaxFactory},
+    syntax_editor::Position,
+};
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: remove_parentheses
 //
@@ -30,16 +34,33 @@ pub(crate) fn remove_parentheses(acc: &mut Assists, ctx: &AssistContext<'_>) -> 
     let expr = parens.expr()?;
 
     let parent = parens.syntax().parent()?;
-    if expr.needs_parens_in(parent) {
+    if expr.needs_parens_in(&parent) {
         return None;
     }
 
     let target = parens.syntax().text_range();
     acc.add(
-        AssistId("remove_parentheses", AssistKind::Refactor),
+        AssistId::refactor("remove_parentheses"),
         "Remove redundant parentheses",
         target,
-        |builder| builder.replace_ast(parens.into(), expr),
+        |builder| {
+            let mut editor = builder.make_editor(parens.syntax());
+            let prev_token = parens.syntax().first_token().and_then(|it| it.prev_token());
+            let need_to_add_ws = match prev_token {
+                Some(it) => {
+                    let tokens = [T![&], T![!], T!['('], T!['['], T!['{']];
+                    it.kind() != SyntaxKind::WHITESPACE && !tokens.contains(&it.kind())
+                }
+                None => false,
+            };
+            if need_to_add_ws {
+                let make = SyntaxFactory::with_mappings();
+                editor.insert(Position::before(parens.syntax()), make.whitespace(" "));
+                editor.add_mappings(make.finish_with_mappings());
+            }
+            editor.replace(parens.syntax(), expr.syntax());
+            builder.add_file_edits(ctx.vfs_file_id(), editor);
+        },
     )
 }
 
@@ -48,6 +69,15 @@ mod tests {
     use crate::tests::{check_assist, check_assist_not_applicable};
 
     use super::*;
+
+    #[test]
+    fn remove_parens_space() {
+        check_assist(
+            remove_parentheses,
+            r#"fn f() { match$0(true) {} }"#,
+            r#"fn f() { match true {} }"#,
+        );
+    }
 
     #[test]
     fn remove_parens_simple() {
@@ -94,8 +124,8 @@ mod tests {
         check_assist(remove_parentheses, r#"fn f() { f(($02 + 2)); }"#, r#"fn f() { f(2 + 2); }"#);
         check_assist(
             remove_parentheses,
-            r#"fn f() { (1<2)&&$0(3>4); }"#,
-            r#"fn f() { (1<2)&&3>4; }"#,
+            r#"fn f() { (1<2) &&$0(3>4); }"#,
+            r#"fn f() { (1<2) && 3>4; }"#,
         );
     }
 
@@ -124,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn remove_parens_doesnt_apply_weird_syntax_and_adge_cases() {
+    fn remove_parens_doesnt_apply_weird_syntax_and_edge_cases() {
         // removing `()` would break code because {} would be counted as the loop/if body
         check_assist_not_applicable(remove_parentheses, r#"fn f() { for _ in $0(0..{3}) {} }"#);
         check_assist_not_applicable(remove_parentheses, r#"fn f() { for _ in $0(S {}) {} }"#);
@@ -164,8 +194,8 @@ mod tests {
     fn remove_parens_weird_places() {
         check_assist(
             remove_parentheses,
-            r#"fn f() { match () { _=>$0(()) } }"#,
-            r#"fn f() { match () { _=>() } }"#,
+            r#"fn f() { match () { _ =>$0(()) } }"#,
+            r#"fn f() { match () { _ => () } }"#,
         );
 
         check_assist(
@@ -217,5 +247,34 @@ mod tests {
         );
 
         check_assist_not_applicable(remove_parentheses, r#"fn f() { $0(return 2) + 2 }"#);
+    }
+
+    #[test]
+    fn remove_parens_indirect_calls() {
+        check_assist(
+            remove_parentheses,
+            r#"fn f(call: fn(usize), arg: usize) { $0(call)(arg); }"#,
+            r#"fn f(call: fn(usize), arg: usize) { call(arg); }"#,
+        );
+        check_assist(
+            remove_parentheses,
+            r#"fn f<F>(call: F, arg: usize) where F: Fn(usize) { $0(call)(arg); }"#,
+            r#"fn f<F>(call: F, arg: usize) where F: Fn(usize) { call(arg); }"#,
+        );
+
+        // Parentheses are necessary when calling a function-like pointer that is a member of a struct or union.
+        check_assist_not_applicable(
+            remove_parentheses,
+            r#"
+struct Foo<T> {
+    t: T,
+}
+
+impl Foo<fn(usize)> {
+    fn foo(&self, arg: usize) {
+        $0(self.t)(arg);
+    }
+}"#,
+        );
     }
 }

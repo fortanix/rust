@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 // Regression test for issue #55099
 // Tests that we don't incorrectly consider a lifetime to part
 // of the concrete type
@@ -18,6 +18,7 @@ struct Foo<'a> {
 type F = impl Future;
 
 impl<'a> Foo<'a> {
+    #[define_opaque(F)]
     fn reply(&mut self) -> F {
         AndThen(|| ())
     }
