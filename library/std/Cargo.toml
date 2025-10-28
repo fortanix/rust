@@ -73,7 +73,7 @@ snmalloc-edp = { path = "../snmalloc-edp" , features = ['rustc-dep-of-std'], pub
 fortanix-sgx-abi = { version = "0.6.0", features = [
     'rustc-dep-of-std',
 ], public = true }
-insecure-time = { version = "0.1", git = "https://github.com/fortanix/rust-sgx.git", branch = "master", default-features = false, features = ["rustc-dep-of-std"] }
+insecure-time = { version = "0.1.1", git = "https://github.com/fortanix/rust-sgx.git", branch = "master", default-features = false, features = ["rustc-dep-of-std"] }
 
 [target.'cfg(target_os = "hermit")'.dependencies]
 hermit-abi = { version = "0.4.0", features = [
