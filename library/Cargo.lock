@@ -172,10 +172,9 @@ dependencies = [
 
 [[package]]
 name = "insecure-time"
-version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#52c797d83b5351376b8561d50ecf9f4af2c84068"
+version = "0.2.0"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#98183e8beac310b2c9a4c2151fecf5aa074ea88d"
 dependencies = [
- "compiler_builtins",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
 ]
