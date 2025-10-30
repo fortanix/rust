@@ -253,7 +253,7 @@ pub fn send(event_set: u64, tcs: Option<Tcs>) -> IoResult<()> {
     unsafe { raw::send(event_set, tcs).from_sgx_result() }
 }
 
-#[derive(Copy, Clone, PartialOrd, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
 struct SgxTime(u64);
 
 impl SgxTime {
