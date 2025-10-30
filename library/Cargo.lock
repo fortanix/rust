@@ -107,8 +107,8 @@ checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
 name = "fortanix-sgx-abi"
-version = "0.6.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#52c797d83b5351376b8561d50ecf9f4af2c84068"
+version = "0.6.1"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul%2Frte-603-compiler_buildins_for_std_crates#0053ccb35acaea888128cc678e319b2e0724852b"
 dependencies = [
  "compiler_builtins",
  "rustc-std-workspace-core",
@@ -173,8 +173,9 @@ dependencies = [
 [[package]]
 name = "insecure-time"
 version = "0.2.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#98183e8beac310b2c9a4c2151fecf5aa074ea88d"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=raoul%2Frte-603-compiler_buildins_for_std_crates#0053ccb35acaea888128cc678e319b2e0724852b"
 dependencies = [
+ "compiler_builtins",
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
 ]
