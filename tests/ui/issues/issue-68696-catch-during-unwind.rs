@@ -3,10 +3,12 @@
 // due to incorrect assumption that a current thread is not panicking when
 // entering the catch_unwind.
 //
-// run-pass
+//@ run-pass
+//@ ignore-backends: gcc
 
 use std::panic::catch_unwind;
 
+#[allow(dead_code)]
 #[derive(Default)]
 struct Guard;
 

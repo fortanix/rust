@@ -1,61 +1,12 @@
 // Tests for this module
-#[cfg(all(test, not(target_os = "emscripten")))]
+#[cfg(all(test, not(any(target_os = "emscripten", all(target_os = "wasi", target_env = "p1")))))]
 mod tests;
-
-use crate::io;
-use crate::iter;
-use crate::mem;
-use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-use crate::option;
-use crate::slice;
-use crate::sys::net::netc as c;
-use crate::sys_common::net::LookupHost;
-use crate::sys_common::{FromInner, IntoInner};
-use crate::vec;
 
 #[stable(feature = "rust1", since = "1.0.0")]
 pub use core::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
-impl FromInner<c::sockaddr_in> for SocketAddrV4 {
-    fn from_inner(addr: c::sockaddr_in) -> SocketAddrV4 {
-        SocketAddrV4::new(Ipv4Addr::from_inner(addr.sin_addr), u16::from_be(addr.sin_port))
-    }
-}
-
-impl FromInner<c::sockaddr_in6> for SocketAddrV6 {
-    fn from_inner(addr: c::sockaddr_in6) -> SocketAddrV6 {
-        SocketAddrV6::new(
-            Ipv6Addr::from_inner(addr.sin6_addr),
-            u16::from_be(addr.sin6_port),
-            addr.sin6_flowinfo,
-            addr.sin6_scope_id,
-        )
-    }
-}
-
-impl IntoInner<c::sockaddr_in> for SocketAddrV4 {
-    fn into_inner(self) -> c::sockaddr_in {
-        c::sockaddr_in {
-            sin_family: c::AF_INET as c::sa_family_t,
-            sin_port: self.port().to_be(),
-            sin_addr: self.ip().into_inner(),
-            ..unsafe { mem::zeroed() }
-        }
-    }
-}
-
-impl IntoInner<c::sockaddr_in6> for SocketAddrV6 {
-    fn into_inner(self) -> c::sockaddr_in6 {
-        c::sockaddr_in6 {
-            sin6_family: c::AF_INET6 as c::sa_family_t,
-            sin6_port: self.port().to_be(),
-            sin6_addr: self.ip().into_inner(),
-            sin6_flowinfo: self.flowinfo(),
-            sin6_scope_id: self.scope_id(),
-            ..unsafe { mem::zeroed() }
-        }
-    }
-}
+use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::{io, iter, option, slice, vec};
 
 /// A trait for objects which can be converted or resolved to one or more
 /// [`SocketAddr`] values.
@@ -76,6 +27,8 @@ impl IntoInner<c::sockaddr_in6> for SocketAddrV6 {
 ///  * <code>&[str]</code>: the string should be either a string representation of a
 ///    [`SocketAddr`] as expected by its [`FromStr`] implementation or a string like
 ///    `<host_name>:<port>` pair where `<port>` is a [`u16`] value.
+///
+///  * <code>&[[SocketAddr]]</code>: all [`SocketAddr`] values in the slice will be used.
 ///
 /// This trait allows constructing network objects like [`TcpStream`] or
 /// [`UdpSocket`] easily with values of various types for the bind/connection
@@ -149,7 +102,7 @@ impl IntoInner<c::sockaddr_in6> for SocketAddrV6 {
 /// assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
 /// ```
 ///
-/// [`TcpStream::connect`] is an example of an function that utilizes
+/// [`TcpStream::connect`] is an example of a function that utilizes
 /// `ToSocketAddrs` as a trait bound on its parameter in order to accept
 /// different types:
 ///
@@ -236,15 +189,9 @@ impl ToSocketAddrs for (Ipv6Addr, u16) {
     }
 }
 
-fn resolve_socket_addr(lh: LookupHost) -> io::Result<vec::IntoIter<SocketAddr>> {
-    let p = lh.port();
-    let v: Vec<_> = lh
-        .map(|mut a| {
-            a.set_port(p);
-            a
-        })
-        .collect();
-    Ok(v.into_iter())
+fn lookup_host(host: &str, port: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
+    let addrs = crate::sys::net::lookup_host(host, port)?;
+    Ok(Vec::from_iter(addrs).into_iter())
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -253,17 +200,14 @@ impl ToSocketAddrs for (&str, u16) {
     fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
         let (host, port) = *self;
 
-        // try to parse the host as a regular IP address first
-        if let Ok(addr) = host.parse::<Ipv4Addr>() {
-            let addr = SocketAddrV4::new(addr, port);
-            return Ok(vec![SocketAddr::V4(addr)].into_iter());
-        }
-        if let Ok(addr) = host.parse::<Ipv6Addr>() {
-            let addr = SocketAddrV6::new(addr, port, 0, 0);
-            return Ok(vec![SocketAddr::V6(addr)].into_iter());
+        // Try to parse the host as a regular IP address first
+        if let Ok(addr) = host.parse::<IpAddr>() {
+            let addr = SocketAddr::new(addr, port);
+            return Ok(vec![addr].into_iter());
         }
 
-        resolve_socket_addr((host, port).try_into()?)
+        // Otherwise, make the system look it up.
+        lookup_host(host, port)
     }
 }
 
@@ -280,12 +224,21 @@ impl ToSocketAddrs for (String, u16) {
 impl ToSocketAddrs for str {
     type Iter = vec::IntoIter<SocketAddr>;
     fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
-        // try to parse as a regular SocketAddr first
+        // Try to parse as a regular SocketAddr first
         if let Ok(addr) = self.parse() {
             return Ok(vec![addr].into_iter());
         }
 
-        resolve_socket_addr(self.try_into()?)
+        // Otherwise, split the string by ':' and convert the second part to u16...
+        let Some((host, port_str)) = self.rsplit_once(':') else {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid socket address"));
+        };
+        let Ok(port) = port_str.parse::<u16>() else {
+            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid port value"));
+        };
+
+        // ... and make the system look up the host.
+        lookup_host(host, port)
     }
 }
 

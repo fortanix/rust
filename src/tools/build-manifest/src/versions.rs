@@ -1,9 +1,10 @@
-use anyhow::Error;
-use flate2::read::GzDecoder;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+use anyhow::Error;
+use flate2::read::GzDecoder;
 use tar::Archive;
 use xz2::read::XzDecoder;
 
@@ -50,13 +51,14 @@ pkg_type! {
     Cargo = "cargo",
     HtmlDocs = "rust-docs",
     RustAnalysis = "rust-analysis",
-    Rls = "rls"; preview = true,
     RustAnalyzer = "rust-analyzer"; preview = true,
     Clippy = "clippy"; preview = true,
     Rustfmt = "rustfmt"; preview = true,
     LlvmTools = "llvm-tools"; preview = true,
     Miri = "miri"; preview = true,
     JsonDocs = "rust-docs-json"; preview = true,
+    RustcCodegenCranelift = "rustc-codegen-cranelift"; preview = true,
+    LlvmBitcodeLinker = "llvm-bitcode-linker"; preview = true,
 }
 
 impl PkgType {
@@ -74,12 +76,12 @@ impl PkgType {
     fn should_use_rust_version(&self) -> bool {
         match self {
             PkgType::Cargo => false,
-            PkgType::Rls => false,
             PkgType::RustAnalyzer => false,
             PkgType::Clippy => false,
             PkgType::Rustfmt => false,
             PkgType::LlvmTools => false,
             PkgType::Miri => false,
+            PkgType::RustcCodegenCranelift => false,
 
             PkgType::Rust => true,
             PkgType::RustStd => true,
@@ -92,12 +94,14 @@ impl PkgType {
             PkgType::ReproducibleArtifacts => true,
             PkgType::RustMingw => true,
             PkgType::RustAnalysis => true,
+            PkgType::LlvmBitcodeLinker => true,
         }
     }
 
     pub(crate) fn targets(&self) -> &[&str] {
-        use crate::{HOSTS, MINGW, TARGETS};
         use PkgType::*;
+
+        use crate::{HOSTS, MINGW, TARGETS};
 
         match self {
             Rust => HOSTS, // doesn't matter in practice, but return something to avoid panicking
@@ -106,18 +110,19 @@ impl PkgType {
             ReproducibleArtifacts => HOSTS,
             RustcDocs => HOSTS,
             Cargo => HOSTS,
+            RustcCodegenCranelift => HOSTS,
             RustMingw => MINGW,
             RustStd => TARGETS,
             HtmlDocs => HOSTS,
             JsonDocs => HOSTS,
             RustSrc => &["*"],
-            Rls => HOSTS,
             RustAnalyzer => HOSTS,
             Clippy => HOSTS,
             Miri => HOSTS,
             Rustfmt => HOSTS,
             RustAnalysis => TARGETS,
             LlvmTools => TARGETS,
+            LlvmBitcodeLinker => HOSTS,
         }
     }
 

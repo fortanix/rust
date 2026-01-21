@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 /// ```
 /// \__________pkt->size___________/          \_result->size_/ \__pkt->size__/
@@ -47,7 +47,7 @@ pub fn baz() {}
 ///
 /// Indented block end
 pub fn quux() {}
-//~^^^^^ could not parse code block as Rust code
+//~^^^^^ WARN could not parse code block as Rust code
 
 /// Unclosed fence
 ///

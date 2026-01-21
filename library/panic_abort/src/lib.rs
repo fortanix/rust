@@ -7,19 +7,20 @@
 #![unstable(feature = "panic_abort", issue = "32837")]
 #![doc(issue_tracker_base_url = "https://github.com/rust-lang/rust/issues/")]
 #![panic_runtime]
-#![allow(unused_features)]
-#![feature(core_intrinsics)]
 #![feature(panic_runtime)]
 #![feature(std_internals)]
 #![feature(staged_api)]
 #![feature(rustc_attrs)]
-#![feature(c_unwind)]
+#![allow(internal_features)]
 
 #[cfg(target_os = "android")]
 mod android;
 
+#[cfg(target_os = "zkvm")]
+mod zkvm;
+
 use core::any::Any;
-use core::panic::BoxMeUp;
+use core::panic::PanicPayload;
 
 #[rustc_std_internal_symbol]
 #[allow(improper_ctypes_definitions)]
@@ -29,61 +30,24 @@ pub unsafe extern "C" fn __rust_panic_cleanup(_: *mut u8) -> *mut (dyn Any + Sen
 
 // "Leak" the payload and shim to the relevant abort on the platform in question.
 #[rustc_std_internal_symbol]
-pub unsafe fn __rust_start_panic(_payload: &mut dyn BoxMeUp) -> u32 {
+pub unsafe fn __rust_start_panic(_payload: &mut dyn PanicPayload) -> u32 {
     // Android has the ability to attach a message as part of the abort.
     #[cfg(target_os = "android")]
-    android::android_set_abort_message(_payload);
-
-    abort();
-
-    cfg_if::cfg_if! {
-        if #[cfg(any(unix, target_os = "solid_asp3"))] {
-            unsafe fn abort() -> ! {
-                libc::abort();
-            }
-        } else if #[cfg(any(target_os = "hermit",
-                            all(target_vendor = "fortanix", target_env = "sgx")
-        ))] {
-            unsafe fn abort() -> ! {
-                // call std::sys::abort_internal
-                extern "C" {
-                    pub fn __rust_abort() -> !;
-                }
-                __rust_abort();
-            }
-        } else if #[cfg(all(windows, not(miri)))] {
-            // On Windows, use the processor-specific __fastfail mechanism. In Windows 8
-            // and later, this will terminate the process immediately without running any
-            // in-process exception handlers. In earlier versions of Windows, this
-            // sequence of instructions will be treated as an access violation,
-            // terminating the process but without necessarily bypassing all exception
-            // handlers.
-            //
-            // https://docs.microsoft.com/en-us/cpp/intrinsics/fastfail
-            //
-            // Note: this is the same implementation as in std's `abort_internal`
-            unsafe fn abort() -> ! {
-                #[allow(unused)]
-                const FAST_FAIL_FATAL_APP_EXIT: usize = 7;
-                cfg_if::cfg_if! {
-                    if #[cfg(any(target_arch = "x86", target_arch = "x86_64"))] {
-                        core::arch::asm!("int $$0x29", in("ecx") FAST_FAIL_FATAL_APP_EXIT);
-                    } else if #[cfg(all(target_arch = "arm", target_feature = "thumb-mode"))] {
-                        core::arch::asm!(".inst 0xDEFB", in("r0") FAST_FAIL_FATAL_APP_EXIT);
-                    } else if #[cfg(target_arch = "aarch64")] {
-                        core::arch::asm!("brk 0xF003", in("x0") FAST_FAIL_FATAL_APP_EXIT);
-                    } else {
-                        core::intrinsics::abort();
-                    }
-                }
-                core::intrinsics::unreachable();
-            }
-        } else {
-            unsafe fn abort() -> ! {
-                core::intrinsics::abort();
-            }
-        }
+    unsafe {
+        android::android_set_abort_message(_payload);
     }
+    #[cfg(target_os = "zkvm")]
+    unsafe {
+        zkvm::zkvm_set_abort_message(_payload);
+    }
+
+    unsafe extern "Rust" {
+        // This is defined in std::rt.
+        #[rustc_std_internal_symbol]
+        safe fn __rust_abort() -> !;
+    }
+
+    __rust_abort()
 }
 
 // This... is a bit of an oddity. The tl;dr; is that this is required to link

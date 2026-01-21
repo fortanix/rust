@@ -4,10 +4,20 @@ error[E0277]: the trait bound `Foo: Trait` is not satisfied
 LL |     let x = || {
    |             -- in this scope
 LL |         f(Foo {});
-   |         - ^^^^^^ the trait `Trait` is not implemented for `Foo`
+   |         - ^^^^^^ unsatisfied trait bound
    |         |
    |         required by a bound introduced by this call
    |
+help: the trait `Trait` is not implemented for `Foo`
+  --> $DIR/parent-label.rs:8:1
+   |
+LL | struct Foo;
+   | ^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $DIR/parent-label.rs:6:1
+   |
+LL | trait Trait {}
+   | ^^^^^^^^^^^
 note: required by a bound in `f`
   --> $DIR/parent-label.rs:10:9
    |
@@ -20,10 +30,20 @@ error[E0277]: the trait bound `Foo: Trait` is not satisfied
 LL |         let y = || {
    |                 -- in this scope
 LL |             f(Foo {});
-   |             - ^^^^^^ the trait `Trait` is not implemented for `Foo`
+   |             - ^^^^^^ unsatisfied trait bound
    |             |
    |             required by a bound introduced by this call
    |
+help: the trait `Trait` is not implemented for `Foo`
+  --> $DIR/parent-label.rs:8:1
+   |
+LL | struct Foo;
+   | ^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $DIR/parent-label.rs:6:1
+   |
+LL | trait Trait {}
+   | ^^^^^^^^^^^
 note: required by a bound in `f`
   --> $DIR/parent-label.rs:10:9
    |
@@ -37,10 +57,20 @@ LL | fn main() {
    | --------- in this scope
 ...
 LL |             f(Foo {});
-   |             - ^^^^^^ the trait `Trait` is not implemented for `Foo`
+   |             - ^^^^^^ unsatisfied trait bound
    |             |
    |             required by a bound introduced by this call
    |
+help: the trait `Trait` is not implemented for `Foo`
+  --> $DIR/parent-label.rs:8:1
+   |
+LL | struct Foo;
+   | ^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $DIR/parent-label.rs:6:1
+   |
+LL | trait Trait {}
+   | ^^^^^^^^^^^
 note: required by a bound in `f`
   --> $DIR/parent-label.rs:10:9
    |
@@ -54,10 +84,20 @@ LL | fn main() {
    | --------- in this scope
 ...
 LL |     f(Foo {});
-   |     - ^^^^^^ the trait `Trait` is not implemented for `Foo`
+   |     - ^^^^^^ unsatisfied trait bound
    |     |
    |     required by a bound introduced by this call
    |
+help: the trait `Trait` is not implemented for `Foo`
+  --> $DIR/parent-label.rs:8:1
+   |
+LL | struct Foo;
+   | ^^^^^^^^^^
+help: this trait has no implementations, consider adding one
+  --> $DIR/parent-label.rs:6:1
+   |
+LL | trait Trait {}
+   | ^^^^^^^^^^^
 note: required by a bound in `f`
   --> $DIR/parent-label.rs:10:9
    |

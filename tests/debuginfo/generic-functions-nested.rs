@@ -1,6 +1,5 @@
-// min-lldb-version: 310
-
-// compile-flags:-g
+//@ compile-flags:-g
+//@ disable-gdb-pretty-printers
 
 // === GDB TESTS ===================================================================================
 
@@ -35,41 +34,29 @@
 
 // lldb-command:run
 
-// lldb-command:print x
-// lldbg-check:[...]$0 = -1
-// lldbr-check:(i32) x = -1
-// lldb-command:print y
-// lldbg-check:[...]$1 = 1
-// lldbr-check:(i32) y = 1
+// lldb-command:v x
+// lldb-check:[...] -1
+// lldb-command:v y
+// lldb-check:[...] 1
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$2 = -1
-// lldbr-check:(i32) x = -1
-// lldb-command:print y
-// lldbg-check:[...]$3 = 2.5
-// lldbr-check:(f64) y = 2.5
+// lldb-command:v x
+// lldb-check:[...] -1
+// lldb-command:v y
+// lldb-check:[...] 2.5
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$4 = -2.5
-// lldbr-check:(f64) x = -2.5
-// lldb-command:print y
-// lldbg-check:[...]$5 = 1
-// lldbr-check:(i32) y = 1
+// lldb-command:v x
+// lldb-check:[...] -2.5
+// lldb-command:v y
+// lldb-check:[...] 1
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$6 = -2.5
-// lldbr-check:(f64) x = -2.5
-// lldb-command:print y
-// lldbg-check:[...]$7 = 2.5
-// lldbr-check:(f64) y = 2.5
+// lldb-command:v x
+// lldb-check:[...] -2.5
+// lldb-command:v y
+// lldb-check:[...] 2.5
 // lldb-command:continue
-
-
-#![feature(omit_gdb_pretty_printer_section)]
-#![omit_gdb_pretty_printer_section]
 
 fn outer<TA: Clone>(a: TA) {
     inner(a.clone(), 1);

@@ -1,9 +1,9 @@
 use syntax::{
-    ast::{edit::AstNodeEdit, make, AstNode, BlockExpr, ElseBranch, Expr, IfExpr, MatchArm, Pat},
     SyntaxKind::WHITESPACE,
+    ast::{AstNode, BlockExpr, ElseBranch, Expr, IfExpr, MatchArm, Pat, edit::AstNodeEdit, make},
 };
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: move_guard_to_arm_body
 //
@@ -36,32 +36,38 @@ pub(crate) fn move_guard_to_arm_body(acc: &mut Assists, ctx: &AssistContext<'_>)
     let match_arm = ctx.find_node_at_offset::<MatchArm>()?;
     let guard = match_arm.guard()?;
     if ctx.offset() > guard.syntax().text_range().end() {
-        cov_mark::hit!(move_guard_unapplicable_in_arm_body);
+        cov_mark::hit!(move_guard_inapplicable_in_arm_body);
         return None;
     }
     let space_before_guard = guard.syntax().prev_sibling_or_token();
+    let space_after_arrow = match_arm.fat_arrow_token()?.next_sibling_or_token();
 
-    let guard_condition = guard.condition()?;
+    let guard_condition = guard.condition()?.reset_indent();
     let arm_expr = match_arm.expr()?;
-    let if_expr =
-        make::expr_if(guard_condition, make::block_expr(None, Some(arm_expr.clone())), None)
-            .indent(arm_expr.indent_level());
+    let then_branch = make::block_expr(None, Some(arm_expr.reset_indent().indent(1.into())));
+    let if_expr = make::expr_if(guard_condition, then_branch, None).indent(arm_expr.indent_level());
 
     let target = guard.syntax().text_range();
     acc.add(
-        AssistId("move_guard_to_arm_body", AssistKind::RefactorRewrite),
+        AssistId::refactor_rewrite("move_guard_to_arm_body"),
         "Move guard to arm body",
         target,
-        |edit| {
-            match space_before_guard {
-                Some(element) if element.kind() == WHITESPACE => {
-                    edit.delete(element.text_range());
-                }
-                _ => (),
-            };
+        |builder| {
+            let mut edit = builder.make_editor(match_arm.syntax());
+            if let Some(element) = space_before_guard
+                && element.kind() == WHITESPACE
+            {
+                edit.delete(element);
+            }
+            if let Some(element) = space_after_arrow
+                && element.kind() == WHITESPACE
+            {
+                edit.replace(element, make::tokens::single_space());
+            }
 
-            edit.delete(guard.syntax().text_range());
-            edit.replace_ast(arm_expr, if_expr);
+            edit.delete(guard.syntax());
+            edit.replace(arm_expr.syntax(), if_expr.syntax());
+            builder.add_file_edits(ctx.vfs_file_id(), edit);
         },
     )
 }
@@ -118,7 +124,7 @@ pub(crate) fn move_arm_cond_to_match_guard(
     let (conds_blocks, tail) = parse_if_chain(if_expr)?;
 
     acc.add(
-        AssistId("move_arm_cond_to_match_guard", AssistKind::RefactorRewrite),
+        AssistId::refactor_rewrite("move_arm_cond_to_match_guard"),
         "Move condition to match guard",
         replace_node.text_range(),
         |edit| {
@@ -219,7 +225,7 @@ mod tests {
 
     #[test]
     fn move_guard_to_arm_body_range() {
-        cov_mark::check!(move_guard_unapplicable_in_arm_body);
+        cov_mark::check!(move_guard_inapplicable_in_arm_body);
         check_assist_not_applicable(
             move_guard_to_arm_body,
             r#"
@@ -290,6 +296,44 @@ fn main() {
     match 92 {
         x => if (let 1 = x) {
             false
+        },
+        _ => true
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn move_multiline_guard_to_arm_body_works() {
+        check_assist(
+            move_guard_to_arm_body,
+            r#"
+fn main() {
+    match 92 {
+        x $0if true
+            && true
+            && true =>
+        {
+            {
+                false
+            }
+        },
+        _ => true
+    }
+}
+"#,
+            r#"
+fn main() {
+    match 92 {
+        x => if true
+            && true
+            && true {
+            {
+                {
+                    false
+                }
+            }
         },
         _ => true
     }

@@ -1,4 +1,4 @@
-// edition:2018
+//@ edition:2018
 
 struct Xyz {
     a: u64,
@@ -11,8 +11,8 @@ impl Xyz {
         &'a self, foo: &dyn Foo
     ) -> &dyn Foo
     {
-        //~^ ERROR explicit lifetime required in the type of `foo` [E0621]
         foo
+        //~^ ERROR explicit lifetime required in the type of `foo` [E0621]
     }
 }
 

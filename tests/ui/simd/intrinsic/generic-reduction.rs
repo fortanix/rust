@@ -1,34 +1,25 @@
-// build-fail
-// ignore-emscripten
+//@ build-fail
+//@ ignore-emscripten
 
 // Test that the simd_reduce_{op} intrinsics produce ok-ish error
 // messages when misused.
 
-#![feature(repr_simd, platform_intrinsics)]
+#![feature(repr_simd, core_intrinsics)]
 #![allow(non_camel_case_types)]
 
-#[repr(simd)]
-#[derive(Copy, Clone)]
-pub struct f32x4(pub f32, pub f32, pub f32, pub f32);
+use std::intrinsics::simd::*;
 
 #[repr(simd)]
 #[derive(Copy, Clone)]
-pub struct u32x4(pub u32, pub u32, pub u32, pub u32);
+pub struct f32x4(pub [f32; 4]);
 
-
-extern "platform-intrinsic" {
-    fn simd_reduce_add_ordered<T, U>(x: T, y: U) -> U;
-    fn simd_reduce_mul_ordered<T, U>(x: T, y: U) -> U;
-    fn simd_reduce_and<T, U>(x: T) -> U;
-    fn simd_reduce_or<T, U>(x: T) -> U;
-    fn simd_reduce_xor<T, U>(x: T) -> U;
-    fn simd_reduce_all<T>(x: T) -> bool;
-    fn simd_reduce_any<T>(x: T) -> bool;
-}
+#[repr(simd)]
+#[derive(Copy, Clone)]
+pub struct u32x4(pub [u32; 4]);
 
 fn main() {
-    let x = u32x4(0, 0, 0, 0);
-    let z = f32x4(0.0, 0.0, 0.0, 0.0);
+    let x = u32x4([0, 0, 0, 0]);
+    let z = f32x4([0.0, 0.0, 0.0, 0.0]);
 
     unsafe {
         simd_reduce_add_ordered(z, 0);

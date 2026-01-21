@@ -1,13 +1,19 @@
 //@aux-build:proc_macros.rs
+
 #![warn(clippy::mut_mut)]
 #![allow(unused)]
-#![allow(clippy::no_effect, clippy::uninlined_format_args, clippy::unnecessary_operation)]
+#![allow(
+    clippy::no_effect,
+    clippy::uninlined_format_args,
+    clippy::unnecessary_operation,
+    clippy::needless_pass_by_ref_mut
+)]
 
 extern crate proc_macros;
 use proc_macros::{external, inline_macros};
 
-fn fun(x: &mut &mut u32) -> bool {
-    **x > 0
+fn fun(x: &mut &mut u32) {
+    //~^ mut_mut
 }
 
 fn less_fun(x: *mut *mut u32) {
@@ -24,18 +30,22 @@ macro_rules! mut_ptr {
 #[inline_macros]
 fn main() {
     let mut x = &mut &mut 1u32;
+    //~^ mut_mut
     {
         let mut y = &mut x;
+        //~^ mut_mut
     }
 
-    if fun(x) {
+    {
         let y: &mut &mut u32 = &mut &mut 2;
-        **y + **x;
+        //~^ mut_mut
+        //~| mut_mut
     }
 
-    if fun(x) {
+    {
         let y: &mut &mut &mut u32 = &mut &mut &mut 2;
-        ***y + **x;
+        //~^ mut_mut
+        //~| mut_mut
     }
 
     let mut z = inline!(&mut $(&mut 3u32));
@@ -74,4 +84,9 @@ mod issue9035 {
     }
 
     fn bar(_: &mut impl Display) {}
+}
+
+fn allow_works() {
+    #[allow(clippy::mut_mut)]
+    let _ = &mut &mut 1;
 }

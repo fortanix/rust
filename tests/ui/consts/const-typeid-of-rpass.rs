@@ -1,6 +1,4 @@
-// run-pass
-#![feature(const_type_id)]
-#![feature(core_intrinsics)]
+//@ run-pass
 
 use std::any::TypeId;
 

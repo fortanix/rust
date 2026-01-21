@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 // Regression test for issue #63677 - ensure that
 // coherence checking can properly handle 'impl trait'
 // in type aliases
@@ -16,6 +16,9 @@ impl<T> Trait for S1<T> {}
 impl<T: Trait> S2<T> {}
 impl T3 {}
 
-pub fn use_t1() -> T1 { S1(()) }
+#[define_opaque(T1)]
+pub fn use_t1() -> T1 {
+    S1(())
+}
 
 fn main() {}

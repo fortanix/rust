@@ -1,11 +1,16 @@
 // When denying at the crate level, be sure to not get random warnings from the
 // injected intrinsics by the compiler.
+//@ aux-build:missing_docs.rs
 #![deny(missing_docs)]
 #![allow(dead_code)]
 #![feature(associated_type_defaults, extern_types)]
+#![feature(trait_alias)]
 
 //! Some garbage docs for the crate here
 #![doc="More garbage"]
+
+// There should be not "missing_docs" warning on "pub extern crate".
+pub extern crate missing_docs;
 
 type Typedef = String;
 pub type PubTypedef = String; //~ ERROR: missing documentation for a type alias
@@ -179,10 +184,10 @@ mod internal_impl {
 }
 /// dox
 pub mod public_interface {
-    pub use internal_impl::documented as foo;
-    pub use internal_impl::undocumented1 as bar;
-    pub use internal_impl::{documented, undocumented2};
-    pub use internal_impl::globbed::*;
+    pub use crate::internal_impl::documented as foo;
+    pub use crate::internal_impl::undocumented1 as bar;
+    pub use crate::internal_impl::{documented, undocumented2};
+    pub use crate::internal_impl::globbed::*;
 }
 
 extern "C" {
@@ -201,5 +206,7 @@ extern "C" {
     pub type ExternTyUndocumented;
     //~^ ERROR: missing documentation for a foreign type
 }
+
+pub trait T = Sync; //~ ERROR: missing documentation for a trait alias
 
 fn main() {}

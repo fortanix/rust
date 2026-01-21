@@ -1,15 +1,17 @@
 // Regression test for issue #76202
 // Tests that we don't ICE when we have a trait impl on a TAIT.
 
-// check-pass
-
+//@ revisions: current next
+//@ ignore-compare-mode-next-solver (explicit revisions)
+//@[next] compile-flags: -Znext-solver
+//@ check-pass
 #![feature(type_alias_impl_trait)]
 
-trait Dummy {}
+pub trait Dummy {}
 impl Dummy for () {}
-
-type F = impl Dummy;
-fn f() -> F {}
+pub type F = impl Dummy;
+#[define_opaque(F)]
+pub fn f() -> F {}
 
 trait Test {
     fn test(self);
@@ -25,7 +27,14 @@ impl Test for i32 {
     fn test(self) {}
 }
 
+pub trait Dummy2 {}
+impl Dummy2 for () {}
+
+pub type F2 = impl Dummy2;
+#[define_opaque(F2)]
+pub fn f2() -> F2 {}
+
 fn main() {
-    let x: F = f();
+    let x = f();
     x.test();
 }

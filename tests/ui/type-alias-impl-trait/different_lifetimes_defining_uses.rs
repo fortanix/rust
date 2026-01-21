@@ -1,16 +1,14 @@
 #![feature(type_alias_impl_trait)]
 #![allow(dead_code)]
 
-pub trait Captures<'a> {}
+type OneLifetime<'a, 'b> = impl std::fmt::Debug;
 
-impl<'a, T: ?Sized> Captures<'a> for T {}
-
-type OneLifetime<'a, 'b> = impl std::fmt::Debug + Captures<'a> + Captures<'b>;
-
+#[define_opaque(OneLifetime)]
 fn foo<'a, 'b>(a: &'a u32, b: &'b u32) -> OneLifetime<'a, 'b> {
     a
 }
 
+#[define_opaque(OneLifetime)]
 fn bar<'a, 'b>(a: &'a u32, b: &'b u32) -> OneLifetime<'a, 'b> {
     b
     //~^ ERROR: concrete type differs from previous defining opaque type use

@@ -1,12 +1,15 @@
-// unit-test: Derefer
+// skip-filecheck
+//@ test-mir-pass: Derefer
 // EMIT_MIR derefer_terminator_test.main.Derefer.diff
-// ignore-wasm32
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
 
 fn main() {
     let b = foo();
     let d = foo();
     match ****(&&&&b) {
-        true => {let x = 5;},
+        true => {
+            let x = 5;
+        }
         false => {}
     }
     let y = 42;

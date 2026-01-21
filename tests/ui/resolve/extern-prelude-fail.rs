@@ -1,5 +1,6 @@
-// compile-flags:--extern extern_prelude
-// aux-build:extern-prelude.rs
+//@ edition: 2015
+//@ compile-flags:--extern extern_prelude
+//@ aux-build:extern-prelude.rs
 
 // Extern prelude names are not available by absolute paths
 

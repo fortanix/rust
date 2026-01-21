@@ -1,8 +1,9 @@
-//@compile-flags: -Zmir-opt-level=3
-// Enable MIR inlining to ensure that `TerminatorKind::Terminate` is generated
+//@compile-flags: -Zmir-opt-level=3 -Zinline-mir-hint-threshold=1000
+//@normalize-stderr-test: "\n +[0-9]+:[^\n]+" -> ""
+//@normalize-stderr-test: "\n +at [^\n]+" -> ""
+//@error-in-other-file: aborted execution
+// Enable MIR inlining to ensure that `TerminatorKind::UnwindTerminate` is generated
 // instead of just `UnwindAction::Terminate`.
-
-#![feature(c_unwind)]
 
 struct Foo;
 
@@ -18,7 +19,6 @@ fn has_cleanup() {
 
 extern "C" fn panic_abort() {
     has_cleanup();
-    //~^ ERROR: panic in a function that cannot unwind
 }
 
 fn main() {

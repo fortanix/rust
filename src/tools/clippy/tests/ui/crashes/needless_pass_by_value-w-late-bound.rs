@@ -5,5 +5,6 @@
 struct Foo<'a>(&'a [(); 100]);
 
 fn test(x: Foo<'_>) {}
+//~^ needless_pass_by_value
 
 fn main() {}

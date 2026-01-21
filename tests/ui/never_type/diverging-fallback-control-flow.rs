@@ -1,5 +1,5 @@
-// revisions: nofallback fallback
-// run-pass
+//@ revisions: nofallback fallback
+//@ run-pass
 
 #![allow(dead_code)]
 #![allow(unused_assignments)]
@@ -28,6 +28,8 @@ impl UnitDefault for () {
 }
 
 fn assignment() {
+    //[nofallback]~^ warn: this function depends on never type fallback being `()`
+    //[nofallback]~| warn: this was previously accepted by the compiler but is being phased out; it will become a hard error in Rust 2024 and in a future release in all editions!
     let x;
 
     if true {
@@ -38,6 +40,8 @@ fn assignment() {
 }
 
 fn assignment_rev() {
+    //[nofallback]~^ warn: this function depends on never type fallback being `()`
+    //[nofallback]~| warn: this was previously accepted by the compiler but is being phased out; it will become a hard error in Rust 2024 and in a future release in all editions!
     let x;
 
     if true {
@@ -48,7 +52,7 @@ fn assignment_rev() {
 }
 
 fn if_then_else() {
-    let _x = if true {
+    let _x: () = if true {
         UnitDefault::default()
     } else {
         return;
@@ -56,7 +60,7 @@ fn if_then_else() {
 }
 
 fn if_then_else_rev() {
-    let _x = if true {
+    let _x: () = if true {
         return;
     } else {
         UnitDefault::default()
@@ -64,21 +68,21 @@ fn if_then_else_rev() {
 }
 
 fn match_arm() {
-    let _x = match Ok(UnitDefault::default()) {
+    let _x: () = match Ok(UnitDefault::default()) {
         Ok(v) => v,
         Err(()) => return,
     };
 }
 
 fn match_arm_rev() {
-    let _x = match Ok(UnitDefault::default()) {
+    let _x: () = match Ok(UnitDefault::default()) {
         Err(()) => return,
         Ok(v) => v,
     };
 }
 
 fn loop_break() {
-    let _x = loop {
+    let _x: () = loop {
         if false {
             break return;
         } else {
@@ -88,7 +92,7 @@ fn loop_break() {
 }
 
 fn loop_break_rev() {
-    let _x = loop {
+    let _x: () = loop {
         if false {
             break return;
         } else {

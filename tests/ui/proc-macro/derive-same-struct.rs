@@ -1,8 +1,9 @@
-// run-pass
+//@ run-pass
 
 #![allow(path_statements)]
 #![allow(dead_code)]
-// aux-build:derive-same-struct.rs
+//@ proc-macro: derive-same-struct.rs
+//@ ignore-backends: gcc
 
 #[macro_use]
 extern crate derive_same_struct;

@@ -1,15 +1,15 @@
 //! Code related to parsing literals.
 
+use std::{ascii, fmt, str};
+
+use rustc_literal_escaper::{
+    MixedUnit, unescape_byte, unescape_byte_str, unescape_c_str, unescape_char, unescape_str,
+};
+use rustc_span::{ByteSymbol, Span, Symbol, kw, sym};
+use tracing::debug;
+
 use crate::ast::{self, LitKind, MetaItemLit, StrStyle};
 use crate::token::{self, Token};
-use rustc_lexer::unescape::{
-    byte_from_char, unescape_byte, unescape_c_string, unescape_char, unescape_literal, CStrUnit,
-    Mode,
-};
-use rustc_span::symbol::{kw, sym, Symbol};
-use rustc_span::Span;
-use std::ops::Range;
-use std::{ascii, fmt, str};
 
 // Escapes a string, represented as a symbol. Reuses the original symbol,
 // avoiding interning, if no changes are required.
@@ -33,23 +33,26 @@ pub fn escape_byte_str_symbol(bytes: &[u8]) -> Symbol {
 
 #[derive(Debug)]
 pub enum LitError {
-    LexerError,
-    InvalidSuffix,
-    InvalidIntSuffix,
-    InvalidFloatSuffix,
-    NonDecimalFloat(u32),
-    IntTooLarge(u32),
-    NulInCStr(Range<usize>),
+    InvalidSuffix(Symbol),
+    InvalidIntSuffix(Symbol),
+    InvalidFloatSuffix(Symbol),
+    NonDecimalFloat(u32), // u32 is the base
+    IntTooLarge(u32),     // u32 is the base
 }
 
 impl LitKind {
     /// Converts literal token into a semantic literal.
     pub fn from_token_lit(lit: token::Lit) -> Result<LitKind, LitError> {
         let token::Lit { kind, symbol, suffix } = lit;
-        if suffix.is_some() && !kind.may_have_suffix() {
-            return Err(LitError::InvalidSuffix);
+        if let Some(suffix) = suffix
+            && !kind.may_have_suffix()
+        {
+            return Err(LitError::InvalidSuffix(suffix));
         }
 
+        // For byte/char/string literals, chars and escapes have already been
+        // checked in the lexer (in `cook_lexer_literal`). So we can assume all
+        // chars and escapes are valid here.
         Ok(match kind {
             token::Bool => {
                 assert!(symbol.is_bool_lit());
@@ -58,12 +61,12 @@ impl LitKind {
             token::Byte => {
                 return unescape_byte(symbol.as_str())
                     .map(LitKind::Byte)
-                    .map_err(|_| LitError::LexerError);
+                    .map_err(|_| panic!("failed to unescape byte literal"));
             }
             token::Char => {
                 return unescape_char(symbol.as_str())
                     .map(LitKind::Char)
-                    .map_err(|_| LitError::LexerError);
+                    .map_err(|_| panic!("failed to unescape char literal"));
             }
 
             // There are some valid suffixes for integer and float literals,
@@ -77,26 +80,23 @@ impl LitKind {
                 // new symbol because the string in the LitKind is different to the
                 // string in the token.
                 let s = symbol.as_str();
-                let symbol = if s.contains(['\\', '\r']) {
+                // Vanilla strings are so common we optimize for the common case where no chars
+                // requiring special behaviour are present.
+                let symbol = if s.contains('\\') {
                     let mut buf = String::with_capacity(s.len());
-                    let mut error = Ok(());
                     // Force-inlining here is aggressive but the closure is
-                    // called on every char in the string, so it can be
-                    // hot in programs with many long strings.
-                    unescape_literal(
+                    // called on every char in the string, so it can be hot in
+                    // programs with many long strings containing escapes.
+                    unescape_str(
                         s,
-                        Mode::Str,
-                        &mut #[inline(always)]
-                        |_, unescaped_char| match unescaped_char {
+                        #[inline(always)]
+                        |_, res| match res {
                             Ok(c) => buf.push(c),
                             Err(err) => {
-                                if err.is_fatal() {
-                                    error = Err(LitError::LexerError);
-                                }
+                                assert!(!err.is_fatal(), "failed to unescape string literal")
                             }
                         },
                     );
-                    error?;
                     Symbol::intern(&buf)
                 } else {
                     symbol
@@ -104,112 +104,49 @@ impl LitKind {
                 LitKind::Str(symbol, ast::StrStyle::Cooked)
             }
             token::StrRaw(n) => {
-                // Ditto.
-                let s = symbol.as_str();
-                let symbol =
-                    if s.contains('\r') {
-                        let mut buf = String::with_capacity(s.len());
-                        let mut error = Ok(());
-                        unescape_literal(s, Mode::RawStr, &mut |_, unescaped_char| {
-                            match unescaped_char {
-                                Ok(c) => buf.push(c),
-                                Err(err) => {
-                                    if err.is_fatal() {
-                                        error = Err(LitError::LexerError);
-                                    }
-                                }
-                            }
-                        });
-                        error?;
-                        Symbol::intern(&buf)
-                    } else {
-                        symbol
-                    };
+                // Raw strings have no escapes so no work is needed here.
                 LitKind::Str(symbol, ast::StrStyle::Raw(n))
             }
             token::ByteStr => {
                 let s = symbol.as_str();
                 let mut buf = Vec::with_capacity(s.len());
-                let mut error = Ok(());
-                unescape_literal(s, Mode::ByteStr, &mut |_, c| match c {
-                    Ok(c) => buf.push(byte_from_char(c)),
+                unescape_byte_str(s, |_, res| match res {
+                    Ok(b) => buf.push(b),
                     Err(err) => {
-                        if err.is_fatal() {
-                            error = Err(LitError::LexerError);
-                        }
+                        assert!(!err.is_fatal(), "failed to unescape string literal")
                     }
                 });
-                error?;
-                LitKind::ByteStr(buf.into(), StrStyle::Cooked)
+                LitKind::ByteStr(ByteSymbol::intern(&buf), StrStyle::Cooked)
             }
             token::ByteStrRaw(n) => {
-                let s = symbol.as_str();
-                let bytes = if s.contains('\r') {
-                    let mut buf = Vec::with_capacity(s.len());
-                    let mut error = Ok(());
-                    unescape_literal(s, Mode::RawByteStr, &mut |_, c| match c {
-                        Ok(c) => buf.push(byte_from_char(c)),
-                        Err(err) => {
-                            if err.is_fatal() {
-                                error = Err(LitError::LexerError);
-                            }
-                        }
-                    });
-                    error?;
-                    buf
-                } else {
-                    symbol.to_string().into_bytes()
-                };
-
-                LitKind::ByteStr(bytes.into(), StrStyle::Raw(n))
+                // Raw byte strings have no escapes so no work is needed here.
+                let buf = symbol.as_str().to_owned().into_bytes();
+                LitKind::ByteStr(ByteSymbol::intern(&buf), StrStyle::Raw(n))
             }
             token::CStr => {
                 let s = symbol.as_str();
                 let mut buf = Vec::with_capacity(s.len());
-                let mut error = Ok(());
-                unescape_c_string(s, Mode::CStr, &mut |span, c| match c {
-                    Ok(CStrUnit::Byte(0) | CStrUnit::Char('\0')) => {
-                        error = Err(LitError::NulInCStr(span));
+                unescape_c_str(s, |_span, res| match res {
+                    Ok(MixedUnit::Char(c)) => {
+                        buf.extend_from_slice(c.get().encode_utf8(&mut [0; 4]).as_bytes())
                     }
-                    Ok(CStrUnit::Byte(b)) => buf.push(b),
-                    Ok(CStrUnit::Char(c)) if c.len_utf8() == 1 => buf.push(c as u8),
-                    Ok(CStrUnit::Char(c)) => {
-                        buf.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes())
-                    }
+                    Ok(MixedUnit::HighByte(b)) => buf.push(b.get()),
                     Err(err) => {
-                        if err.is_fatal() {
-                            error = Err(LitError::LexerError);
-                        }
+                        assert!(!err.is_fatal(), "failed to unescape C string literal")
                     }
                 });
-                error?;
                 buf.push(0);
-                LitKind::CStr(buf.into(), StrStyle::Cooked)
+                LitKind::CStr(ByteSymbol::intern(&buf), StrStyle::Cooked)
             }
             token::CStrRaw(n) => {
-                let s = symbol.as_str();
-                let mut buf = Vec::with_capacity(s.len());
-                let mut error = Ok(());
-                unescape_c_string(s, Mode::RawCStr, &mut |span, c| match c {
-                    Ok(CStrUnit::Byte(0) | CStrUnit::Char('\0')) => {
-                        error = Err(LitError::NulInCStr(span));
-                    }
-                    Ok(CStrUnit::Byte(b)) => buf.push(b),
-                    Ok(CStrUnit::Char(c)) if c.len_utf8() == 1 => buf.push(c as u8),
-                    Ok(CStrUnit::Char(c)) => {
-                        buf.extend_from_slice(c.encode_utf8(&mut [0; 4]).as_bytes())
-                    }
-                    Err(err) => {
-                        if err.is_fatal() {
-                            error = Err(LitError::LexerError);
-                        }
-                    }
-                });
-                error?;
+                // Raw strings have no escapes so we can convert the symbol
+                // directly to a `Arc<u8>` after appending the terminating NUL
+                // char.
+                let mut buf = symbol.as_str().to_owned().into_bytes();
                 buf.push(0);
-                LitKind::CStr(buf.into(), StrStyle::Raw(n))
+                LitKind::CStr(ByteSymbol::intern(&buf), StrStyle::Raw(n))
             }
-            token::Err => LitKind::Err,
+            token::Err(guar) => LitKind::Err(guar),
         })
     }
 }
@@ -229,12 +166,12 @@ impl fmt::Display for LitKind {
                 delim = "#".repeat(n as usize),
                 string = sym
             )?,
-            LitKind::ByteStr(ref bytes, StrStyle::Cooked) => {
-                write!(f, "b\"{}\"", escape_byte_str_symbol(bytes))?
+            LitKind::ByteStr(ref byte_sym, StrStyle::Cooked) => {
+                write!(f, "b\"{}\"", escape_byte_str_symbol(byte_sym.as_byte_str()))?
             }
-            LitKind::ByteStr(ref bytes, StrStyle::Raw(n)) => {
+            LitKind::ByteStr(ref byte_sym, StrStyle::Raw(n)) => {
                 // Unwrap because raw byte string literals can only contain ASCII.
-                let symbol = str::from_utf8(bytes).unwrap();
+                let symbol = str::from_utf8(byte_sym.as_byte_str()).unwrap();
                 write!(
                     f,
                     "br{delim}\"{string}\"{delim}",
@@ -243,30 +180,30 @@ impl fmt::Display for LitKind {
                 )?;
             }
             LitKind::CStr(ref bytes, StrStyle::Cooked) => {
-                write!(f, "c\"{}\"", escape_byte_str_symbol(bytes))?
+                write!(f, "c\"{}\"", escape_byte_str_symbol(bytes.as_byte_str()))?
             }
             LitKind::CStr(ref bytes, StrStyle::Raw(n)) => {
                 // This can only be valid UTF-8.
-                let symbol = str::from_utf8(bytes).unwrap();
+                let symbol = str::from_utf8(bytes.as_byte_str()).unwrap();
                 write!(f, "cr{delim}\"{symbol}\"{delim}", delim = "#".repeat(n as usize),)?;
             }
             LitKind::Int(n, ty) => {
                 write!(f, "{n}")?;
                 match ty {
-                    ast::LitIntType::Unsigned(ty) => write!(f, "{}", ty.name())?,
-                    ast::LitIntType::Signed(ty) => write!(f, "{}", ty.name())?,
+                    ast::LitIntType::Unsigned(ty) => write!(f, "{}", ty.name_str())?,
+                    ast::LitIntType::Signed(ty) => write!(f, "{}", ty.name_str())?,
                     ast::LitIntType::Unsuffixed => {}
                 }
             }
             LitKind::Float(symbol, ty) => {
                 write!(f, "{symbol}")?;
                 match ty {
-                    ast::LitFloatType::Suffixed(ty) => write!(f, "{}", ty.name())?,
+                    ast::LitFloatType::Suffixed(ty) => write!(f, "{}", ty.name_str())?,
                     ast::LitFloatType::Unsuffixed => {}
                 }
             }
             LitKind::Bool(b) => write!(f, "{}", if b { "true" } else { "false" })?,
-            LitKind::Err => {
+            LitKind::Err(_) => {
                 // This only shows up in places like `-Zunpretty=hir` output, so we
                 // don't bother to produce something useful.
                 write!(f, "<bad-literal>")?;
@@ -302,7 +239,7 @@ impl MetaItemLit {
             LitKind::Char(_) => token::Char,
             LitKind::Int(..) => token::Integer,
             LitKind::Float(..) => token::Float,
-            LitKind::Err => token::Err,
+            LitKind::Err(guar) => token::Err(guar),
         };
 
         token::Lit::new(kind, self.symbol, self.suffix)
@@ -336,12 +273,14 @@ fn filtered_float_lit(
         return Err(LitError::NonDecimalFloat(base));
     }
     Ok(match suffix {
-        Some(suf) => LitKind::Float(
+        Some(suffix) => LitKind::Float(
             symbol,
-            ast::LitFloatType::Suffixed(match suf {
+            ast::LitFloatType::Suffixed(match suffix {
+                sym::f16 => ast::FloatTy::F16,
                 sym::f32 => ast::FloatTy::F32,
                 sym::f64 => ast::FloatTy::F64,
-                _ => return Err(LitError::InvalidFloatSuffix),
+                sym::f128 => ast::FloatTy::F128,
+                _ => return Err(LitError::InvalidFloatSuffix(suffix)),
             }),
         ),
         None => LitKind::Float(symbol, ast::LitFloatType::Unsuffixed),
@@ -382,18 +321,13 @@ fn integer_lit(symbol: Symbol, suffix: Option<Symbol>) -> Result<LitKind, LitErr
             // `1f64` and `2f32` etc. are valid float literals, and
             // `fxxx` looks more like an invalid float literal than invalid integer literal.
             _ if suf.as_str().starts_with('f') => return filtered_float_lit(symbol, suffix, base),
-            _ => return Err(LitError::InvalidIntSuffix),
+            _ => return Err(LitError::InvalidIntSuffix(suf)),
         },
         _ => ast::LitIntType::Unsuffixed,
     };
 
     let s = &s[if base != 10 { 2 } else { 0 }..];
-    u128::from_str_radix(s, base).map(|i| LitKind::Int(i, ty)).map_err(|_| {
-        // Small bases are lexed as if they were base 10, e.g, the string
-        // might be `0b10201`. This will cause the conversion above to fail,
-        // but these kinds of errors are already reported by the lexer.
-        let from_lexer =
-            base < 10 && s.chars().any(|c| c.to_digit(10).map_or(false, |d| d >= base));
-        if from_lexer { LitError::LexerError } else { LitError::IntTooLarge(base) }
-    })
+    u128::from_str_radix(s, base)
+        .map(|i| LitKind::Int(i.into(), ty))
+        .map_err(|_| LitError::IntTooLarge(base))
 }

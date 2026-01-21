@@ -3,17 +3,18 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - master
     paths:
-      - 'lib/**'
+      - "lib/**"
 
 jobs:
   publish-libs:
+    if: ${{ github.repository == 'rust-lang/rust-analyzer' || github.event_name == 'workflow_dispatch' }}
     name: publish
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -21,7 +22,7 @@ jobs:
         run: rustup update --no-self-update stable
 
       - name: Install cargo-workspaces
-        run: cargo install cargo-workspaces
+        run: cargo install cargo-workspaces --version "0.3.6"
 
       - name: Publish Crates
         env:
@@ -29,7 +30,7 @@ jobs:
         shell: bash
         run: |
           git config --global user.email "runner@gha.local"
-          git config --global user.name "Github Action"
-          # Remove r-a crates from the workspaces so we don't auto-publish them as well
-          sed -i 's/ "crates\/\*"//' ./Cargo.toml
+          git config --global user.name "GitHub Action"
+          # Only publish the crates under lib/
+          sed -i 's|^members = .*$|members = ["lib/*"]|' Cargo.toml
           cargo workspaces publish --yes --exact --from-git --no-git-commit --allow-dirty

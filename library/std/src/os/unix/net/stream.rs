@@ -1,41 +1,45 @@
-#[cfg(any(doc, target_os = "android", target_os = "linux"))]
-use super::{recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to, SocketAncillary};
-use super::{sockaddr_un, SocketAddr};
+cfg_select! {
+    any(
+        target_os = "linux", target_os = "android",
+        target_os = "hurd",
+        target_os = "dragonfly", target_os = "freebsd",
+        target_os = "openbsd", target_os = "netbsd",
+        target_os = "solaris", target_os = "illumos",
+        target_os = "haiku", target_os = "nto",
+        target_os = "cygwin",
+    ) => {
+        use libc::MSG_NOSIGNAL;
+    }
+    _ => {
+        const MSG_NOSIGNAL: core::ffi::c_int = 0x0;
+    }
+}
+
+use super::{SocketAddr, sockaddr_un};
+#[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
+use super::{SocketAncillary, recv_vectored_with_ancillary_from, send_vectored_with_ancillary_to};
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "nto",
+    target_vendor = "apple",
+    target_os = "cygwin"
+))]
+use super::{UCred, peer_cred};
 use crate::fmt;
 use crate::io::{self, IoSlice, IoSliceMut};
 use crate::net::Shutdown;
 use crate::os::unix::io::{AsFd, AsRawFd, BorrowedFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "watchos",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-use crate::os::unix::ucred;
 use crate::path::Path;
+use crate::sealed::Sealed;
 use crate::sys::cvt;
 use crate::sys::net::Socket;
 use crate::sys_common::{AsInner, FromInner};
 use crate::time::Duration;
-
-#[unstable(feature = "peer_credentials_unix_socket", issue = "42839", reason = "unstable")]
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "dragonfly",
-    target_os = "freebsd",
-    target_os = "ios",
-    target_os = "macos",
-    target_os = "watchos",
-    target_os = "netbsd",
-    target_os = "openbsd"
-))]
-pub use ucred::UCred;
 
 /// A Unix stream socket.
 ///
@@ -54,8 +58,18 @@ pub use ucred::UCred;
 ///     Ok(())
 /// }
 /// ```
+///
+/// # `SIGPIPE`
+///
+/// Writes to the underlying socket in `SOCK_STREAM` mode are made with `MSG_NOSIGNAL` flag.
+/// This suppresses the emission of the  `SIGPIPE` signal when writing to disconnected socket.
+/// In some cases getting a `SIGPIPE` would trigger process termination.
 #[stable(feature = "unix_socket", since = "1.10.0")]
 pub struct UnixStream(pub(super) Socket);
+
+/// Allows extension traits within `std`.
+#[unstable(feature = "sealed", issue = "none")]
+impl Sealed for UnixStream {}
 
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl fmt::Debug for UnixStream {
@@ -91,10 +105,10 @@ impl UnixStream {
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn connect<P: AsRef<Path>>(path: P) -> io::Result<UnixStream> {
         unsafe {
-            let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
+            let inner = Socket::new(libc::AF_UNIX, libc::SOCK_STREAM)?;
             let (addr, len) = sockaddr_un(path.as_ref())?;
 
-            cvt(libc::connect(inner.as_raw_fd(), &addr as *const _ as *const _, len))?;
+            cvt(libc::connect(inner.as_raw_fd(), (&raw const addr) as *const _, len))?;
             Ok(UnixStream(inner))
         }
     }
@@ -125,10 +139,10 @@ impl UnixStream {
     #[stable(feature = "unix_socket_abstract", since = "1.70.0")]
     pub fn connect_addr(socket_addr: &SocketAddr) -> io::Result<UnixStream> {
         unsafe {
-            let inner = Socket::new_raw(libc::AF_UNIX, libc::SOCK_STREAM)?;
+            let inner = Socket::new(libc::AF_UNIX, libc::SOCK_STREAM)?;
             cvt(libc::connect(
                 inner.as_raw_fd(),
-                &socket_addr.addr as *const _ as *const _,
+                (&raw const socket_addr.addr) as *const _,
                 socket_addr.len,
             ))?;
             Ok(UnixStream(inner))
@@ -237,14 +251,14 @@ impl UnixStream {
         target_os = "linux",
         target_os = "dragonfly",
         target_os = "freebsd",
-        target_os = "ios",
-        target_os = "macos",
-        target_os = "watchos",
         target_os = "netbsd",
-        target_os = "openbsd"
+        target_os = "openbsd",
+        target_os = "nto",
+        target_vendor = "apple",
+        target_os = "cygwin"
     ))]
     pub fn peer_cred(&self) -> io::Result<UCred> {
-        ucred::peer_cred(self)
+        peer_cred(self)
     }
 
     /// Sets the read timeout for the socket.
@@ -316,11 +330,11 @@ impl UnixStream {
     ///
     /// ```no_run
     /// use std::io;
-    /// use std::net::UdpSocket;
+    /// use std::os::unix::net::UnixStream;
     /// use std::time::Duration;
     ///
     /// fn main() -> std::io::Result<()> {
-    ///     let socket = UdpSocket::bind("127.0.0.1:34254")?;
+    ///     let socket = UnixStream::connect("/tmp/sock")?;
     ///     let result = socket.set_write_timeout(Some(Duration::new(0, 0)));
     ///     let err = result.unwrap_err();
     ///     assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
@@ -389,69 +403,6 @@ impl UnixStream {
     #[stable(feature = "unix_socket", since = "1.10.0")]
     pub fn set_nonblocking(&self, nonblocking: bool) -> io::Result<()> {
         self.0.set_nonblocking(nonblocking)
-    }
-
-    /// Moves the socket to pass unix credentials as control message in [`SocketAncillary`].
-    ///
-    /// Set the socket option `SO_PASSCRED`.
-    ///
-    /// # Examples
-    ///
-    #[cfg_attr(
-        any(
-            target_os = "android",
-            target_os = "linux",
-            target_os = "netbsd",
-            target_os = "freebsd"
-        ),
-        doc = "```no_run"
-    )]
-    #[cfg_attr(
-        not(any(
-            target_os = "android",
-            target_os = "linux",
-            target_os = "netbsd",
-            target_os = "freebsd"
-        )),
-        doc = "```ignore"
-    )]
-    /// #![feature(unix_socket_ancillary_data)]
-    /// use std::os::unix::net::UnixStream;
-    ///
-    /// fn main() -> std::io::Result<()> {
-    ///     let socket = UnixStream::connect("/tmp/sock")?;
-    ///     socket.set_passcred(true).expect("Couldn't set passcred");
-    ///     Ok(())
-    /// }
-    /// ```
-    #[cfg(any(
-        doc,
-        target_os = "android",
-        target_os = "linux",
-        target_os = "netbsd",
-        target_os = "freebsd"
-    ))]
-    #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
-    pub fn set_passcred(&self, passcred: bool) -> io::Result<()> {
-        self.0.set_passcred(passcred)
-    }
-
-    /// Get the current value of the socket for passing unix credentials in [`SocketAncillary`].
-    /// This value can be change by [`set_passcred`].
-    ///
-    /// Get the socket option `SO_PASSCRED`.
-    ///
-    /// [`set_passcred`]: UnixStream::set_passcred
-    #[cfg(any(
-        doc,
-        target_os = "android",
-        target_os = "linux",
-        target_os = "netbsd",
-        target_os = "freebsd"
-    ))]
-    #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
-    pub fn passcred(&self) -> io::Result<bool> {
-        self.0.passcred()
     }
 
     /// Set the id of the socket for network filtering purpose
@@ -557,8 +508,14 @@ impl UnixStream {
     ///
     /// # Examples
     ///
-    #[cfg_attr(any(target_os = "android", target_os = "linux"), doc = "```no_run")]
-    #[cfg_attr(not(any(target_os = "android", target_os = "linux")), doc = "```ignore")]
+    #[cfg_attr(
+        any(target_os = "android", target_os = "linux", target_os = "cygwin"),
+        doc = "```no_run"
+    )]
+    #[cfg_attr(
+        not(any(target_os = "android", target_os = "linux", target_os = "cygwin")),
+        doc = "```ignore"
+    )]
     /// #![feature(unix_socket_ancillary_data)]
     /// use std::os::unix::net::{UnixStream, SocketAncillary, AncillaryData};
     /// use std::io::IoSliceMut;
@@ -588,7 +545,7 @@ impl UnixStream {
     ///     Ok(())
     /// }
     /// ```
-    #[cfg(any(doc, target_os = "android", target_os = "linux"))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn recv_vectored_with_ancillary(
         &self,
@@ -606,8 +563,14 @@ impl UnixStream {
     ///
     /// # Examples
     ///
-    #[cfg_attr(any(target_os = "android", target_os = "linux"), doc = "```no_run")]
-    #[cfg_attr(not(any(target_os = "android", target_os = "linux")), doc = "```ignore")]
+    #[cfg_attr(
+        any(target_os = "android", target_os = "linux", target_os = "cygwin"),
+        doc = "```no_run"
+    )]
+    #[cfg_attr(
+        not(any(target_os = "android", target_os = "linux", target_os = "cygwin")),
+        doc = "```ignore"
+    )]
     /// #![feature(unix_socket_ancillary_data)]
     /// use std::os::unix::net::{UnixStream, SocketAncillary};
     /// use std::io::IoSlice;
@@ -631,7 +594,7 @@ impl UnixStream {
     ///     Ok(())
     /// }
     /// ```
-    #[cfg(any(doc, target_os = "android", target_os = "linux"))]
+    #[cfg(any(doc, target_os = "android", target_os = "linux", target_os = "cygwin"))]
     #[unstable(feature = "unix_socket_ancillary_data", issue = "76915")]
     pub fn send_vectored_with_ancillary(
         &self,
@@ -648,6 +611,10 @@ impl io::Read for UnixStream {
         io::Read::read(&mut &*self, buf)
     }
 
+    fn read_buf(&mut self, buf: io::BorrowedCursor<'_>) -> io::Result<()> {
+        io::Read::read_buf(&mut &*self, buf)
+    }
+
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
         io::Read::read_vectored(&mut &*self, bufs)
     }
@@ -662,6 +629,10 @@ impl io::Read for UnixStream {
 impl<'a> io::Read for &'a UnixStream {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         self.0.read(buf)
+    }
+
+    fn read_buf(&mut self, buf: io::BorrowedCursor<'_>) -> io::Result<()> {
+        self.0.read_buf(buf)
     }
 
     fn read_vectored(&mut self, bufs: &mut [IoSliceMut<'_>]) -> io::Result<usize> {
@@ -697,7 +668,7 @@ impl io::Write for UnixStream {
 #[stable(feature = "unix_socket", since = "1.10.0")]
 impl<'a> io::Write for &'a UnixStream {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.0.write(buf)
+        self.0.send_with_flags(buf, MSG_NOSIGNAL)
     }
 
     fn write_vectored(&mut self, bufs: &[IoSlice<'_>]) -> io::Result<usize> {
@@ -709,6 +680,7 @@ impl<'a> io::Write for &'a UnixStream {
         self.0.is_write_vectored()
     }
 
+    #[inline]
     fn flush(&mut self) -> io::Result<()> {
         Ok(())
     }
@@ -748,6 +720,7 @@ impl AsFd for UnixStream {
 
 #[stable(feature = "io_safety", since = "1.63.0")]
 impl From<UnixStream> for OwnedFd {
+    /// Takes ownership of a [`UnixStream`]'s socket file descriptor.
     #[inline]
     fn from(unix_stream: UnixStream) -> OwnedFd {
         unsafe { OwnedFd::from_raw_fd(unix_stream.into_raw_fd()) }
@@ -759,5 +732,12 @@ impl From<OwnedFd> for UnixStream {
     #[inline]
     fn from(owned: OwnedFd) -> Self {
         unsafe { Self::from_raw_fd(owned.into_raw_fd()) }
+    }
+}
+
+impl AsInner<Socket> for UnixStream {
+    #[inline]
+    fn as_inner(&self) -> &Socket {
+        &self.0
     }
 }

@@ -4,7 +4,7 @@
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 mod free_items {
     default extern crate foo; //~ ERROR an extern crate cannot be `default`
     default use foo; //~ ERROR a `use` import cannot be `default`
@@ -19,7 +19,7 @@ mod free_items {
     default union foo {} //~ ERROR a union cannot be `default`
     default trait foo {} //~ ERROR a trait cannot be `default`
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
-    default impl foo {}
+    default impl foo {} //~ ERROR inherent impls cannot be default
     default!();
     default::foo::bar!();
     default default!(); //~ ERROR an item macro invocation cannot be `default`
@@ -28,7 +28,7 @@ mod free_items {
     default macro_rules! foo {} //~ ERROR a macro definition cannot be `default`
 }
 
-#[cfg(FALSE)]
+#[cfg(false)]
 extern "C" {
     default extern crate foo; //~ ERROR an extern crate cannot be `default`
     //~^ ERROR extern crate is not supported in `extern` blocks
@@ -53,7 +53,7 @@ extern "C" {
     //~^ ERROR trait is not supported in `extern` blocks
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
     //~^ ERROR trait alias is not supported in `extern` blocks
-    default impl foo {}
+    default impl foo {} //~ ERROR inherent impls cannot be default
     //~^ ERROR implementation is not supported in `extern` blocks
     default!();
     default::foo::bar!();
@@ -65,7 +65,7 @@ extern "C" {
     //~^ ERROR macro definition is not supported in `extern` blocks
 }
 
-#[cfg(FALSE)]
+#[cfg(false)]
 impl S {
     default extern crate foo; //~ ERROR an extern crate cannot be `default`
     //~^ ERROR extern crate is not supported in `trait`s or `impl`s
@@ -90,7 +90,7 @@ impl S {
     //~^ ERROR trait is not supported in `trait`s or `impl`s
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
     //~^ ERROR trait alias is not supported in `trait`s or `impl`s
-    default impl foo {}
+    default impl foo {} //~ ERROR inherent impls cannot be default
     //~^ ERROR implementation is not supported in `trait`s or `impl`s
     default!();
     default::foo::bar!();
@@ -102,7 +102,7 @@ impl S {
     //~^ ERROR macro definition is not supported in `trait`s or `impl`s
 }
 
-#[cfg(FALSE)]
+#[cfg(false)]
 trait T {
     default extern crate foo; //~ ERROR an extern crate cannot be `default`
     //~^ ERROR extern crate is not supported in `trait`s or `impl`s
@@ -127,7 +127,7 @@ trait T {
     //~^ ERROR trait is not supported in `trait`s or `impl`s
     default trait foo = Ord; //~ ERROR a trait alias cannot be `default`
     //~^ ERROR trait alias is not supported in `trait`s or `impl`s
-    default impl foo {}
+    default impl foo {} //~ ERROR inherent impls cannot be default
     //~^ ERROR implementation is not supported in `trait`s or `impl`s
     default!();
     default::foo::bar!();

@@ -1,3 +1,4 @@
-// check-pass
-// compile-flags: --passes list
-// error-pattern: the `passes` flag no longer functions
+//@ check-pass
+//@ compile-flags: --passes list
+
+//~? WARN the `passes` flag no longer functions

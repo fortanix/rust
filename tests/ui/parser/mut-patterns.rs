@@ -1,6 +1,7 @@
 // Can't put mut in non-ident pattern
 
-// edition:2018
+//@ edition:2018
+//@ dont-require-annotations: HELP
 
 #![feature(box_patterns)]
 #![allow(warnings)]
@@ -13,21 +14,25 @@ pub fn main() {
 
     let mut mut x = 0;
     //~^ ERROR `mut` on a binding may not be repeated
-    //~| remove the additional `mut`s
+    //~| HELP remove the additional `mut`s
+
+    let mut mut mut mut mut x = 0;
+    //~^ ERROR `mut` on a binding may not be repeated
+    //~| HELP remove the additional `mut`s
 
     struct Foo { x: isize }
     let mut Foo { x: x } = Foo { x: 3 };
     //~^ ERROR `mut` must be attached to each individual binding
-    //~| add `mut` to each binding
+    //~| HELP add `mut` to each binding
 
     let mut Foo { x } = Foo { x: 3 };
     //~^ ERROR `mut` must be attached to each individual binding
-    //~| add `mut` to each binding
+    //~| HELP add `mut` to each binding
 
     struct r#yield(u8, u8);
     let mut mut yield(become, await) = r#yield(0, 0);
     //~^ ERROR `mut` on a binding may not be repeated
-    //~| ERROR `mut` must be attached to each individual binding
+    //~| ERROR `mut` must be followed by a named binding
     //~| ERROR expected identifier, found reserved keyword `yield`
     //~| ERROR expected identifier, found reserved keyword `become`
     //~| ERROR expected identifier, found keyword `await`
@@ -41,7 +46,7 @@ pub fn main() {
     // Make sure we don't accidentally allow `mut $p` where `$p:pat`.
     macro_rules! foo {
         ($p:pat) => {
-            let mut $p = 0; //~ ERROR expected identifier, found `x`
+            let mut $p = 0; //~ ERROR expected identifier, found metavariable
         }
     }
     foo!(x);

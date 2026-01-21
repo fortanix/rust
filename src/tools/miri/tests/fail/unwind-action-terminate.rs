@@ -1,7 +1,7 @@
-#![feature(c_unwind)]
-
+//@error-in-other-file: aborted execution
+//@normalize-stderr-test: "\n +[0-9]+:[^\n]+" -> ""
+//@normalize-stderr-test: "\n +at [^\n]+" -> ""
 extern "C" fn panic_abort() {
-    //~^ ERROR: panic in a function that cannot unwind
     panic!()
 }
 

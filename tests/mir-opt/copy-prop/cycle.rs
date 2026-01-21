@@ -1,6 +1,7 @@
-// ignore-wasm32 compiled with panic=abort by default
+// skip-filecheck
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
 //! Tests that cyclic assignments don't hang CopyProp, and result in reasonable code.
-// unit-test: CopyProp
+//@ test-mir-pass: CopyProp
 fn val() -> i32 {
     1
 }

@@ -1,5 +1,8 @@
-#[cfg(doctest)]
-compile_error!("rustdoc should not touch me");
-
-#[cfg(test)]
-compile_error!("Miri should not touch me");
+/// Doc-test test
+///
+/// ```rust
+/// assert!(subcrate::make_true());
+/// ```
+pub fn make_true() -> bool {
+    true
+}

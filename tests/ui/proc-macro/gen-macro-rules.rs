@@ -1,7 +1,8 @@
 // Derive macros can generate `macro_rules` items, regression test for issue #63651.
 
-// check-pass
-// aux-build:gen-macro-rules.rs
+//@ check-pass
+//@ proc-macro: gen-macro-rules.rs
+//@ ignore-backends: gcc
 
 extern crate gen_macro_rules as repro;
 

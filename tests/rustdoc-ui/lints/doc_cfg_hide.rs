@@ -1,11 +1,4 @@
-#![feature(doc_cfg_hide)]
-#![deny(warnings)]
-
-#![doc(cfg_hide = "test")] //~ ERROR
-//~^ WARN
-#![doc(cfg_hide)] //~ ERROR
-//~^ WARN
-
-#[doc(cfg_hide(doc))] //~ ERROR
-//~^ WARN
-pub fn foo() {}
+#![feature(doc_cfg)]
+#![doc(auto_cfg(hide = "test"))] //~ ERROR
+#![doc(auto_cfg(hide))] //~ ERROR
+#![doc(auto_cfg(hide(not(windows))))] //~ ERROR

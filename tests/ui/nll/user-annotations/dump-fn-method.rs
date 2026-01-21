@@ -1,21 +1,20 @@
 // Unit test for the "user substitutions" that are annotated on each
 // node.
 
-// compile-flags:-Zverbose
+//@ compile-flags:-Zverbose-internals
 
 #![feature(rustc_attrs)]
 
 // Note: we reference the names T and U in the comments below.
 trait Bazoom<T> {
-    fn method<U>(&self, arg: T, arg2: U) { }
+    fn method<U>(&self, arg: T, arg2: U) {}
 }
 
-impl<S, T> Bazoom<T> for S {
-}
+impl<S, T> Bazoom<T> for S {}
 
-fn foo<'a, T>(_: T) { }
+fn foo<'a, T>(_: T) {}
 
-#[rustc_dump_user_substs]
+#[rustc_dump_user_args]
 fn main() {
     // Here: nothing is given, so we don't have any annotation.
     let x = foo;
@@ -26,13 +25,13 @@ fn main() {
     let x = foo::<u32>;
     x(22);
 
-    let x = foo::<&'static u32>; //~ ERROR [&ReStatic u32]
+    let x = foo::<&'static u32>; //~ ERROR [&'static u32]
     x(&22);
 
     // Here: we only want the `T` to be given, the rest should be variables.
     //
     // (`T` refers to the declaration of `Bazoom`)
-    let x = <_ as Bazoom<u32>>::method::<_>; //~ ERROR [^0, u32, ^1]
+    let x = <_ as Bazoom<u32>>::method::<_>; //~ ERROR [^c_0, u32, ^c_1]
     x(&22, 44, 66);
 
     // Here: all are given and definitely contain no lifetimes, so we
@@ -41,7 +40,7 @@ fn main() {
     x(&22, 44, 66);
 
     // Here: all are given and we have a lifetime.
-    let x = <u8 as Bazoom<&'static u16>>::method::<u32>; //~ ERROR [u8, &ReStatic u16, u32]
+    let x = <u8 as Bazoom<&'static u16>>::method::<u32>; //~ ERROR [u8, &'static u16, u32]
     x(&22, &44, 66);
 
     // Here: we want in particular that *only* the method `U`
@@ -49,7 +48,7 @@ fn main() {
     //
     // (`U` refers to the declaration of `Bazoom`)
     let y = 22_u32;
-    y.method::<u32>(44, 66); //~ ERROR [^0, ^1, u32]
+    y.method::<u32>(44, 66); //~ ERROR [^c_0, ^c_1, u32]
 
     // Here: nothing is given, so we don't have any annotation.
     let y = 22_u32;

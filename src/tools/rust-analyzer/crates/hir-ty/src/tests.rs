@@ -1,134 +1,129 @@
-mod never_type;
+mod closure_captures;
 mod coercion;
-mod regression;
-mod simple;
-mod patterns;
-mod traits;
-mod method_resolution;
-mod macros;
+mod diagnostics;
 mod display_source_code;
 mod incremental;
-mod diagnostics;
+mod macros;
+mod method_resolution;
+mod never_type;
+mod opaque_types;
+mod patterns;
+mod regression;
+mod simple;
+mod trait_aliases;
+mod traits;
 
-use std::{collections::HashMap, env, sync::Arc};
-
-use base_db::{fixture::WithFixture, FileRange, SourceDatabaseExt};
+use base_db::{Crate, SourceDatabase};
 use expect_test::Expect;
 use hir_def::{
-    body::{Body, BodySourceMap, SyntheticSyntax},
-    db::{DefDatabase, InternDatabase},
-    expr::{ExprId, PatId},
+    AssocItemId, DefWithBodyId, HasModule, LocalModuleId, Lookup, ModuleDefId, SyntheticSyntax,
+    db::DefDatabase,
+    expr_store::{Body, BodySourceMap},
+    hir::{ExprId, Pat, PatId},
     item_scope::ItemScope,
     nameres::DefMap,
     src::HasSource,
-    AssocItemId, DefWithBodyId, HasModule, LocalModuleId, Lookup, ModuleDefId,
 };
-use hir_expand::{db::ExpandDatabase, InFile};
-use once_cell::race::OnceBool;
+use hir_expand::{FileRange, InFile, db::ExpandDatabase};
+use itertools::Itertools;
+use rustc_hash::FxHashMap;
 use stdx::format_to;
 use syntax::{
-    ast::{self, AstNode, HasName},
     SyntaxNode,
+    ast::{self, AstNode, HasName},
 };
-use tracing_subscriber::{layer::SubscriberExt, EnvFilter, Registry};
-use tracing_tree::HierarchicalLayer;
+use test_fixture::WithFixture;
+use triomphe::Arc;
 
 use crate::{
-    db::HirDatabase,
-    display::HirDisplay,
-    infer::{Adjustment, TypeMismatch},
-    test_db::TestDB,
     InferenceResult, Ty,
+    db::HirDatabase,
+    display::{DisplayTarget, HirDisplay},
+    infer::{Adjustment, TypeMismatch},
+    setup_tracing,
+    test_db::TestDB,
 };
 
 // These tests compare the inference results for all expressions in a file
 // against snapshots of the expected results using expect. Use
 // `env UPDATE_EXPECT=1 cargo test -p hir_ty` to update the snapshots.
 
-fn setup_tracing() -> Option<tracing::subscriber::DefaultGuard> {
-    static ENABLE: OnceBool = OnceBool::new();
-    if !ENABLE.get_or_init(|| env::var("CHALK_DEBUG").is_ok()) {
-        return None;
-    }
-
-    let filter = EnvFilter::from_env("CHALK_DEBUG");
-    let layer = HierarchicalLayer::default()
-        .with_indent_lines(true)
-        .with_ansi(false)
-        .with_indent_amount(2)
-        .with_writer(std::io::stderr);
-    let subscriber = Registry::default().with(filter).with(layer);
-    Some(tracing::subscriber::set_default(subscriber))
-}
-
 #[track_caller]
-fn check_types(ra_fixture: &str) {
+fn check_types(#[rust_analyzer::rust_fixture] ra_fixture: &str) {
     check_impl(ra_fixture, false, true, false)
 }
 
 #[track_caller]
-fn check_types_source_code(ra_fixture: &str) {
+fn check_types_source_code(#[rust_analyzer::rust_fixture] ra_fixture: &str) {
     check_impl(ra_fixture, false, true, true)
 }
 
 #[track_caller]
-fn check_no_mismatches(ra_fixture: &str) {
+fn check_no_mismatches(#[rust_analyzer::rust_fixture] ra_fixture: &str) {
     check_impl(ra_fixture, true, false, false)
 }
 
 #[track_caller]
-fn check(ra_fixture: &str) {
+fn check(#[rust_analyzer::rust_fixture] ra_fixture: &str) {
     check_impl(ra_fixture, false, false, false)
 }
 
 #[track_caller]
-fn check_impl(ra_fixture: &str, allow_none: bool, only_types: bool, display_source: bool) {
+fn check_impl(
+    #[rust_analyzer::rust_fixture] ra_fixture: &str,
+    allow_none: bool,
+    only_types: bool,
+    display_source: bool,
+) {
     let _tracing = setup_tracing();
     let (db, files) = TestDB::with_many_files(ra_fixture);
 
     let mut had_annotations = false;
-    let mut mismatches = HashMap::new();
-    let mut types = HashMap::new();
-    let mut adjustments = HashMap::<_, Vec<_>>::new();
+    let mut mismatches = FxHashMap::default();
+    let mut types = FxHashMap::default();
+    let mut adjustments = FxHashMap::default();
     for (file_id, annotations) in db.extract_annotations() {
         for (range, expected) in annotations {
             let file_range = FileRange { file_id, range };
             if only_types {
                 types.insert(file_range, expected);
             } else if expected.starts_with("type: ") {
-                types.insert(file_range, expected.trim_start_matches("type: ").to_string());
+                types.insert(file_range, expected.trim_start_matches("type: ").to_owned());
             } else if expected.starts_with("expected") {
                 mismatches.insert(file_range, expected);
             } else if expected.starts_with("adjustments:") {
                 adjustments.insert(
                     file_range,
-                    expected
-                        .trim_start_matches("adjustments:")
-                        .trim()
-                        .split(',')
-                        .map(|it| it.trim().to_string())
-                        .filter(|it| !it.is_empty())
-                        .collect(),
+                    expected.trim_start_matches("adjustments:").trim().to_owned(),
                 );
             } else {
-                panic!("unexpected annotation: {expected}");
+                panic!("unexpected annotation: {expected} @ {range:?}");
             }
             had_annotations = true;
         }
     }
     assert!(had_annotations || allow_none, "no `//^` annotations found");
 
-    let mut defs: Vec<DefWithBodyId> = Vec::new();
+    let mut defs: Vec<(DefWithBodyId, Crate)> = Vec::new();
     for file_id in files {
-        let module = db.module_for_file_opt(file_id);
+        let module = db.module_for_file_opt(file_id.file_id(&db));
         let module = match module {
             Some(m) => m,
             None => continue,
         };
         let def_map = module.def_map(&db);
-        visit_module(&db, &def_map, module.local_id, &mut |it| defs.push(it));
+        visit_module(&db, def_map, module.local_id, &mut |it| {
+            let def = match it {
+                ModuleDefId::FunctionId(it) => it.into(),
+                ModuleDefId::EnumVariantId(it) => it.into(),
+                ModuleDefId::ConstId(it) => it.into(),
+                ModuleDefId::StaticId(it) => it.into(),
+                _ => return,
+            };
+            defs.push((def, module.krate()))
+        });
     }
-    defs.sort_by_key(|def| match def {
+    defs.sort_by_key(|(def, _)| match def {
         DefWithBodyId::FunctionId(it) => {
             let loc = it.lookup(&db);
             loc.source(&db).value.syntax().text_range().start()
@@ -142,27 +137,33 @@ fn check_impl(ra_fixture: &str, allow_none: bool, only_types: bool, display_sour
             loc.source(&db).value.syntax().text_range().start()
         }
         DefWithBodyId::VariantId(it) => {
-            let loc = db.lookup_intern_enum(it.parent);
+            let loc = it.lookup(&db);
             loc.source(&db).value.syntax().text_range().start()
         }
     });
     let mut unexpected_type_mismatches = String::new();
-    for def in defs {
-        let (_body, body_source_map) = db.body_with_source_map(def);
+    for (def, krate) in defs {
+        let display_target = DisplayTarget::from_crate(&db, krate);
+        let (body, body_source_map) = db.body_with_source_map(def);
         let inference_result = db.infer(def);
 
-        for (pat, ty) in inference_result.type_of_pat.iter() {
+        for (pat, mut ty) in inference_result.type_of_pat.iter() {
+            if let Pat::Bind { id, .. } = body[pat] {
+                ty = &inference_result.type_of_binding[id];
+            }
             let node = match pat_node(&body_source_map, pat, &db) {
                 Some(value) => value,
                 None => continue,
             };
-            let range = node.as_ref().original_file_range(&db);
+            let range = node.as_ref().original_file_range_rooted(&db);
             if let Some(expected) = types.remove(&range) {
-                let actual = if display_source {
-                    ty.display_source_code(&db, def.module(&db)).unwrap()
-                } else {
-                    ty.display_test(&db).to_string()
-                };
+                let actual = salsa::attach(&db, || {
+                    if display_source {
+                        ty.display_source_code(&db, def.module(&db), true).unwrap()
+                    } else {
+                        ty.display_test(&db, display_target).to_string()
+                    }
+                });
                 assert_eq!(actual, expected, "type annotation differs at {:#?}", range.range);
             }
         }
@@ -172,13 +173,15 @@ fn check_impl(ra_fixture: &str, allow_none: bool, only_types: bool, display_sour
                 Some(value) => value,
                 None => continue,
             };
-            let range = node.as_ref().original_file_range(&db);
+            let range = node.as_ref().original_file_range_rooted(&db);
             if let Some(expected) = types.remove(&range) {
-                let actual = if display_source {
-                    ty.display_source_code(&db, def.module(&db)).unwrap()
-                } else {
-                    ty.display_test(&db).to_string()
-                };
+                let actual = salsa::attach(&db, || {
+                    if display_source {
+                        ty.display_source_code(&db, def.module(&db), true).unwrap()
+                    } else {
+                        ty.display_test(&db, display_target).to_string()
+                    }
+                });
                 assert_eq!(actual, expected, "type annotation differs at {:#?}", range.range);
             }
             if let Some(expected) = adjustments.remove(&range) {
@@ -191,22 +194,26 @@ fn check_impl(ra_fixture: &str, allow_none: bool, only_types: bool, display_sour
                     adjustments
                         .iter()
                         .map(|Adjustment { kind, .. }| format!("{kind:?}"))
-                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
             }
         }
 
         for (expr_or_pat, mismatch) in inference_result.type_mismatches() {
             let Some(node) = (match expr_or_pat {
-                hir_def::expr::ExprOrPatId::ExprId(expr) => expr_node(&body_source_map, expr, &db),
-                hir_def::expr::ExprOrPatId::PatId(pat) => pat_node(&body_source_map, pat, &db),
-            }) else { continue; };
-            let range = node.as_ref().original_file_range(&db);
-            let actual = format!(
-                "expected {}, got {}",
-                mismatch.expected.display_test(&db),
-                mismatch.actual.display_test(&db)
-            );
+                hir_def::hir::ExprOrPatId::ExprId(expr) => expr_node(&body_source_map, expr, &db),
+                hir_def::hir::ExprOrPatId::PatId(pat) => pat_node(&body_source_map, pat, &db),
+            }) else {
+                continue;
+            };
+            let range = node.as_ref().original_file_range_rooted(&db);
+            let actual = salsa::attach(&db, || {
+                format!(
+                    "expected {}, got {}",
+                    mismatch.expected.display_test(&db, display_target),
+                    mismatch.actual.display_test(&db, display_target)
+                )
+            });
             match mismatches.remove(&range) {
                 Some(annotation) => assert_eq!(actual, annotation),
                 None => format_to!(unexpected_type_mismatches, "{:?}: {}\n", range.range, actual),
@@ -246,7 +253,7 @@ fn expr_node(
 ) -> Option<InFile<SyntaxNode>> {
     Some(match body_source_map.expr_syntax(expr) {
         Ok(sp) => {
-            let root = db.parse_or_expand(sp.file_id).unwrap();
+            let root = db.parse_or_expand(sp.file_id);
             sp.map(|ptr| ptr.to_node(&root).syntax().clone())
         }
         Err(SyntheticSyntax) => return None,
@@ -260,19 +267,14 @@ fn pat_node(
 ) -> Option<InFile<SyntaxNode>> {
     Some(match body_source_map.pat_syntax(pat) {
         Ok(sp) => {
-            let root = db.parse_or_expand(sp.file_id).unwrap();
-            sp.map(|ptr| {
-                ptr.either(
-                    |it| it.to_node(&root).syntax().clone(),
-                    |it| it.to_node(&root).syntax().clone(),
-                )
-            })
+            let root = db.parse_or_expand(sp.file_id);
+            sp.map(|ptr| ptr.to_node(&root).syntax().clone())
         }
         Err(SyntheticSyntax) => return None,
     })
 }
 
-fn infer(ra_fixture: &str) -> String {
+fn infer(#[rust_analyzer::rust_fixture] ra_fixture: &str) -> String {
     infer_with_mismatches(ra_fixture, false)
 }
 
@@ -283,33 +285,43 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
     let mut buf = String::new();
 
     let mut infer_def = |inference_result: Arc<InferenceResult>,
-                         body_source_map: Arc<BodySourceMap>| {
+                         body: Arc<Body>,
+                         body_source_map: Arc<BodySourceMap>,
+                         krate: Crate| {
+        let display_target = DisplayTarget::from_crate(&db, krate);
         let mut types: Vec<(InFile<SyntaxNode>, &Ty)> = Vec::new();
         let mut mismatches: Vec<(InFile<SyntaxNode>, &TypeMismatch)> = Vec::new();
 
-        for (pat, ty) in inference_result.type_of_pat.iter() {
-            let syntax_ptr = match body_source_map.pat_syntax(pat) {
+        if let Some(self_param) = body.self_param {
+            let ty = &inference_result.type_of_binding[self_param];
+            if let Some(syntax_ptr) = body_source_map.self_param_syntax() {
+                let root = db.parse_or_expand(syntax_ptr.file_id);
+                let node = syntax_ptr.map(|ptr| ptr.to_node(&root).syntax().clone());
+                types.push((node, ty));
+            }
+        }
+
+        for (pat, mut ty) in inference_result.type_of_pat.iter() {
+            if let Pat::Bind { id, .. } = body[pat] {
+                ty = &inference_result.type_of_binding[id];
+            }
+            let node = match body_source_map.pat_syntax(pat) {
                 Ok(sp) => {
-                    let root = db.parse_or_expand(sp.file_id).unwrap();
-                    sp.map(|ptr| {
-                        ptr.either(
-                            |it| it.to_node(&root).syntax().clone(),
-                            |it| it.to_node(&root).syntax().clone(),
-                        )
-                    })
+                    let root = db.parse_or_expand(sp.file_id);
+                    sp.map(|ptr| ptr.to_node(&root).syntax().clone())
                 }
                 Err(SyntheticSyntax) => continue,
             };
-            types.push((syntax_ptr.clone(), ty));
+            types.push((node.clone(), ty));
             if let Some(mismatch) = inference_result.type_mismatch_for_pat(pat) {
-                mismatches.push((syntax_ptr, mismatch));
+                mismatches.push((node, mismatch));
             }
         }
 
         for (expr, ty) in inference_result.type_of_expr.iter() {
             let node = match body_source_map.expr_syntax(expr) {
                 Ok(sp) => {
-                    let root = db.parse_or_expand(sp.file_id).unwrap();
+                    let root = db.parse_or_expand(sp.file_id);
                     sp.map(|ptr| ptr.to_node(&root).syntax().clone())
                 }
                 Err(SyntheticSyntax) => continue,
@@ -327,18 +339,18 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
         });
         for (node, ty) in &types {
             let (range, text) = if let Some(self_param) = ast::SelfParam::cast(node.value.clone()) {
-                (self_param.name().unwrap().syntax().text_range(), "self".to_string())
+                (self_param.name().unwrap().syntax().text_range(), "self".to_owned())
             } else {
                 (node.value.text_range(), node.value.text().to_string().replace('\n', " "))
             };
-            let macro_prefix = if node.file_id != file_id.into() { "!" } else { "" };
+            let macro_prefix = if node.file_id != file_id { "!" } else { "" };
             format_to!(
                 buf,
                 "{}{:?} '{}': {}\n",
                 macro_prefix,
                 range,
                 ellipsize(text, 15),
-                ty.display_test(&db)
+                ty.display_test(&db, display_target)
             );
         }
         if include_mismatches {
@@ -348,25 +360,34 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
             });
             for (src_ptr, mismatch) in &mismatches {
                 let range = src_ptr.value.text_range();
-                let macro_prefix = if src_ptr.file_id != file_id.into() { "!" } else { "" };
+                let macro_prefix = if src_ptr.file_id != file_id { "!" } else { "" };
                 format_to!(
                     buf,
                     "{}{:?}: expected {}, got {}\n",
                     macro_prefix,
                     range,
-                    mismatch.expected.display_test(&db),
-                    mismatch.actual.display_test(&db),
+                    mismatch.expected.display_test(&db, display_target),
+                    mismatch.actual.display_test(&db, display_target),
                 );
             }
         }
     };
 
-    let module = db.module_for_file(file_id);
+    let module = db.module_for_file(file_id.file_id(&db));
     let def_map = module.def_map(&db);
 
-    let mut defs: Vec<DefWithBodyId> = Vec::new();
-    visit_module(&db, &def_map, module.local_id, &mut |it| defs.push(it));
-    defs.sort_by_key(|def| match def {
+    let mut defs: Vec<(DefWithBodyId, Crate)> = Vec::new();
+    visit_module(&db, def_map, module.local_id, &mut |it| {
+        let def = match it {
+            ModuleDefId::FunctionId(it) => it.into(),
+            ModuleDefId::EnumVariantId(it) => it.into(),
+            ModuleDefId::ConstId(it) => it.into(),
+            ModuleDefId::StaticId(it) => it.into(),
+            _ => return,
+        };
+        defs.push((def, module.krate()))
+    });
+    defs.sort_by_key(|(def, _)| match def {
         DefWithBodyId::FunctionId(it) => {
             let loc = it.lookup(&db);
             loc.source(&db).value.syntax().text_range().start()
@@ -380,44 +401,46 @@ fn infer_with_mismatches(content: &str, include_mismatches: bool) -> String {
             loc.source(&db).value.syntax().text_range().start()
         }
         DefWithBodyId::VariantId(it) => {
-            let loc = db.lookup_intern_enum(it.parent);
+            let loc = it.lookup(&db);
             loc.source(&db).value.syntax().text_range().start()
         }
     });
-    for def in defs {
-        let (_body, source_map) = db.body_with_source_map(def);
+    for (def, krate) in defs {
+        let (body, source_map) = db.body_with_source_map(def);
         let infer = db.infer(def);
-        infer_def(infer, source_map);
+        salsa::attach(&db, || {
+            infer_def(infer, body, source_map, krate);
+        })
     }
 
     buf.truncate(buf.trim_end().len());
     buf
 }
 
-fn visit_module(
+pub(crate) fn visit_module(
     db: &TestDB,
     crate_def_map: &DefMap,
     module_id: LocalModuleId,
-    cb: &mut dyn FnMut(DefWithBodyId),
+    cb: &mut dyn FnMut(ModuleDefId),
 ) {
     visit_scope(db, crate_def_map, &crate_def_map[module_id].scope, cb);
     for impl_id in crate_def_map[module_id].scope.impls() {
-        let impl_data = db.impl_data(impl_id);
-        for &item in impl_data.items.iter() {
+        let impl_data = impl_id.impl_items(db);
+        for &(_, item) in impl_data.items.iter() {
             match item {
                 AssocItemId::FunctionId(it) => {
-                    let def = it.into();
-                    cb(def);
-                    let body = db.body(def);
+                    let body = db.body(it.into());
+                    cb(it.into());
                     visit_body(db, &body, cb);
                 }
                 AssocItemId::ConstId(it) => {
-                    let def = it.into();
-                    cb(def);
-                    let body = db.body(def);
+                    let body = db.body(it.into());
+                    cb(it.into());
                     visit_body(db, &body, cb);
                 }
-                AssocItemId::TypeAliasId(_) => (),
+                AssocItemId::TypeAliasId(it) => {
+                    cb(it.into());
+                }
             }
         }
     }
@@ -426,47 +449,37 @@ fn visit_module(
         db: &TestDB,
         crate_def_map: &DefMap,
         scope: &ItemScope,
-        cb: &mut dyn FnMut(DefWithBodyId),
+        cb: &mut dyn FnMut(ModuleDefId),
     ) {
         for decl in scope.declarations() {
+            cb(decl);
             match decl {
                 ModuleDefId::FunctionId(it) => {
-                    let def = it.into();
-                    cb(def);
-                    let body = db.body(def);
+                    let body = db.body(it.into());
                     visit_body(db, &body, cb);
                 }
                 ModuleDefId::ConstId(it) => {
-                    let def = it.into();
-                    cb(def);
-                    let body = db.body(def);
+                    let body = db.body(it.into());
                     visit_body(db, &body, cb);
                 }
                 ModuleDefId::StaticId(it) => {
-                    let def = it.into();
-                    cb(def);
-                    let body = db.body(def);
+                    let body = db.body(it.into());
                     visit_body(db, &body, cb);
                 }
                 ModuleDefId::AdtId(hir_def::AdtId::EnumId(it)) => {
-                    db.enum_data(it)
-                        .variants
-                        .iter()
-                        .map(|(id, _)| hir_def::EnumVariantId { parent: it, local_id: id })
-                        .for_each(|it| {
-                            let def = it.into();
-                            cb(def);
-                            let body = db.body(def);
-                            visit_body(db, &body, cb);
-                        });
+                    it.enum_variants(db).variants.iter().for_each(|&(it, _, _)| {
+                        let body = db.body(it.into());
+                        cb(it.into());
+                        visit_body(db, &body, cb);
+                    });
                 }
                 ModuleDefId::TraitId(it) => {
-                    let trait_data = db.trait_data(it);
+                    let trait_data = it.trait_items(db);
                     for &(_, item) in trait_data.items.iter() {
                         match item {
                             AssocItemId::FunctionId(it) => cb(it.into()),
                             AssocItemId::ConstId(it) => cb(it.into()),
-                            AssocItemId::TypeAliasId(_) => (),
+                            AssocItemId::TypeAliasId(it) => cb(it.into()),
                         }
                     }
                 }
@@ -476,10 +489,10 @@ fn visit_module(
         }
     }
 
-    fn visit_body(db: &TestDB, body: &Body, cb: &mut dyn FnMut(DefWithBodyId)) {
+    fn visit_body(db: &TestDB, body: &Body, cb: &mut dyn FnMut(ModuleDefId)) {
         for (_, def_map) in body.blocks(db) {
             for (mod_id, _) in def_map.modules() {
-                visit_module(db, &def_map, mod_id, cb);
+                visit_module(db, def_map, mod_id, cb);
             }
         }
     }
@@ -503,13 +516,13 @@ fn ellipsize(mut text: String, max_len: usize) -> String {
     text
 }
 
-fn check_infer(ra_fixture: &str, expect: Expect) {
+fn check_infer(#[rust_analyzer::rust_fixture] ra_fixture: &str, expect: Expect) {
     let mut actual = infer(ra_fixture);
     actual.push('\n');
     expect.assert_eq(&actual);
 }
 
-fn check_infer_with_mismatches(ra_fixture: &str, expect: Expect) {
+fn check_infer_with_mismatches(#[rust_analyzer::rust_fixture] ra_fixture: &str, expect: Expect) {
     let mut actual = infer_with_mismatches(ra_fixture, true);
     actual.push('\n');
     expect.assert_eq(&actual);
@@ -543,10 +556,16 @@ fn salsa_bug() {
     ",
     );
 
-    let module = db.module_for_file(pos.file_id);
+    let module = db.module_for_file(pos.file_id.file_id(&db));
     let crate_def_map = module.def_map(&db);
-    visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
-        db.infer(def);
+    visit_module(&db, crate_def_map, module.local_id, &mut |def| {
+        db.infer(match def {
+            ModuleDefId::FunctionId(it) => it.into(),
+            ModuleDefId::EnumVariantId(it) => it.into(),
+            ModuleDefId::ConstId(it) => it.into(),
+            ModuleDefId::StaticId(it) => it.into(),
+            _ => return,
+        });
     });
 
     let new_text = "
@@ -572,14 +591,19 @@ fn salsa_bug() {
             let x = 1;
             x.push(1);
         }
-    "
-    .to_string();
+    ";
 
-    db.set_file_text(pos.file_id, Arc::new(new_text));
+    db.set_file_text(pos.file_id.file_id(&db), new_text);
 
-    let module = db.module_for_file(pos.file_id);
+    let module = db.module_for_file(pos.file_id.file_id(&db));
     let crate_def_map = module.def_map(&db);
-    visit_module(&db, &crate_def_map, module.local_id, &mut |def| {
-        db.infer(def);
+    visit_module(&db, crate_def_map, module.local_id, &mut |def| {
+        db.infer(match def {
+            ModuleDefId::FunctionId(it) => it.into(),
+            ModuleDefId::EnumVariantId(it) => it.into(),
+            ModuleDefId::ConstId(it) => it.into(),
+            ModuleDefId::StaticId(it) => it.into(),
+            _ => return,
+        });
     });
 }

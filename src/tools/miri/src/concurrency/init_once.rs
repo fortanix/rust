@@ -1,31 +1,10 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::num::NonZeroU32;
+use std::rc::Rc;
 
-use rustc_index::Idx;
-
-use super::sync::EvalContextExtPriv as _;
-use super::thread::MachineCallback;
+use super::thread::DynUnblockCallback;
 use super::vector_clock::VClock;
 use crate::*;
-
-declare_id!(InitOnceId);
-
-/// A thread waiting on an InitOnce object.
-struct InitOnceWaiter<'mir, 'tcx> {
-    /// The thread that is waiting.
-    thread: ThreadId,
-    /// The callback that should be executed, after the thread has been woken up.
-    callback: Box<dyn MachineCallback<'mir, 'tcx> + 'tcx>,
-}
-
-impl<'mir, 'tcx> std::fmt::Debug for InitOnceWaiter<'mir, 'tcx> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("InitOnce")
-            .field("thread", &self.thread)
-            .field("callback", &"dyn MachineCallback")
-            .finish()
-    }
-}
 
 #[derive(Default, Debug, Copy, Clone, PartialEq, Eq)]
 /// The current status of a one time initialization.
@@ -38,131 +17,76 @@ pub enum InitOnceStatus {
 
 /// The one time initialization state.
 #[derive(Default, Debug)]
-pub(super) struct InitOnce<'mir, 'tcx> {
+pub(super) struct InitOnce {
     status: InitOnceStatus,
-    waiters: VecDeque<InitOnceWaiter<'mir, 'tcx>>,
-    data_race: VClock,
+    waiters: VecDeque<ThreadId>,
+    clock: VClock,
 }
 
-impl<'mir, 'tcx> VisitTags for InitOnce<'mir, 'tcx> {
-    fn visit_tags(&self, visit: &mut dyn FnMut(BorTag)) {
-        for waiter in self.waiters.iter() {
-            waiter.callback.visit_tags(visit);
-        }
-    }
-}
-
-impl<'mir, 'tcx: 'mir> EvalContextExtPriv<'mir, 'tcx> for crate::MiriInterpCx<'mir, 'tcx> {}
-trait EvalContextExtPriv<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
-    /// Synchronize with the previous initialization attempt of an InitOnce.
+impl InitOnce {
     #[inline]
-    fn init_once_observe_attempt(&mut self, id: InitOnceId) {
-        let this = self.eval_context_mut();
-        let current_thread = this.get_active_thread();
-
-        if let Some(data_race) = &this.machine.data_race {
-            data_race.validate_lock_acquire(
-                &this.machine.threads.sync.init_onces[id].data_race,
-                current_thread,
-            );
-        }
-    }
-
-    #[inline]
-    fn init_once_wake_waiter(
-        &mut self,
-        id: InitOnceId,
-        waiter: InitOnceWaiter<'mir, 'tcx>,
-    ) -> InterpResult<'tcx> {
-        let this = self.eval_context_mut();
-        let current_thread = this.get_active_thread();
-
-        this.unblock_thread(waiter.thread);
-
-        // Call callback, with the woken-up thread as `current`.
-        this.set_active_thread(waiter.thread);
-        this.init_once_observe_attempt(id);
-        waiter.callback.call(this)?;
-        this.set_active_thread(current_thread);
-
-        Ok(())
-    }
-}
-
-impl<'mir, 'tcx: 'mir> EvalContextExt<'mir, 'tcx> for crate::MiriInterpCx<'mir, 'tcx> {}
-pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
-    fn init_once_get_or_create_id(
-        &mut self,
-        lock_op: &OpTy<'tcx, Provenance>,
-        offset: u64,
-    ) -> InterpResult<'tcx, InitOnceId> {
-        let this = self.eval_context_mut();
-        this.init_once_get_or_create(|ecx, next_id| ecx.get_or_create_id(next_id, lock_op, offset))
-    }
-
-    /// Provides the closure with the next InitOnceId. Creates that InitOnce if the closure returns None,
-    /// otherwise returns the value from the closure.
-    #[inline]
-    fn init_once_get_or_create<F>(&mut self, existing: F) -> InterpResult<'tcx, InitOnceId>
-    where
-        F: FnOnce(
-            &mut MiriInterpCx<'mir, 'tcx>,
-            InitOnceId,
-        ) -> InterpResult<'tcx, Option<InitOnceId>>,
-    {
-        let this = self.eval_context_mut();
-        let next_index = this.machine.threads.sync.init_onces.next_index();
-        if let Some(old) = existing(this, next_index)? {
-            Ok(old)
-        } else {
-            let new_index = this.machine.threads.sync.init_onces.push(Default::default());
-            assert_eq!(next_index, new_index);
-            Ok(new_index)
-        }
-    }
-
-    #[inline]
-    fn init_once_status(&mut self, id: InitOnceId) -> InitOnceStatus {
-        let this = self.eval_context_ref();
-        this.machine.threads.sync.init_onces[id].status
-    }
-
-    /// Put the thread into the queue waiting for the initialization.
-    #[inline]
-    fn init_once_enqueue_and_block(
-        &mut self,
-        id: InitOnceId,
-        thread: ThreadId,
-        callback: Box<dyn MachineCallback<'mir, 'tcx> + 'tcx>,
-    ) {
-        let this = self.eval_context_mut();
-        let init_once = &mut this.machine.threads.sync.init_onces[id];
-        assert_ne!(init_once.status, InitOnceStatus::Complete, "queueing on complete init once");
-        init_once.waiters.push_back(InitOnceWaiter { thread, callback });
-        this.block_thread(thread);
+    pub fn status(&self) -> InitOnceStatus {
+        self.status
     }
 
     /// Begin initializing this InitOnce. Must only be called after checking that it is currently
     /// uninitialized.
     #[inline]
-    fn init_once_begin(&mut self, id: InitOnceId) {
-        let this = self.eval_context_mut();
-        let init_once = &mut this.machine.threads.sync.init_onces[id];
+    pub fn begin(&mut self) {
         assert_eq!(
-            init_once.status,
+            self.status(),
             InitOnceStatus::Uninitialized,
             "beginning already begun or complete init once"
         );
-        init_once.status = InitOnceStatus::Begun;
+        self.status = InitOnceStatus::Begun;
+    }
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct InitOnceRef(Rc<RefCell<InitOnce>>);
+
+impl InitOnceRef {
+    pub fn new() -> Self {
+        Self(Default::default())
+    }
+
+    pub fn status(&self) -> InitOnceStatus {
+        self.0.borrow().status()
+    }
+
+    pub fn begin(&self) {
+        self.0.borrow_mut().begin();
+    }
+}
+
+impl VisitProvenance for InitOnceRef {
+    // InitOnce contains no provenance.
+    fn visit_provenance(&self, _visit: &mut VisitWith<'_>) {}
+}
+
+impl<'tcx> EvalContextExt<'tcx> for crate::MiriInterpCx<'tcx> {}
+pub trait EvalContextExt<'tcx>: crate::MiriInterpCxExt<'tcx> {
+    /// Put the thread into the queue waiting for the initialization.
+    #[inline]
+    fn init_once_enqueue_and_block(
+        &mut self,
+        init_once_ref: InitOnceRef,
+        callback: DynUnblockCallback<'tcx>,
+    ) {
+        let this = self.eval_context_mut();
+        let thread = this.active_thread();
+        let mut init_once = init_once_ref.0.borrow_mut();
+        assert_ne!(init_once.status, InitOnceStatus::Complete, "queueing on complete init once");
+
+        init_once.waiters.push_back(thread);
+        this.block_thread(BlockReason::InitOnce, None, callback);
     }
 
     #[inline]
-    fn init_once_complete(&mut self, id: InitOnceId) -> InterpResult<'tcx> {
+    fn init_once_complete(&mut self, init_once_ref: &InitOnceRef) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        let current_thread = this.get_active_thread();
-        let current_span = this.machine.current_span();
-        let init_once = &mut this.machine.threads.sync.init_onces[id];
 
+        let mut init_once = init_once_ref.0.borrow_mut();
         assert_eq!(
             init_once.status,
             InitOnceStatus::Begun,
@@ -172,59 +96,56 @@ pub trait EvalContextExt<'mir, 'tcx: 'mir>: crate::MiriInterpCxExt<'mir, 'tcx> {
         init_once.status = InitOnceStatus::Complete;
 
         // Each complete happens-before the end of the wait
-        if let Some(data_race) = &this.machine.data_race {
-            data_race.validate_lock_release(&mut init_once.data_race, current_thread, current_span);
-        }
+        this.release_clock(|clock| init_once.clock.clone_from(clock))?;
 
         // Wake up everyone.
         // need to take the queue to avoid having `this` be borrowed multiple times
-        for waiter in std::mem::take(&mut init_once.waiters) {
-            this.init_once_wake_waiter(id, waiter)?;
+        let waiters = std::mem::take(&mut init_once.waiters);
+        drop(init_once);
+        for waiter in waiters {
+            this.unblock_thread(waiter, BlockReason::InitOnce)?;
         }
 
-        Ok(())
+        interp_ok(())
     }
 
     #[inline]
-    fn init_once_fail(&mut self, id: InitOnceId) -> InterpResult<'tcx> {
+    fn init_once_fail(&mut self, init_once_ref: &InitOnceRef) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
-        let current_thread = this.get_active_thread();
-        let current_span = this.machine.current_span();
-        let init_once = &mut this.machine.threads.sync.init_onces[id];
+        let mut init_once = init_once_ref.0.borrow_mut();
         assert_eq!(
             init_once.status,
             InitOnceStatus::Begun,
             "failing already completed or uninit init once"
         );
+        // This is again uninitialized.
+        init_once.status = InitOnceStatus::Uninitialized;
 
         // Each complete happens-before the end of the wait
-        if let Some(data_race) = &this.machine.data_race {
-            data_race.validate_lock_release(&mut init_once.data_race, current_thread, current_span);
-        }
+        this.release_clock(|clock| init_once.clock.clone_from(clock))?;
 
         // Wake up one waiting thread, so they can go ahead and try to init this.
         if let Some(waiter) = init_once.waiters.pop_front() {
-            this.init_once_wake_waiter(id, waiter)?;
-        } else {
-            // Nobody there to take this, so go back to 'uninit'
-            init_once.status = InitOnceStatus::Uninitialized;
+            drop(init_once);
+            this.unblock_thread(waiter, BlockReason::InitOnce)?;
         }
 
-        Ok(())
+        interp_ok(())
     }
 
     /// Synchronize with the previous completion of an InitOnce.
     /// Must only be called after checking that it is complete.
     #[inline]
-    fn init_once_observe_completed(&mut self, id: InitOnceId) {
+    fn init_once_observe_completed(&mut self, init_once_ref: &InitOnceRef) -> InterpResult<'tcx> {
         let this = self.eval_context_mut();
+        let init_once = init_once_ref.0.borrow();
 
         assert_eq!(
-            this.init_once_status(id),
+            init_once.status,
             InitOnceStatus::Complete,
             "observing the completion of incomplete init once"
         );
 
-        this.init_once_observe_attempt(id);
+        this.acquire_clock(&init_once.clock)
     }
 }

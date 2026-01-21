@@ -1,8 +1,9 @@
+use rustc_abi::{FieldIdx, VariantIdx};
+use rustc_hir::HirId;
+use rustc_macros::{HashStable, TyDecodable, TyEncodable, TypeFoldable, TypeVisitable};
+
 use crate::ty;
 use crate::ty::Ty;
-
-use rustc_hir::HirId;
-use rustc_target::abi::{FieldIdx, VariantIdx};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
 #[derive(TypeFoldable, TypeVisitable)]
@@ -36,6 +37,15 @@ pub enum ProjectionKind {
 
     /// A subslice covering a range of values like `B[x..y]`.
     Subslice,
+
+    /// A conversion from an opaque type to its hidden type so we can
+    /// do further projections on it.
+    ///
+    /// This is unused if `-Znext-solver` is enabled.
+    OpaqueCast,
+
+    /// `unwrap_binder!(expr)`
+    UnwrapUnsafeBinder,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
@@ -48,7 +58,10 @@ pub struct Projection<'tcx> {
     pub kind: ProjectionKind,
 }
 
-/// A `Place` represents how a value is located in memory.
+/// A `Place` represents how a value is located in memory. This does not
+/// always correspond to a syntactic place expression. For example, when
+/// processing a pattern, a `Place` can be used to refer to the sub-value
+/// currently being inspected.
 ///
 /// This is an HIR version of [`rustc_middle::mir::Place`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
@@ -62,7 +75,10 @@ pub struct Place<'tcx> {
     pub projections: Vec<Projection<'tcx>>,
 }
 
-/// A `PlaceWithHirId` represents how a value is located in memory.
+/// A `PlaceWithHirId` represents how a value is located in memory. This does not
+/// always correspond to a syntactic place expression. For example, when
+/// processing a pattern, a `Place` can be used to refer to the sub-value
+/// currently being inspected.
 ///
 /// This is an HIR version of [`rustc_middle::mir::Place`].
 #[derive(Clone, Debug, PartialEq, Eq, Hash, TyEncodable, TyDecodable, HashStable)]
@@ -92,7 +108,7 @@ impl<'tcx> Place<'tcx> {
     /// The types are in the reverse order that they are applied. So if
     /// `x: &*const u32` and the `Place` is `**x`, then the types returned are
     ///`*const u32` then `&*const u32`.
-    pub fn deref_tys(&self) -> impl Iterator<Item = Ty<'tcx>> + '_ {
+    pub fn deref_tys(&self) -> impl Iterator<Item = Ty<'tcx>> {
         self.projections.iter().enumerate().rev().filter_map(move |(index, proj)| {
             if ProjectionKind::Deref == proj.kind {
                 Some(self.ty_before_projection(index))

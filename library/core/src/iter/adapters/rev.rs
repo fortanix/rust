@@ -1,5 +1,5 @@
 use crate::iter::{FusedIterator, TrustedLen};
-use crate::num::NonZeroUsize;
+use crate::num::NonZero;
 use crate::ops::Try;
 
 /// A double-ended iterator with the direction inverted.
@@ -20,6 +20,25 @@ impl<T> Rev<T> {
     pub(in crate::iter) fn new(iter: T) -> Rev<T> {
         Rev { iter }
     }
+
+    /// Consumes the `Rev`, returning the inner iterator.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// #![feature(rev_into_inner)]
+    ///
+    /// let s = "foobar";
+    /// let mut rev = s.chars().rev();
+    /// assert_eq!(rev.next(), Some('r'));
+    /// assert_eq!(rev.next(), Some('a'));
+    /// assert_eq!(rev.next(), Some('b'));
+    /// assert_eq!(rev.into_inner().collect::<String>(), "foo");
+    /// ```
+    #[unstable(feature = "rev_into_inner", issue = "144277")]
+    pub fn into_inner(self) -> T {
+        self.iter
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -39,7 +58,7 @@ where
     }
 
     #[inline]
-    fn advance_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         self.iter.advance_back_by(n)
     }
 
@@ -84,7 +103,7 @@ where
     }
 
     #[inline]
-    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, n: usize) -> Result<(), NonZero<usize>> {
         self.iter.advance_by(n)
     }
 

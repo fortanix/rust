@@ -2,6 +2,8 @@
 
 #![stable(feature = "rust1", since = "1.0.0")]
 
+use crate::ascii::Char as AsciiChar;
+
 /// A trait for giving a type a useful default value.
 ///
 /// Sometimes, you want to fall back to some kind of default value, and
@@ -31,7 +33,7 @@
 /// }
 /// ```
 ///
-/// Now, you get all of the default values. Rust implements `Default` for various primitives types.
+/// Now, you get all of the default values. Rust implements `Default` for various primitive types.
 ///
 /// If you want to override a particular option, but still retain the other defaults:
 ///
@@ -69,6 +71,8 @@
 ///
 /// You cannot use the `#[default]` attribute on non-unit or non-exhaustive variants.
 ///
+/// The `#[default]` attribute was stabilized in Rust 1.62.0.
+///
 /// ## How can I implement `Default`?
 ///
 /// Provide an implementation for the `default()` method that returns the value of
@@ -97,9 +101,10 @@
 ///     bar: f32,
 /// }
 /// ```
-#[cfg_attr(not(test), rustc_diagnostic_item = "Default")]
+#[rustc_diagnostic_item = "Default"]
 #[stable(feature = "rust1", since = "1.0.0")]
-pub trait Default: Sized {
+#[rustc_const_unstable(feature = "const_default", issue = "143894")]
+pub const trait Default: Sized {
     /// Returns the "default value" for a type.
     ///
     /// Default values are often some kind of initial value, identity value, or anything else that
@@ -130,52 +135,8 @@ pub trait Default: Sized {
     /// }
     /// ```
     #[stable(feature = "rust1", since = "1.0.0")]
+    #[rustc_diagnostic_item = "default_fn"]
     fn default() -> Self;
-}
-
-/// Return the default value of a type according to the `Default` trait.
-///
-/// The type to return is inferred from context; this is equivalent to
-/// `Default::default()` but shorter to type.
-///
-/// For example:
-/// ```
-/// #![feature(default_free_fn)]
-///
-/// use std::default::default;
-///
-/// #[derive(Default)]
-/// struct AppConfig {
-///     foo: FooConfig,
-///     bar: BarConfig,
-/// }
-///
-/// #[derive(Default)]
-/// struct FooConfig {
-///     foo: i32,
-/// }
-///
-/// #[derive(Default)]
-/// struct BarConfig {
-///     bar: f32,
-///     baz: u8,
-/// }
-///
-/// fn main() {
-///     let options = AppConfig {
-///         foo: default(),
-///         bar: BarConfig {
-///             bar: 10.1,
-///             ..default()
-///         },
-///     };
-/// }
-/// ```
-#[unstable(feature = "default_free_fn", issue = "73014")]
-#[must_use]
-#[inline]
-pub fn default<T: Default>() -> T {
-    Default::default()
 }
 
 /// Derive macro generating an impl of the trait `Default`.
@@ -189,8 +150,9 @@ pub macro Default($item:item) {
 macro_rules! default_impl {
     ($t:ty, $v:expr, $doc:tt) => {
         #[stable(feature = "rust1", since = "1.0.0")]
-        impl Default for $t {
-            #[inline]
+        #[rustc_const_unstable(feature = "const_default", issue = "143894")]
+        impl const Default for $t {
+            #[inline(always)]
             #[doc = $doc]
             fn default() -> $t {
                 $v
@@ -202,6 +164,7 @@ macro_rules! default_impl {
 default_impl! { (), (), "Returns the default value of `()`" }
 default_impl! { bool, false, "Returns the default value of `false`" }
 default_impl! { char, '\x00', "Returns the default value of `\\x00`" }
+default_impl! { AsciiChar, AsciiChar::Null, "Returns the default value of `Null`" }
 
 default_impl! { usize, 0, "Returns the default value of `0`" }
 default_impl! { u8, 0, "Returns the default value of `0`" }
@@ -217,5 +180,7 @@ default_impl! { i32, 0, "Returns the default value of `0`" }
 default_impl! { i64, 0, "Returns the default value of `0`" }
 default_impl! { i128, 0, "Returns the default value of `0`" }
 
+default_impl! { f16, 0.0f16, "Returns the default value of `0.0`" }
 default_impl! { f32, 0.0f32, "Returns the default value of `0.0`" }
 default_impl! { f64, 0.0f64, "Returns the default value of `0.0`" }
+default_impl! { f128, 0.0f128, "Returns the default value of `0.0`" }

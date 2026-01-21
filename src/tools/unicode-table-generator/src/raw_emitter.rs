@@ -1,7 +1,8 @@
-use crate::fmt_list;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{self, Write};
 use std::ops::Range;
+
+use crate::fmt_list;
 
 #[derive(Clone)]
 pub struct RawEmitter {
@@ -23,6 +24,7 @@ impl RawEmitter {
     }
 
     fn emit_bitset(&mut self, ranges: &[Range<u32>]) -> Result<(), String> {
+        let first_code_point = ranges.first().unwrap().start;
         let last_code_point = ranges.last().unwrap().end;
         // bitset for every bit in the codepoint range
         //
@@ -75,7 +77,7 @@ impl RawEmitter {
 
         writeln!(
             &mut self.file,
-            "const BITSET_CANONICAL: &'static [u64; {}] = &[{}];",
+            "static BITSET_CANONICAL: [u64; {}] = [{}];",
             canonicalized.canonical_words.len(),
             fmt_list(canonicalized.canonical_words.iter().map(|v| Bits(*v))),
         )
@@ -83,7 +85,7 @@ impl RawEmitter {
         self.bytes_used += 8 * canonicalized.canonical_words.len();
         writeln!(
             &mut self.file,
-            "const BITSET_MAPPING: &'static [(u8, u8); {}] = &[{}];",
+            "static BITSET_MAPPING: [(u8, u8); {}] = [{}];",
             canonicalized.canonicalized_words.len(),
             fmt_list(&canonicalized.canonicalized_words),
         )
@@ -95,13 +97,12 @@ impl RawEmitter {
 
         self.blank_line();
 
-        writeln!(
-            &mut self.file,
-            r#"#[rustc_const_unstable(feature = "const_unicode_case_lookup", issue = "101400")]"#
-        )
-        .unwrap();
         writeln!(&mut self.file, "pub const fn lookup(c: char) -> bool {{").unwrap();
-        writeln!(&mut self.file, "    super::bitset_search(",).unwrap();
+        writeln!(&mut self.file, "    debug_assert!(!c.is_ascii());").unwrap();
+        if first_code_point > 0x7f {
+            writeln!(&mut self.file, "    (c as u32) >= {first_code_point:#04x} &&").unwrap();
+        }
+        writeln!(&mut self.file, "    super::bitset_search(").unwrap();
         writeln!(&mut self.file, "        c as u32,").unwrap();
         writeln!(&mut self.file, "        &BITSET_CHUNKS_MAP,").unwrap();
         writeln!(&mut self.file, "        &BITSET_INDEX_CHUNKS,").unwrap();
@@ -134,7 +135,7 @@ impl RawEmitter {
 
         writeln!(
             &mut self.file,
-            "const BITSET_CHUNKS_MAP: &'static [u8; {}] = &[{}];",
+            "static BITSET_CHUNKS_MAP: [u8; {}] = [{}];",
             chunk_indices.len(),
             fmt_list(&chunk_indices),
         )
@@ -142,7 +143,7 @@ impl RawEmitter {
         self.bytes_used += chunk_indices.len();
         writeln!(
             &mut self.file,
-            "const BITSET_INDEX_CHUNKS: &'static [[u8; {}]; {}] = &[{}];",
+            "static BITSET_INDEX_CHUNKS: [[u8; {}]; {}] = [{}];",
             chunk_length,
             chunks.len(),
             fmt_list(chunks.iter()),
@@ -156,10 +157,10 @@ pub fn emit_codepoints(emitter: &mut RawEmitter, ranges: &[Range<u32>]) {
     emitter.blank_line();
 
     let mut bitset = emitter.clone();
-    let bitset_ok = bitset.emit_bitset(&ranges).is_ok();
+    let bitset_ok = bitset.emit_bitset(ranges).is_ok();
 
     let mut skiplist = emitter.clone();
-    skiplist.emit_skiplist(&ranges);
+    skiplist.emit_skiplist(ranges);
 
     if bitset_ok && bitset.bytes_used <= skiplist.bytes_used {
         *emitter = bitset;
@@ -174,7 +175,7 @@ pub fn emit_whitespace(emitter: &mut RawEmitter, ranges: &[Range<u32>]) {
     emitter.blank_line();
 
     let mut cascading = emitter.clone();
-    cascading.emit_cascading_map(&ranges);
+    cascading.emit_cascading_map(ranges);
     *emitter = cascading;
     emitter.desc = String::from("cascading");
 }
@@ -272,7 +273,7 @@ impl Canonicalized {
         // for canonical when possible.
         while let Some((&to, _)) = mappings
             .iter()
-            .find(|(&to, _)| to == 0)
+            .find(|&(&to, _)| to == 0)
             .or_else(|| mappings.iter().max_by_key(|m| m.1.len()))
         {
             // Get the mapping with the most entries. Currently, no mapping can
@@ -311,10 +312,9 @@ impl Canonicalized {
                     }
                 }
             }
-            assert!(
-                unique_mapping
-                    .insert(to, UniqueMapping::Canonical(canonical_words.len()))
-                    .is_none()
+            assert_eq!(
+                unique_mapping.insert(to, UniqueMapping::Canonical(canonical_words.len())),
+                None
             );
             canonical_words.push(to);
 
@@ -340,14 +340,10 @@ impl Canonicalized {
         // We'll probably always have some slack though so this loop will still
         // be needed.
         for &w in unique_words {
-            if !unique_mapping.contains_key(&w) {
-                assert!(
-                    unique_mapping
-                        .insert(w, UniqueMapping::Canonical(canonical_words.len()))
-                        .is_none()
-                );
+            unique_mapping.entry(w).or_insert_with(|| {
                 canonical_words.push(w);
-            }
+                UniqueMapping::Canonical(canonical_words.len() - 1)
+            });
         }
         assert_eq!(canonicalized_words.len() + canonical_words.len(), unique_words.len());
         assert_eq!(unique_mapping.len(), unique_words.len());

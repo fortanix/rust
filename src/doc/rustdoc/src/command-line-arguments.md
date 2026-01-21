@@ -52,7 +52,7 @@ rustdoc 1.17.0 (56124baa9 2017-04-24)
 binary: rustdoc
 commit-hash: hash
 commit-date: date
-host: host-triple
+host: host-tuple
 release: 1.17.0
 LLVM version: 3.9
 ```
@@ -100,7 +100,8 @@ mod private { // this item is private and will not be documented
 }
 ```
 
-`--document-private-items` documents all items, even if they're not public.
+`--document-private-items` includes all non-public items in the generated documentation except for `#[doc(hidden)]` items.  Private items will be shown with a 🔒 icon.
+
 
 ## `-L`/`--library-path`: where to look for dependencies
 
@@ -130,6 +131,20 @@ $ rustdoc src/lib.rs --cfg feature="foo"
 This flag accepts the same values as `rustc --cfg`, and uses it to configure
 compilation. The example above uses `feature`, but any of the `cfg` values
 are acceptable.
+
+## `--check-cfg`: check configuration flags
+
+This flag accepts the same values as `rustc --check-cfg`, and uses it to
+check configuration flags.
+
+Using this flag looks like this:
+
+```bash
+$ rustdoc src/lib.rs --check-cfg='cfg(my_cfg, values("foo", "bar"))'
+```
+
+The example above check every well known names and values (`target_os`, `doc`, `test`, ...)
+and check the values of `my_cfg`: `foo` and `bar`.
 
 ## `--extern`: specify a dependency's location
 
@@ -207,6 +222,28 @@ For more, see [the chapter on documentation tests](write-documentation/documenta
 
 See also `--test`.
 
+## `--test-runtool`, `--test-runtool-arg`: program to run tests with; args to pass to it
+
+A doctest wrapper program can be specified with the `--test-runtool` flag.
+Rustdoc will execute that wrapper instead of the doctest executable when
+running tests. The first arguments to the wrapper will be any arguments
+specified with the `--test-runtool-arg` flag, followed by the path to the
+doctest executable to run.
+
+Using these options looks like this:
+
+```bash
+$ rustdoc src/lib.rs --test-runtool path/to/runner --test-runtool-arg --do-thing --test-runtool-arg --do-other-thing
+```
+
+For example, if you want to run your doctests under valgrind you might run:
+
+```bash
+$ rustdoc src/lib.rs --test-runtool valgrind
+```
+
+Another use case would be to run a test inside an emulator, or through a Virtual Machine.
+
 ## `--target`: generate documentation for the specified target triple
 
 Using this flag looks like this:
@@ -259,7 +296,7 @@ will be added.
 
 When rendering Rust files, this flag is ignored.
 
-## `--html-in-header`: include more HTML in <head>
+## `--html-in-header`: include more HTML in `<head>`
 
 Using this flag looks like this:
 
@@ -402,6 +439,12 @@ $ rustdoc src/lib.rs --crate-version 1.3.37
 When `rustdoc` receives this flag, it will print an extra "Version (version)" into the sidebar of
 the crate root's docs. You can use this flag to differentiate between different versions of your
 library's documentation.
+
+## `-`: load source code from the standard input
+
+If you specify `-` as the INPUT on the command line, then `rustdoc` will read the
+source code from stdin (standard input stream) until the EOF, instead of the file
+system with an otherwise specified path.
 
 ## `@path`: load command-line flags from a path
 

@@ -1,77 +1,98 @@
 //! Check properties that are required by built-in traits and set
 //! up data structures required by type-checking/codegen.
 
-use crate::errors::{
-    ConstParamTyImplOnNonAdt, CopyImplOnNonAdt, CopyImplOnTypeWithDtor, DropImplOnWrongItem,
-};
-use rustc_data_structures::fx::FxHashSet;
-use rustc_errors::{struct_span_err, ErrorGuaranteed, MultiSpan};
-use rustc_hir as hir;
-use rustc_hir::def_id::{DefId, LocalDefId};
-use rustc_hir::lang_items::LangItem;
-use rustc_hir::ItemKind;
-use rustc_infer::infer::outlives::env::OutlivesEnvironment;
-use rustc_infer::infer::{self, RegionResolutionError};
-use rustc_infer::infer::{DefineOpaqueTypes, TyCtxtInferExt};
-use rustc_infer::traits::Obligation;
-use rustc_middle::ty::adjustment::CoerceUnsizedInfo;
-use rustc_middle::ty::{self, suggest_constraining_type_params, Ty, TyCtxt, TypeVisitableExt};
-use rustc_span::Span;
-use rustc_trait_selection::traits::error_reporting::TypeErrCtxtExt;
-use rustc_trait_selection::traits::misc::{
-    type_allowed_to_implement_const_param_ty, type_allowed_to_implement_copy,
-    ConstParamTyImplementationError, CopyImplementationError, InfringingFieldsReason,
-};
-use rustc_trait_selection::traits::ObligationCtxt;
-use rustc_trait_selection::traits::{self, ObligationCause};
 use std::collections::BTreeMap;
 
-pub fn check_trait(tcx: TyCtxt<'_>, trait_def_id: DefId) {
+use rustc_data_structures::fx::FxHashSet;
+use rustc_errors::{ErrorGuaranteed, MultiSpan};
+use rustc_hir as hir;
+use rustc_hir::ItemKind;
+use rustc_hir::def_id::{DefId, LocalDefId};
+use rustc_hir::lang_items::LangItem;
+use rustc_infer::infer::{self, RegionResolutionError, SubregionOrigin, TyCtxtInferExt};
+use rustc_infer::traits::Obligation;
+use rustc_middle::ty::adjustment::CoerceUnsizedInfo;
+use rustc_middle::ty::print::PrintTraitRefExt as _;
+use rustc_middle::ty::{
+    self, Ty, TyCtxt, TypeVisitableExt, TypingMode, suggest_constraining_type_params,
+};
+use rustc_span::{DUMMY_SP, Span, sym};
+use rustc_trait_selection::error_reporting::InferCtxtErrorExt;
+use rustc_trait_selection::traits::misc::{
+    ConstParamTyImplementationError, CopyImplementationError, InfringingFieldsReason,
+    type_allowed_to_implement_const_param_ty, type_allowed_to_implement_copy,
+};
+use rustc_trait_selection::traits::{self, ObligationCause, ObligationCtxt};
+use tracing::debug;
+
+use crate::errors;
+
+pub(super) fn check_trait<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    trait_def_id: DefId,
+    impl_def_id: LocalDefId,
+    impl_header: ty::ImplTraitHeader<'tcx>,
+) -> Result<(), ErrorGuaranteed> {
     let lang_items = tcx.lang_items();
-    Checker { tcx, trait_def_id }
-        .check(lang_items.drop_trait(), visit_implementation_of_drop)
-        .check(lang_items.copy_trait(), visit_implementation_of_copy)
-        .check(lang_items.const_param_ty_trait(), visit_implementation_of_const_param_ty)
-        .check(lang_items.coerce_unsized_trait(), visit_implementation_of_coerce_unsized)
-        .check(lang_items.dispatch_from_dyn_trait(), visit_implementation_of_dispatch_from_dyn);
+    let checker = Checker { tcx, trait_def_id, impl_def_id, impl_header };
+    checker.check(lang_items.drop_trait(), visit_implementation_of_drop)?;
+    checker.check(lang_items.async_drop_trait(), visit_implementation_of_drop)?;
+    checker.check(lang_items.copy_trait(), visit_implementation_of_copy)?;
+    checker.check(lang_items.const_param_ty_trait(), |checker| {
+        visit_implementation_of_const_param_ty(checker)
+    })?;
+    checker.check(lang_items.coerce_unsized_trait(), visit_implementation_of_coerce_unsized)?;
+    checker
+        .check(lang_items.dispatch_from_dyn_trait(), visit_implementation_of_dispatch_from_dyn)?;
+    checker.check(
+        lang_items.coerce_pointee_validated_trait(),
+        visit_implementation_of_coerce_pointee_validity,
+    )?;
+    Ok(())
 }
 
 struct Checker<'tcx> {
     tcx: TyCtxt<'tcx>,
     trait_def_id: DefId,
+    impl_def_id: LocalDefId,
+    impl_header: ty::ImplTraitHeader<'tcx>,
 }
 
 impl<'tcx> Checker<'tcx> {
-    fn check<F>(&self, trait_def_id: Option<DefId>, mut f: F) -> &Self
-    where
-        F: FnMut(TyCtxt<'tcx>, LocalDefId),
-    {
-        if Some(self.trait_def_id) == trait_def_id {
-            for &impl_def_id in self.tcx.hir().trait_impls(self.trait_def_id) {
-                f(self.tcx, impl_def_id);
-            }
-        }
-        self
+    fn check(
+        &self,
+        trait_def_id: Option<DefId>,
+        f: impl FnOnce(&Self) -> Result<(), ErrorGuaranteed>,
+    ) -> Result<(), ErrorGuaranteed> {
+        if Some(self.trait_def_id) == trait_def_id { f(self) } else { Ok(()) }
     }
 }
 
-fn visit_implementation_of_drop(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
+fn visit_implementation_of_drop(checker: &Checker<'_>) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let impl_did = checker.impl_def_id;
     // Destructors only work on local ADT types.
-    match tcx.type_of(impl_did).subst_identity().kind() {
-        ty::Adt(def, _) if def.did().is_local() => return,
-        ty::Error(_) => return,
+    match checker.impl_header.trait_ref.instantiate_identity().self_ty().kind() {
+        ty::Adt(def, _) if def.did().is_local() => return Ok(()),
+        ty::Error(_) => return Ok(()),
         _ => {}
     }
 
-    let impl_ = tcx.hir().expect_item(impl_did).expect_impl();
+    let impl_ = tcx.hir_expect_item(impl_did).expect_impl();
 
-    tcx.sess.emit_err(DropImplOnWrongItem { span: impl_.self_ty.span });
+    Err(tcx.dcx().emit_err(errors::DropImplOnWrongItem {
+        span: impl_.self_ty.span,
+        trait_: tcx.item_name(checker.impl_header.trait_ref.skip_binder().def_id),
+    }))
 }
 
-fn visit_implementation_of_copy(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
+fn visit_implementation_of_copy(checker: &Checker<'_>) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let impl_header = checker.impl_header;
+    let impl_did = checker.impl_def_id;
     debug!("visit_implementation_of_copy: impl_did={:?}", impl_did);
 
-    let self_type = tcx.type_of(impl_did).subst_identity();
+    let self_type = impl_header.trait_ref.instantiate_identity().self_ty();
     debug!("visit_implementation_of_copy: self_type={:?} (bound)", self_type);
 
     let param_env = tcx.param_env(impl_did);
@@ -79,243 +100,295 @@ fn visit_implementation_of_copy(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
 
     debug!("visit_implementation_of_copy: self_type={:?} (free)", self_type);
 
-    let span = match tcx.hir().expect_item(impl_did).expect_impl() {
-        hir::Impl { polarity: hir::ImplPolarity::Negative(_), .. } => return,
-        hir::Impl { self_ty, .. } => self_ty.span,
-    };
+    if let ty::ImplPolarity::Negative = impl_header.polarity {
+        return Ok(());
+    }
 
-    let cause = traits::ObligationCause::misc(span, impl_did);
-    match type_allowed_to_implement_copy(tcx, param_env, self_type, cause) {
-        Ok(()) => {}
+    let cause = traits::ObligationCause::misc(DUMMY_SP, impl_did);
+    match type_allowed_to_implement_copy(tcx, param_env, self_type, cause, impl_header.safety) {
+        Ok(()) => Ok(()),
         Err(CopyImplementationError::InfringingFields(fields)) => {
-            infringing_fields_error(tcx, fields, LangItem::Copy, impl_did, span);
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(infringing_fields_error(
+                tcx,
+                fields.into_iter().map(|(field, ty, reason)| (tcx.def_span(field.did), ty, reason)),
+                LangItem::Copy,
+                impl_did,
+                span,
+            ))
         }
         Err(CopyImplementationError::NotAnAdt) => {
-            tcx.sess.emit_err(CopyImplOnNonAdt { span });
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(tcx.dcx().emit_err(errors::CopyImplOnNonAdt { span }))
         }
         Err(CopyImplementationError::HasDestructor) => {
-            tcx.sess.emit_err(CopyImplOnTypeWithDtor { span });
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(tcx.dcx().emit_err(errors::CopyImplOnTypeWithDtor { span }))
+        }
+        Err(CopyImplementationError::HasUnsafeFields) => {
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(tcx
+                .dcx()
+                .span_delayed_bug(span, format!("cannot implement `Copy` for `{}`", self_type)))
         }
     }
 }
 
-fn visit_implementation_of_const_param_ty(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
-    let self_type = tcx.type_of(impl_did).subst_identity();
+fn visit_implementation_of_const_param_ty(checker: &Checker<'_>) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let header = checker.impl_header;
+    let impl_did = checker.impl_def_id;
+    let self_type = header.trait_ref.instantiate_identity().self_ty();
     assert!(!self_type.has_escaping_bound_vars());
 
     let param_env = tcx.param_env(impl_did);
 
-    let span = match tcx.hir().expect_item(impl_did).expect_impl() {
-        hir::Impl { polarity: hir::ImplPolarity::Negative(_), .. } => return,
-        impl_ => impl_.self_ty.span,
-    };
+    if let ty::ImplPolarity::Negative | ty::ImplPolarity::Reservation = header.polarity {
+        return Ok(());
+    }
 
-    let cause = traits::ObligationCause::misc(span, impl_did);
+    let cause = traits::ObligationCause::misc(DUMMY_SP, impl_did);
     match type_allowed_to_implement_const_param_ty(tcx, param_env, self_type, cause) {
-        Ok(()) => {}
+        Ok(()) => Ok(()),
         Err(ConstParamTyImplementationError::InfrigingFields(fields)) => {
-            infringing_fields_error(tcx, fields, LangItem::ConstParamTy, impl_did, span);
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(infringing_fields_error(
+                tcx,
+                fields.into_iter().map(|(field, ty, reason)| (tcx.def_span(field.did), ty, reason)),
+                LangItem::ConstParamTy,
+                impl_did,
+                span,
+            ))
         }
         Err(ConstParamTyImplementationError::NotAnAdtOrBuiltinAllowed) => {
-            tcx.sess.emit_err(ConstParamTyImplOnNonAdt { span });
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(tcx.dcx().emit_err(errors::ConstParamTyImplOnNonAdt { span }))
+        }
+        Err(ConstParamTyImplementationError::InvalidInnerTyOfBuiltinTy(infringing_tys)) => {
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(infringing_fields_error(
+                tcx,
+                infringing_tys.into_iter().map(|(ty, reason)| (span, ty, reason)),
+                LangItem::ConstParamTy,
+                impl_did,
+                span,
+            ))
+        }
+        Err(ConstParamTyImplementationError::UnsizedConstParamsFeatureRequired) => {
+            let span = tcx.hir_expect_item(impl_did).expect_impl().self_ty.span;
+            Err(tcx.dcx().emit_err(errors::ConstParamTyImplOnUnsized { span }))
         }
     }
 }
 
-fn visit_implementation_of_coerce_unsized(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
+fn visit_implementation_of_coerce_unsized(checker: &Checker<'_>) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let impl_did = checker.impl_def_id;
     debug!("visit_implementation_of_coerce_unsized: impl_did={:?}", impl_did);
 
     // Just compute this for the side-effects, in particular reporting
     // errors; other parts of the code may demand it for the info of
     // course.
-    let span = tcx.def_span(impl_did);
-    tcx.at(span).coerce_unsized_info(impl_did);
+    tcx.ensure_ok().coerce_unsized_info(impl_did)
 }
 
-fn visit_implementation_of_dispatch_from_dyn(tcx: TyCtxt<'_>, impl_did: LocalDefId) {
+fn is_from_coerce_pointee_derive(tcx: TyCtxt<'_>, span: Span) -> bool {
+    span.ctxt()
+        .outer_expn_data()
+        .macro_def_id
+        .is_some_and(|def_id| tcx.is_diagnostic_item(sym::CoercePointee, def_id))
+}
+
+fn visit_implementation_of_dispatch_from_dyn(checker: &Checker<'_>) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let impl_did = checker.impl_def_id;
+    let trait_ref = checker.impl_header.trait_ref.instantiate_identity();
     debug!("visit_implementation_of_dispatch_from_dyn: impl_did={:?}", impl_did);
 
     let span = tcx.def_span(impl_did);
+    let trait_name = "DispatchFromDyn";
 
-    let dispatch_from_dyn_trait = tcx.require_lang_item(LangItem::DispatchFromDyn, Some(span));
-
-    let source = tcx.type_of(impl_did).subst_identity();
-    assert!(!source.has_escaping_bound_vars());
+    let source = trait_ref.self_ty();
     let target = {
-        let trait_ref = tcx.impl_trait_ref(impl_did).unwrap().subst_identity();
-        assert_eq!(trait_ref.def_id, dispatch_from_dyn_trait);
+        assert!(tcx.is_lang_item(trait_ref.def_id, LangItem::DispatchFromDyn));
 
-        trait_ref.substs.type_at(1)
+        trait_ref.args.type_at(1)
     };
+
+    // Check `CoercePointee` impl is WF -- if not, then there's no reason to report
+    // redundant errors for `DispatchFromDyn`. This is best effort, though.
+    let mut res = Ok(());
+    tcx.for_each_relevant_impl(
+        tcx.require_lang_item(LangItem::CoerceUnsized, span),
+        source,
+        |impl_def_id| {
+            res = res.and(tcx.ensure_ok().coerce_unsized_info(impl_def_id));
+        },
+    );
+    res?;
 
     debug!("visit_implementation_of_dispatch_from_dyn: {:?} -> {:?}", source, target);
 
     let param_env = tcx.param_env(impl_did);
 
-    let create_err = |msg: &str| struct_span_err!(tcx.sess, span, E0378, "{}", msg);
-
-    let infcx = tcx.infer_ctxt().build();
+    let infcx = tcx.infer_ctxt().build(TypingMode::non_body_analysis());
     let cause = ObligationCause::misc(span, impl_did);
 
-    use rustc_type_ir::sty::TyKind::*;
+    // Later parts of the compiler rely on all DispatchFromDyn types to be ABI-compatible with raw
+    // pointers. This is enforced here: we only allow impls for references, raw pointers, and things
+    // that are effectively repr(transparent) newtypes around types that already hav a
+    // DispatchedFromDyn impl. We cannot literally use repr(transparent) on those types since some
+    // of them support an allocator, but we ensure that for the cases where the type implements this
+    // trait, they *do* satisfy the repr(transparent) rules, and then we assume that everything else
+    // in the compiler (in particular, all the call ABI logic) will treat them as repr(transparent)
+    // even if they do not carry that attribute.
     match (source.kind(), target.kind()) {
-        (&Ref(r_a, _, mutbl_a), Ref(r_b, _, mutbl_b))
-            if infcx.at(&cause, param_env).eq(DefineOpaqueTypes::No, r_a, *r_b).is_ok()
-                && mutbl_a == *mutbl_b => {}
-        (&RawPtr(tm_a), &RawPtr(tm_b)) if tm_a.mutbl == tm_b.mutbl => (),
-        (&Adt(def_a, substs_a), &Adt(def_b, substs_b))
+        (&ty::Ref(r_a, _, mutbl_a), ty::Ref(r_b, _, mutbl_b))
+            if r_a == *r_b && mutbl_a == *mutbl_b =>
+        {
+            Ok(())
+        }
+        (&ty::RawPtr(_, a_mutbl), &ty::RawPtr(_, b_mutbl)) if a_mutbl == b_mutbl => Ok(()),
+        (&ty::Adt(def_a, args_a), &ty::Adt(def_b, args_b))
             if def_a.is_struct() && def_b.is_struct() =>
         {
             if def_a != def_b {
                 let source_path = tcx.def_path_str(def_a.did());
                 let target_path = tcx.def_path_str(def_b.did());
-
-                create_err(&format!(
-                    "the trait `DispatchFromDyn` may only be implemented \
-                            for a coercion between structures with the same \
-                            definition; expected `{}`, found `{}`",
-                    source_path, target_path,
-                ))
-                .emit();
-
-                return;
+                return Err(tcx.dcx().emit_err(errors::CoerceSameStruct {
+                    span,
+                    trait_name,
+                    note: true,
+                    source_path,
+                    target_path,
+                }));
             }
 
             if def_a.repr().c() || def_a.repr().packed() {
-                create_err(
-                    "structs implementing `DispatchFromDyn` may not have \
-                         `#[repr(packed)]` or `#[repr(C)]`",
-                )
-                .emit();
+                return Err(tcx.dcx().emit_err(errors::DispatchFromDynRepr { span }));
             }
 
             let fields = &def_a.non_enum_variant().fields;
 
+            let mut res = Ok(());
             let coerced_fields = fields
-                .iter()
-                .filter(|field| {
-                    let ty_a = field.ty(tcx, substs_a);
-                    let ty_b = field.ty(tcx, substs_b);
-
-                    if let Ok(layout) = tcx.layout_of(param_env.and(ty_a)) {
-                        if layout.is_zst() && layout.align.abi.bytes() == 1 {
-                            // ignore ZST fields with alignment of 1 byte
-                            return false;
-                        }
-                    }
-
-                    if let Ok(ok) =
-                        infcx.at(&cause, param_env).eq(DefineOpaqueTypes::No, ty_a, ty_b)
+                .iter_enumerated()
+                .filter_map(|(i, field)| {
+                    // Ignore PhantomData fields
+                    let unnormalized_ty = tcx.type_of(field.did).instantiate_identity();
+                    if tcx
+                        .try_normalize_erasing_regions(
+                            ty::TypingEnv::non_body_analysis(tcx, def_a.did()),
+                            unnormalized_ty,
+                        )
+                        .unwrap_or(unnormalized_ty)
+                        .is_phantom_data()
                     {
-                        if ok.obligations.is_empty() {
-                            create_err(
-                                "the trait `DispatchFromDyn` may only be implemented \
-                                 for structs containing the field being coerced, \
-                                 ZST fields with 1 byte alignment, and nothing else",
-                            )
-                            .note(format!(
-                                "extra field `{}` of type `{}` is not allowed",
-                                field.name, ty_a,
-                            ))
-                            .emit();
-
-                            return false;
-                        }
+                        return None;
                     }
 
-                    return true;
+                    let ty_a = field.ty(tcx, args_a);
+                    let ty_b = field.ty(tcx, args_b);
+
+                    // FIXME: We could do normalization here, but is it really worth it?
+                    if ty_a == ty_b {
+                        // Allow 1-ZSTs that don't mention type params.
+                        //
+                        // Allowing type params here would allow us to possibly transmute
+                        // between ZSTs, which may be used to create library unsoundness.
+                        if let Ok(layout) =
+                            tcx.layout_of(infcx.typing_env(param_env).as_query_input(ty_a))
+                            && layout.is_1zst()
+                            && !ty_a.has_non_region_param()
+                        {
+                            // ignore 1-ZST fields
+                            return None;
+                        }
+
+                        res = Err(tcx.dcx().emit_err(errors::DispatchFromDynZST {
+                            span,
+                            name: field.ident(tcx),
+                            ty: ty_a,
+                        }));
+
+                        None
+                    } else {
+                        Some((i, ty_a, ty_b, tcx.def_span(field.did)))
+                    }
                 })
                 .collect::<Vec<_>>();
+            res?;
 
             if coerced_fields.is_empty() {
-                create_err(
-                    "the trait `DispatchFromDyn` may only be implemented \
-                        for a coercion between structures with a single field \
-                        being coerced, none found",
-                )
-                .emit();
-            } else if coerced_fields.len() > 1 {
-                create_err("implementing the `DispatchFromDyn` trait requires multiple coercions")
-                    .note(
-                        "the trait `DispatchFromDyn` may only be implemented \
-                            for a coercion between structures with a single field \
-                            being coerced",
-                    )
-                    .note(format!(
-                        "currently, {} fields need coercions: {}",
-                        coerced_fields.len(),
-                        coerced_fields
-                            .iter()
-                            .map(|field| {
-                                format!(
-                                    "`{}` (`{}` to `{}`)",
-                                    field.name,
-                                    field.ty(tcx, substs_a),
-                                    field.ty(tcx, substs_b),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ))
-                    .emit();
-            } else {
-                let ocx = ObligationCtxt::new(&infcx);
-                for field in coerced_fields {
-                    ocx.register_obligation(Obligation::new(
-                        tcx,
-                        cause.clone(),
-                        param_env,
-                        ty::TraitRef::new(
-                            tcx,
-                            dispatch_from_dyn_trait,
-                            [field.ty(tcx, substs_a), field.ty(tcx, substs_b)],
-                        ),
-                    ));
-                }
-                let errors = ocx.select_all_or_error();
+                return Err(tcx.dcx().emit_err(errors::CoerceNoField {
+                    span,
+                    trait_name,
+                    note: true,
+                }));
+            } else if let &[(_, ty_a, ty_b, field_span)] = &coerced_fields[..] {
+                let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
+                ocx.register_obligation(Obligation::new(
+                    tcx,
+                    cause.clone(),
+                    param_env,
+                    ty::TraitRef::new(tcx, trait_ref.def_id, [ty_a, ty_b]),
+                ));
+                let errors = ocx.evaluate_obligations_error_on_ambiguity();
                 if !errors.is_empty() {
-                    infcx.err_ctxt().report_fulfillment_errors(&errors);
+                    if is_from_coerce_pointee_derive(tcx, span) {
+                        return Err(tcx.dcx().emit_err(errors::CoerceFieldValidity {
+                            span,
+                            trait_name,
+                            ty: trait_ref.self_ty(),
+                            field_span,
+                            field_ty: ty_a,
+                        }));
+                    } else {
+                        return Err(infcx.err_ctxt().report_fulfillment_errors(errors));
+                    }
                 }
 
                 // Finally, resolve all regions.
-                let outlives_env = OutlivesEnvironment::new(param_env);
-                let _ = ocx.resolve_regions_and_report_errors(impl_did, &outlives_env);
+                ocx.resolve_regions_and_report_errors(impl_did, param_env, [])?;
+
+                Ok(())
+            } else {
+                return Err(tcx.dcx().emit_err(errors::CoerceMulti {
+                    span,
+                    trait_name,
+                    number: coerced_fields.len(),
+                    fields: coerced_fields.iter().map(|(_, _, _, s)| *s).collect::<Vec<_>>().into(),
+                }));
             }
         }
-        _ => {
-            create_err(
-                "the trait `DispatchFromDyn` may only be implemented \
-                    for a coercion between structures",
-            )
-            .emit();
-        }
+        _ => Err(tcx.dcx().emit_err(errors::CoerceUnsizedNonStruct { span, trait_name })),
     }
 }
 
-pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> CoerceUnsizedInfo {
+pub(crate) fn coerce_unsized_info<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    impl_did: LocalDefId,
+) -> Result<CoerceUnsizedInfo, ErrorGuaranteed> {
     debug!("compute_coerce_unsized_info(impl_did={:?})", impl_did);
     let span = tcx.def_span(impl_did);
+    let trait_name = "CoerceUnsized";
 
-    let coerce_unsized_trait = tcx.require_lang_item(LangItem::CoerceUnsized, Some(span));
+    let coerce_unsized_trait = tcx.require_lang_item(LangItem::CoerceUnsized, span);
+    let unsize_trait = tcx.require_lang_item(LangItem::Unsize, span);
 
-    let unsize_trait = tcx.lang_items().require(LangItem::Unsize).unwrap_or_else(|err| {
-        tcx.sess.fatal(format!("`CoerceUnsized` implementation {}", err.to_string()));
-    });
+    let source = tcx.type_of(impl_did).instantiate_identity();
+    let trait_ref = tcx.impl_trait_ref(impl_did).unwrap().instantiate_identity();
 
-    let source = tcx.type_of(impl_did).subst_identity();
-    let trait_ref = tcx.impl_trait_ref(impl_did).unwrap().subst_identity();
     assert_eq!(trait_ref.def_id, coerce_unsized_trait);
-    let target = trait_ref.substs.type_at(1);
+    let target = trait_ref.args.type_at(1);
     debug!("visit_implementation_of_coerce_unsized: {:?} -> {:?} (bound)", source, target);
 
     let param_env = tcx.param_env(impl_did);
     assert!(!source.has_escaping_bound_vars());
 
-    let err_info = CoerceUnsizedInfo { custom_kind: None };
-
     debug!("visit_implementation_of_coerce_unsized: {:?} -> {:?} (free)", source, target);
 
-    let infcx = tcx.infer_ctxt().build();
+    let infcx = tcx.infer_ctxt().build(TypingMode::non_body_analysis());
     let cause = ObligationCause::misc(span, impl_did);
     let check_mutbl = |mt_a: ty::TypeAndMut<'tcx>,
                        mt_b: ty::TypeAndMut<'tcx>,
@@ -325,47 +398,43 @@ pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> Coe
                 .err_ctxt()
                 .report_mismatched_types(
                     &cause,
+                    param_env,
                     mk_ptr(mt_b.ty),
                     target,
                     ty::error::TypeError::Mutability,
                 )
                 .emit();
         }
-        (mt_a.ty, mt_b.ty, unsize_trait, None)
+        (mt_a.ty, mt_b.ty, unsize_trait, None, span)
     };
-    let (source, target, trait_def_id, kind) = match (source.kind(), target.kind()) {
+    let (source, target, trait_def_id, kind, field_span) = match (source.kind(), target.kind()) {
         (&ty::Ref(r_a, ty_a, mutbl_a), &ty::Ref(r_b, ty_b, mutbl_b)) => {
-            infcx.sub_regions(infer::RelateObjectBound(span), r_b, r_a);
+            infcx.sub_regions(SubregionOrigin::RelateObjectBound(span), r_b, r_a);
             let mt_a = ty::TypeAndMut { ty: ty_a, mutbl: mutbl_a };
             let mt_b = ty::TypeAndMut { ty: ty_b, mutbl: mutbl_b };
-            check_mutbl(mt_a, mt_b, &|ty| tcx.mk_imm_ref(r_b, ty))
+            check_mutbl(mt_a, mt_b, &|ty| Ty::new_imm_ref(tcx, r_b, ty))
         }
 
-        (&ty::Ref(_, ty_a, mutbl_a), &ty::RawPtr(mt_b)) => {
+        (&ty::Ref(_, ty_a, mutbl_a), &ty::RawPtr(ty_b, mutbl_b))
+        | (&ty::RawPtr(ty_a, mutbl_a), &ty::RawPtr(ty_b, mutbl_b)) => {
             let mt_a = ty::TypeAndMut { ty: ty_a, mutbl: mutbl_a };
-            check_mutbl(mt_a, mt_b, &|ty| tcx.mk_imm_ptr(ty))
+            let mt_b = ty::TypeAndMut { ty: ty_b, mutbl: mutbl_b };
+            check_mutbl(mt_a, mt_b, &|ty| Ty::new_imm_ptr(tcx, ty))
         }
 
-        (&ty::RawPtr(mt_a), &ty::RawPtr(mt_b)) => check_mutbl(mt_a, mt_b, &|ty| tcx.mk_imm_ptr(ty)),
-
-        (&ty::Adt(def_a, substs_a), &ty::Adt(def_b, substs_b))
+        (&ty::Adt(def_a, args_a), &ty::Adt(def_b, args_b))
             if def_a.is_struct() && def_b.is_struct() =>
         {
             if def_a != def_b {
                 let source_path = tcx.def_path_str(def_a.did());
                 let target_path = tcx.def_path_str(def_b.did());
-                struct_span_err!(
-                    tcx.sess,
+                return Err(tcx.dcx().emit_err(errors::CoerceSameStruct {
                     span,
-                    E0377,
-                    "the trait `CoerceUnsized` may only be implemented \
-                           for a coercion between structures with the same \
-                           definition; expected `{}`, found `{}`",
+                    trait_name,
+                    note: true,
                     source_path,
-                    target_path
-                )
-                .emit();
-                return err_info;
+                    target_path,
+                }));
             }
 
             // Here we are considering a case of converting
@@ -385,13 +454,13 @@ pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> Coe
             // Here `U = [i32; 3]` and `V = [i32]`. At runtime,
             // when this coercion occurs, we would be changing the
             // field `ptr` from a thin pointer of type `*mut [i32;
-            // 3]` to a fat pointer of type `*mut [i32]` (with
+            // 3]` to a wide pointer of type `*mut [i32]` (with
             // extra data `3`). **The purpose of this check is to
             // make sure that we know how to do this conversion.**
             //
             // To check if this impl is legal, we would walk down
             // the fields of `Foo` and consider their types with
-            // both substitutes. We are looking to find that
+            // both generic parameters. We are looking to find that
             // exactly one (non-phantom) field has changed its
             // type, which we will expect to be the pointer that
             // is becoming fat (we could probably generalize this
@@ -411,10 +480,18 @@ pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> Coe
             let diff_fields = fields
                 .iter_enumerated()
                 .filter_map(|(i, f)| {
-                    let (a, b) = (f.ty(tcx, substs_a), f.ty(tcx, substs_b));
+                    let (a, b) = (f.ty(tcx, args_a), f.ty(tcx, args_b));
 
-                    if tcx.type_of(f.did).subst_identity().is_phantom_data() {
-                        // Ignore PhantomData fields
+                    // Ignore PhantomData fields
+                    let unnormalized_ty = tcx.type_of(f.did).instantiate_identity();
+                    if tcx
+                        .try_normalize_erasing_regions(
+                            ty::TypingEnv::non_body_analysis(tcx, def_a.did()),
+                            unnormalized_ty,
+                        )
+                        .unwrap_or(unnormalized_ty)
+                        .is_phantom_data()
+                    {
                         return None;
                     }
 
@@ -423,87 +500,56 @@ pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> Coe
                     // something more accepting, but we use
                     // equality because we want to be able to
                     // perform this check without computing
-                    // variance where possible. (This is because
-                    // we may have to evaluate constraint
+                    // variance or constraining opaque types' hidden types.
+                    // (This is because we may have to evaluate constraint
                     // expressions in the course of execution.)
                     // See e.g., #41936.
-                    if let Ok(ok) = infcx.at(&cause, param_env).eq(DefineOpaqueTypes::No, a, b) {
-                        if ok.obligations.is_empty() {
-                            return None;
-                        }
+                    if a == b {
+                        return None;
                     }
 
                     // Collect up all fields that were significantly changed
                     // i.e., those that contain T in coerce_unsized T -> U
-                    Some((i, a, b))
+                    Some((i, a, b, tcx.def_span(f.did)))
                 })
                 .collect::<Vec<_>>();
 
             if diff_fields.is_empty() {
-                struct_span_err!(
-                    tcx.sess,
+                return Err(tcx.dcx().emit_err(errors::CoerceNoField {
                     span,
-                    E0374,
-                    "the trait `CoerceUnsized` may only be implemented \
-                           for a coercion between structures with one field \
-                           being coerced, none found"
-                )
-                .emit();
-                return err_info;
+                    trait_name,
+                    note: true,
+                }));
             } else if diff_fields.len() > 1 {
-                let item = tcx.hir().expect_item(impl_did);
-                let span = if let ItemKind::Impl(hir::Impl { of_trait: Some(t), .. }) = &item.kind {
-                    t.path.span
+                let item = tcx.hir_expect_item(impl_did);
+                let span = if let ItemKind::Impl(hir::Impl { of_trait: Some(of_trait), .. }) =
+                    &item.kind
+                {
+                    of_trait.trait_ref.path.span
                 } else {
                     tcx.def_span(impl_did)
                 };
 
-                struct_span_err!(
-                    tcx.sess,
+                return Err(tcx.dcx().emit_err(errors::CoerceMulti {
                     span,
-                    E0375,
-                    "implementing the trait \
-                                                `CoerceUnsized` requires multiple \
-                                                coercions"
-                )
-                .note(
-                    "`CoerceUnsized` may only be implemented for \
-                          a coercion between structures with one field being coerced",
-                )
-                .note(format!(
-                    "currently, {} fields need coercions: {}",
-                    diff_fields.len(),
-                    diff_fields
-                        .iter()
-                        .map(|&(i, a, b)| { format!("`{}` (`{}` to `{}`)", fields[i].name, a, b) })
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ))
-                .span_label(span, "requires multiple coercions")
-                .emit();
-                return err_info;
+                    trait_name,
+                    number: diff_fields.len(),
+                    fields: diff_fields.iter().map(|(_, _, _, s)| *s).collect::<Vec<_>>().into(),
+                }));
             }
 
-            let (i, a, b) = diff_fields[0];
+            let (i, a, b, field_span) = diff_fields[0];
             let kind = ty::adjustment::CustomCoerceUnsized::Struct(i);
-            (a, b, coerce_unsized_trait, Some(kind))
+            (a, b, coerce_unsized_trait, Some(kind), field_span)
         }
 
         _ => {
-            struct_span_err!(
-                tcx.sess,
-                span,
-                E0376,
-                "the trait `CoerceUnsized` may only be implemented \
-                       for a coercion between structures"
-            )
-            .emit();
-            return err_info;
+            return Err(tcx.dcx().emit_err(errors::CoerceUnsizedNonStruct { span, trait_name }));
         }
     };
 
     // Register an obligation for `A: Trait<B>`.
-    let ocx = ObligationCtxt::new(&infcx);
+    let ocx = ObligationCtxt::new_with_diagnostics(&infcx);
     let cause = traits::ObligationCause::misc(span, impl_did);
     let obligation = Obligation::new(
         tcx,
@@ -512,35 +558,38 @@ pub fn coerce_unsized_info<'tcx>(tcx: TyCtxt<'tcx>, impl_did: LocalDefId) -> Coe
         ty::TraitRef::new(tcx, trait_def_id, [source, target]),
     );
     ocx.register_obligation(obligation);
-    let errors = ocx.select_all_or_error();
+    let errors = ocx.evaluate_obligations_error_on_ambiguity();
+
     if !errors.is_empty() {
-        infcx.err_ctxt().report_fulfillment_errors(&errors);
+        if is_from_coerce_pointee_derive(tcx, span) {
+            return Err(tcx.dcx().emit_err(errors::CoerceFieldValidity {
+                span,
+                trait_name,
+                ty: trait_ref.self_ty(),
+                field_span,
+                field_ty: source,
+            }));
+        } else {
+            return Err(infcx.err_ctxt().report_fulfillment_errors(errors));
+        }
     }
 
     // Finally, resolve all regions.
-    let outlives_env = OutlivesEnvironment::new(param_env);
-    let _ = ocx.resolve_regions_and_report_errors(impl_did, &outlives_env);
+    ocx.resolve_regions_and_report_errors(impl_did, param_env, [])?;
 
-    CoerceUnsizedInfo { custom_kind: kind }
+    Ok(CoerceUnsizedInfo { custom_kind: kind })
 }
 
-fn infringing_fields_error(
-    tcx: TyCtxt<'_>,
-    fields: Vec<(&ty::FieldDef, Ty<'_>, InfringingFieldsReason<'_>)>,
+fn infringing_fields_error<'tcx>(
+    tcx: TyCtxt<'tcx>,
+    infringing_tys: impl Iterator<Item = (Span, Ty<'tcx>, InfringingFieldsReason<'tcx>)>,
     lang_item: LangItem,
     impl_did: LocalDefId,
     impl_span: Span,
 ) -> ErrorGuaranteed {
-    let trait_did = tcx.require_lang_item(lang_item, Some(impl_span));
+    let trait_did = tcx.require_lang_item(lang_item, impl_span);
 
     let trait_name = tcx.def_path_str(trait_did);
-
-    let mut err = struct_span_err!(
-        tcx.sess,
-        impl_span,
-        E0204,
-        "the trait `{trait_name}` cannot be implemented for this type"
-    );
 
     // We'll try to suggest constraining type parameters to fulfill the requirements of
     // their `Copy` implementation.
@@ -549,14 +598,15 @@ fn infringing_fields_error(
 
     let mut seen_tys = FxHashSet::default();
 
-    for (field, ty, reason) in fields {
+    let mut label_spans = Vec::new();
+
+    for (span, ty, reason) in infringing_tys {
         // Only report an error once per type.
         if !seen_tys.insert(ty) {
             continue;
         }
 
-        let field_span = tcx.def_span(field.did);
-        err.span_label(field_span, format!("this field does not implement `{trait_name}`"));
+        label_spans.push(span);
 
         match reason {
             InfringingFieldsReason::Fulfill(fulfillment_errors) => {
@@ -573,9 +623,9 @@ fn infringing_fields_error(
                             .or_default()
                             .push(error.obligation.cause.span);
                     }
-                    if let ty::PredicateKind::Clause(ty::Clause::Trait(ty::TraitPredicate {
+                    if let ty::PredicateKind::Clause(ty::ClauseKind::Trait(ty::TraitPredicate {
                         trait_ref,
-                        polarity: ty::ImplPolarity::Positive,
+                        polarity: ty::PredicatePolarity::Positive,
                         ..
                     })) = error_predicate.kind().skip_binder()
                     {
@@ -583,7 +633,7 @@ fn infringing_fields_error(
                         if let ty::Param(_) = ty.kind() {
                             bounds.push((
                                 format!("{ty}"),
-                                trait_ref.print_only_trait_path().to_string(),
+                                trait_ref.print_trait_sugared().to_string(),
                                 Some(trait_ref.def_id),
                             ));
                         }
@@ -600,9 +650,11 @@ fn infringing_fields_error(
                                 .entry((ty.clone(), predicate.clone()))
                                 .or_default()
                                 .push(origin.span());
-                            if let ty::RegionKind::ReEarlyBound(ebr) = *b && ebr.has_name() {
-                                        bounds.push((b.to_string(), a.to_string(), None));
-                                    }
+                            if let ty::RegionKind::ReEarlyParam(ebr) = b.kind()
+                                && ebr.is_named()
+                            {
+                                bounds.push((b.to_string(), a.to_string(), None));
+                            }
                         }
                         RegionResolutionError::GenericBoundFailure(origin, a, b) => {
                             let predicate = format!("{a}: {b}");
@@ -620,16 +672,27 @@ fn infringing_fields_error(
             }
         }
     }
+    let mut notes = Vec::new();
     for ((ty, error_predicate), spans) in errors {
         let span: MultiSpan = spans.into();
-        err.span_note(
+        notes.push(errors::ImplForTyRequires {
             span,
-            format!("the `{trait_name}` impl for `{ty}` requires that `{error_predicate}`"),
-        );
+            error_predicate,
+            trait_name: trait_name.clone(),
+            ty,
+        });
     }
+
+    let mut err = tcx.dcx().create_err(errors::TraitCannotImplForTy {
+        span: impl_span,
+        trait_name,
+        label_spans,
+        notes,
+    });
+
     suggest_constraining_type_params(
         tcx,
-        tcx.hir().get_generics(impl_did).expect("impls always have generics"),
+        tcx.hir_get_generics(impl_did).expect("impls always have generics"),
         &mut err,
         bounds
             .iter()
@@ -638,4 +701,33 @@ fn infringing_fields_error(
     );
 
     err.emit()
+}
+
+fn visit_implementation_of_coerce_pointee_validity(
+    checker: &Checker<'_>,
+) -> Result<(), ErrorGuaranteed> {
+    let tcx = checker.tcx;
+    let self_ty = tcx.impl_trait_ref(checker.impl_def_id).unwrap().instantiate_identity().self_ty();
+    let span = tcx.def_span(checker.impl_def_id);
+    if !tcx.is_builtin_derived(checker.impl_def_id.into()) {
+        return Err(tcx.dcx().emit_err(errors::CoercePointeeNoUserValidityAssertion { span }));
+    }
+    let ty::Adt(def, _args) = self_ty.kind() else {
+        return Err(tcx.dcx().emit_err(errors::CoercePointeeNotConcreteType { span }));
+    };
+    let did = def.did();
+    // Now get a more precise span of the `struct`.
+    let span = tcx.def_span(did);
+    if !def.is_struct() {
+        return Err(tcx
+            .dcx()
+            .emit_err(errors::CoercePointeeNotStruct { span, kind: def.descr().into() }));
+    }
+    if !def.repr().transparent() {
+        return Err(tcx.dcx().emit_err(errors::CoercePointeeNotTransparent { span }));
+    }
+    if def.all_fields().next().is_none() {
+        return Err(tcx.dcx().emit_err(errors::CoercePointeeNoField { span }));
+    }
+    Ok(())
 }

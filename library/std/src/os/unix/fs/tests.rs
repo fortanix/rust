@@ -1,10 +1,9 @@
 use super::*;
 
 #[test]
-#[cfg_attr(target_env = "fortanixvme", ignore)] // FS access currently not supported by fortanixvme
 fn read_vectored_at() {
     let msg = b"preadv is working!";
-    let dir = crate::sys_common::io::test::tmpdir();
+    let dir = crate::test_helpers::tmpdir();
 
     let filename = dir.join("preadv.txt");
     {
@@ -30,10 +29,9 @@ fn read_vectored_at() {
 }
 
 #[test]
-#[cfg_attr(target_env = "fortanixvme", ignore)] // FS access currently not supported by fortanixvme
 fn write_vectored_at() {
     let msg = b"pwritev is not working!";
-    let dir = crate::sys_common::io::test::tmpdir();
+    let dir = crate::test_helpers::tmpdir();
 
     let filename = dir.join("preadv.txt");
     {
@@ -56,4 +54,24 @@ fn write_vectored_at() {
 
     let content = fs::read(&filename).unwrap();
     assert_eq!(&content, expected);
+}
+
+#[test]
+fn test_mkfifo() {
+    let tmp_dir = crate::test_helpers::tmpdir();
+
+    let fifo = tmp_dir.path().join("fifo");
+
+    mkfifo(&fifo, Permissions::from_mode(0o774)).unwrap();
+
+    let mut wx = fs::File::options().read(true).write(true).open(&fifo).unwrap();
+    let mut rx = fs::File::open(fifo).unwrap();
+
+    wx.write_all(b"hello, world!").unwrap();
+    drop(wx);
+
+    let mut s = String::new();
+    rx.read_to_string(&mut s).unwrap();
+
+    assert_eq!(s, "hello, world!");
 }

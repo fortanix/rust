@@ -6,6 +6,7 @@ extern crate serde;
 use serde::Deserialize;
 
 #[derive(Deserialize)]
+//~^ ERROR: you are deriving `serde::Deserialize` on a type that has methods using `unsafe
 pub struct A;
 impl A {
     pub unsafe fn new(_a: i32, _b: i32) -> Self {
@@ -14,12 +15,14 @@ impl A {
 }
 
 #[derive(Deserialize)]
+//~^ ERROR: you are deriving `serde::Deserialize` on a type that has methods using `unsafe
 pub struct B;
 impl B {
     pub unsafe fn unsafe_method(&self) {}
 }
 
 #[derive(Deserialize)]
+//~^ ERROR: you are deriving `serde::Deserialize` on a type that has methods using `unsafe
 pub struct C;
 impl C {
     pub fn unsafe_block(&self) {
@@ -28,6 +31,7 @@ impl C {
 }
 
 #[derive(Deserialize)]
+//~^ ERROR: you are deriving `serde::Deserialize` on a type that has methods using `unsafe
 pub struct D;
 impl D {
     pub fn inner_unsafe_fn(&self) {
@@ -67,4 +71,43 @@ impl G {
     }
 }
 
+// Check that we honor the `expect` attribute on the ADT
+#[expect(clippy::unsafe_derive_deserialize)]
+#[derive(Deserialize)]
+pub struct H;
+impl H {
+    pub fn unsafe_block(&self) {
+        unsafe {}
+    }
+}
+
 fn main() {}
+
+mod issue15120 {
+    macro_rules! uns {
+        ($e:expr) => {
+            unsafe { $e }
+        };
+    }
+
+    #[derive(serde::Deserialize)]
+    struct Foo;
+
+    impl Foo {
+        fn foo(&self) {
+            // Do not lint if `unsafe` comes from the `core::pin::pin!()` macro
+            std::pin::pin!(());
+        }
+    }
+
+    //~v unsafe_derive_deserialize
+    #[derive(serde::Deserialize)]
+    struct Bar;
+
+    impl Bar {
+        fn bar(&self) {
+            // Lint if `unsafe` comes from the another macro
+            _ = uns!(42);
+        }
+    }
+}

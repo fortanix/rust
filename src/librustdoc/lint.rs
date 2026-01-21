@@ -1,9 +1,9 @@
+use std::sync::LazyLock as Lazy;
+
 use rustc_data_structures::fx::FxHashMap;
 use rustc_lint::LintStore;
-use rustc_lint_defs::{declare_tool_lint, Lint, LintId};
-use rustc_session::{lint, Session};
-
-use std::sync::LazyLock as Lazy;
+use rustc_lint_defs::{Lint, LintId, declare_tool_lint};
+use rustc_session::{Session, lint};
 
 /// This function is used to setup the lint initialization. By default, in rustdoc, everything
 /// is "allowed". Depending if we run in test mode or not, we want some of them to be at their
@@ -31,9 +31,9 @@ where
     allowed_lints.extend(lint_opts.iter().map(|(lint, _)| lint).cloned());
 
     let lints = || {
-        lint::builtin::HardwiredLints::get_lints()
+        lint::builtin::HardwiredLints::lint_vec()
             .into_iter()
-            .chain(rustc_lint::SoftLints::get_lints().into_iter())
+            .chain(rustc_lint::SoftLints::lint_vec())
     };
 
     let lint_opts = lints()
@@ -46,7 +46,7 @@ where
                 filter_call(lint)
             }
         })
-        .chain(lint_opts.into_iter())
+        .chain(lint_opts)
         .collect::<Vec<_>>();
 
     let lint_caps = lints()
@@ -66,7 +66,7 @@ where
 macro_rules! declare_rustdoc_lint {
     (
         $(#[$attr:meta])* $name: ident, $level: ident, $descr: literal $(,)?
-        $(@feature_gate = $gate:expr;)?
+        $(@feature_gate = $gate:ident;)?
     ) => {
         declare_tool_lint! {
             $(#[$attr])* pub rustdoc::$name, $level, $descr
@@ -128,7 +128,7 @@ declare_rustdoc_lint! {
     MISSING_DOC_CODE_EXAMPLES,
     Allow,
     "detects publicly-exported items without code samples in their documentation",
-    @feature_gate = rustc_span::symbol::sym::rustdoc_missing_doc_code_examples;
+    @feature_gate = rustdoc_missing_doc_code_examples;
 }
 
 declare_rustdoc_lint! {
@@ -185,6 +185,17 @@ declare_rustdoc_lint! {
    "detects unescaped backticks in doc comments"
 }
 
+declare_rustdoc_lint! {
+    /// This lint is **warn-by-default**. It detects explicit links that are the same
+    /// as computed automatic links. This usually means the explicit links are removable.
+    /// This is a `rustdoc` only lint, see the documentation in the [rustdoc book].
+    ///
+    /// [rustdoc book]: ../../../rustdoc/lints.html#redundant_explicit_links
+    REDUNDANT_EXPLICIT_LINKS,
+    Warn,
+    "detects redundant explicit links in doc comments"
+}
+
 pub(crate) static RUSTDOC_LINTS: Lazy<Vec<&'static Lint>> = Lazy::new(|| {
     vec![
         BROKEN_INTRA_DOC_LINKS,
@@ -197,11 +208,12 @@ pub(crate) static RUSTDOC_LINTS: Lazy<Vec<&'static Lint>> = Lazy::new(|| {
         BARE_URLS,
         MISSING_CRATE_LEVEL_DOCS,
         UNESCAPED_BACKTICKS,
+        REDUNDANT_EXPLICIT_LINKS,
     ]
 });
 
 pub(crate) fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
-    lint_store.register_lints(&**RUSTDOC_LINTS);
+    lint_store.register_lints(&RUSTDOC_LINTS);
     lint_store.register_group(
         true,
         "rustdoc::all",
@@ -220,4 +232,5 @@ pub(crate) fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
         .register_renamed("intra_doc_link_resolution_failure", "rustdoc::broken_intra_doc_links");
     lint_store.register_renamed("non_autolinks", "rustdoc::bare_urls");
     lint_store.register_renamed("rustdoc::non_autolinks", "rustdoc::bare_urls");
+    lint_store.register_removed("rustdoc::unportable_markdown", "old parser removed");
 }

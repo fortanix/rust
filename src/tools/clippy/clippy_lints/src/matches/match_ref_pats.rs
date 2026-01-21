@@ -1,4 +1,4 @@
-use clippy_utils::diagnostics::{multispan_sugg, span_lint_and_then};
+use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::source::{snippet, walk_span_to_context};
 use clippy_utils::sugg::Sugg;
 use core::iter::once;
@@ -14,6 +14,11 @@ where
     I: Clone + Iterator<Item = &'a Pat<'b>>,
 {
     if !has_multiple_ref_pats(pats.clone()) {
+        return;
+    }
+
+    // `!` cannot be deref-ed
+    if cx.typeck_results().expr_ty(scrutinee).is_never() {
         return;
     }
 
@@ -54,7 +59,11 @@ where
 
     span_lint_and_then(cx, MATCH_REF_PATS, expr.span, title, |diag| {
         if !expr.span.from_expansion() {
-            multispan_sugg(diag, msg, first_sugg.chain(remaining_suggs));
+            diag.multipart_suggestion(
+                msg,
+                first_sugg.chain(remaining_suggs).collect(),
+                Applicability::MachineApplicable,
+            );
         }
     });
 }

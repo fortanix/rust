@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(dead_code)]
 #![allow(unused_imports)]
 // Test how resolving a projection interacts with inference.  In this
@@ -20,7 +20,7 @@ trait Iterator {
 }
 
 trait IteratorExt: Iterator + Sized {
-    fn by_ref(&mut self) -> ByRef<Self> {
+    fn by_ref(&mut self) -> ByRef<'_, Self> {
         ByRef(self)
     }
 }

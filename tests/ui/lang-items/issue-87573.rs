@@ -7,8 +7,14 @@
 
 pub static STATIC_BOOL: bool = true;
 
+#[lang = "pointee_sized"]
+pub trait PointeeSized {}
+
+#[lang = "meta_sized"]
+pub trait MetaSized: PointeeSized {}
+
 #[lang = "sized"]
-trait Sized {}
+trait Sized: MetaSized {}
 
 #[lang = "copy"]
 trait Copy {}
@@ -18,11 +24,11 @@ trait Sync {}
 impl Sync for bool {}
 
 #[lang = "drop_in_place"]
-//~^ ERROR: `drop_in_place` language item must be applied to a function with at least 1 generic argument
+//~^ ERROR: `drop_in_place` lang item must be applied to a function with at least 1 generic argument
 fn drop_fn() {
     while false {}
 }
 
 #[lang = "start"]
-//~^ ERROR: `start` language item must be applied to a function with 1 generic argument
+//~^ ERROR: `start` lang item must be applied to a function with 1 generic argument
 fn start(){}

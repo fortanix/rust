@@ -22,8 +22,8 @@ LL | |     } else {
    |
 help: consider returning the local binding `s`
    |
-LL ~     let s: String = if let Some(s) = opt_str {
-LL +         s
+LL |     let s: String = if let Some(s) = opt_str {
+LL ~         s
 LL ~
    |
 
@@ -54,25 +54,29 @@ LL | |     } else {
    |
 help: consider returning the local binding `s`
    |
-LL ~     let s: String = if let Some(s) = opt_str {
-LL +         s
+LL |     let s: String = if let Some(s) = opt_str {
+LL ~         s
 LL ~
    |
 
 error[E0308]: `if` and `else` have incompatible types
   --> $DIR/return-bindings.rs:30:9
    |
-LL |       let s = if let Some(s) = opt_str {
-   |  ______________________________________-
-LL | |     } else {
-   | |_____- expected because of this
-LL |           String::new()
-   |           ^^^^^^^^^^^^^ expected `()`, found `String`
+LL |        let s = if let Some(s) = opt_str {
+   |  ______________-                        -
+   | | ______________________________________|
+LL | ||     } else {
+   | ||_____- expected because of this
+LL | |          String::new()
+   | |          ^^^^^^^^^^^^^ expected `()`, found `String`
+LL | |
+LL | |      };
+   | |______- `if` and `else` have incompatible types
    |
 help: consider returning the local binding `s`
    |
-LL ~     let s = if let Some(s) = opt_str {
-LL +         s
+LL |     let s = if let Some(s) = opt_str {
+LL ~         s
 LL ~     } else {
    |
 

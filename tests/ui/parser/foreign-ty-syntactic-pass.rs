@@ -1,8 +1,8 @@
-// check-pass
+//@ check-pass
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 extern "C" {
     type A: Ord;
     type A<'a> where 'a: 'static;

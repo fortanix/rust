@@ -1,6 +1,6 @@
-// ignore-32bit
+//@ ignore-32bit
 // This test gives a different error on 32-bit architectures.
-// stderr-per-bitwidth
+//@ stderr-per-bitwidth
 
 union Transmute<T: Copy, U: Copy> {
     t: T,
@@ -28,6 +28,6 @@ const FOO: &dyn Bar = &Foo {
     bar: false,
 };
 const G: Fat = unsafe { Transmute { t: FOO }.u };
-//~^ ERROR it is undefined behavior to use this value
+//~^ ERROR dangling reference
 
 fn main() {}

@@ -1,132 +1,114 @@
-// ignore-arm
-// ignore-aarch64
-// ignore-wasm
-// ignore-emscripten
-// ignore-mips
-// ignore-mips64
-// ignore-powerpc
-// ignore-powerpc64
-// ignore-riscv64
-// ignore-s390x
-// ignore-sparc
-// ignore-sparc64
-// ignore-loongarch64
+//@ only-x86_64
 
 #![warn(unused_attributes)]
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 extern crate alloc;
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 use alloc::alloc::alloc;
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 extern "Rust" {}
-//~^ NOTE not a function
 
 #[target_feature = "+sse2"]
 //~^ ERROR malformed `target_feature` attribute
+//~| NOTE expected this to be a list
 #[target_feature(enable = "foo")]
 //~^ ERROR not valid for this target
 //~| NOTE `foo` is not valid for this target
 #[target_feature(bar)]
 //~^ ERROR malformed `target_feature` attribute
+//~| NOTE expected this to be of the form `enable = "..."`
 #[target_feature(disable = "baz")]
 //~^ ERROR malformed `target_feature` attribute
+//~| NOTE expected this to be of the form `enable = "..."`
 unsafe fn foo() {}
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR `#[target_feature(..)]` can only be applied to `unsafe` functions
-//~| NOTE see issue #69098
-fn bar() {}
-//~^ NOTE not an `unsafe` function
-
-#[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 mod another {}
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 const FOO: usize = 7;
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 struct Foo;
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 enum Bar {}
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 union Qux {
-//~^ NOTE not a function
-    f1: u16,
+        f1: u16,
     f2: u16,
 }
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 type Uwu = ();
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 trait Baz {}
-//~^ NOTE not a function
 
 #[inline(always)]
 //~^ ERROR: cannot use `#[inline(always)]`
+//~| NOTE: see issue #145574 <https://github.com/rust-lang/rust/issues/145574> for more information
+//~| NOTE: this compiler was built on YYYY-MM-DD; consider upgrading it if it is out of date
 #[target_feature(enable = "sse2")]
 unsafe fn test() {}
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 static A: () = ();
-//~^ NOTE not a function
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 impl Quux for u8 {}
-//~^ NOTE not a function
+//~^ NOTE missing `foo` in implementation
+//~| ERROR missing: `foo`
 
 #[target_feature(enable = "sse2")]
-//~^ ERROR attribute should be applied to a function
+//~^ ERROR attribute cannot be used on
 impl Foo {}
-//~^ NOTE not a function
 
 trait Quux {
-    fn foo();
+    fn foo(); //~ NOTE `foo` from trait
+    //~^ NOTE: type in trait
 }
 
 impl Quux for Foo {
     #[target_feature(enable = "sse2")]
-    //~^ ERROR `#[target_feature(..)]` can only be applied to `unsafe` functions
-    //~| NOTE see issue #69098
+    //~^ ERROR `#[target_feature(..)]` cannot be applied to safe trait method
+    //~| NOTE cannot be applied to safe trait method
     fn foo() {}
     //~^ NOTE not an `unsafe` function
+    //~| ERROR: incompatible type for trait
+    //~| NOTE: expected safe fn, found unsafe fn
+    //~| NOTE: expected signature `fn()`
 }
 
 fn main() {
     #[target_feature(enable = "sse2")]
-    //~^ ERROR attribute should be applied to a function
+    //~^ ERROR attribute cannot be used on
     unsafe {
         foo();
-        bar();
     }
-    //~^^^^ NOTE not a function
 
     #[target_feature(enable = "sse2")]
-    //~^ ERROR attribute should be applied to a function
+    //~^ ERROR attribute cannot be used on
     || {};
-    //~^ NOTE not a function
-}
+    }
+
+#[target_feature(enable = "+sse2")]
+//~^ ERROR `+sse2` is not valid for this target
+//~| NOTE `+sse2` is not valid for this target
+unsafe fn hey() {}

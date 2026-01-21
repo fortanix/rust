@@ -1,5 +1,6 @@
-// ignore-wasm32 compiled with panic=abort by default
-// compile-flags: --crate-type lib -Cdebug-assertions=no
+// skip-filecheck
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
+// EMIT_MIR_FOR_EACH_BIT_WIDTH
 
 #![feature(flt2dec)]
 
@@ -8,8 +9,8 @@ extern crate core;
 use core::num::flt2dec;
 use std::fmt::{Formatter, Result};
 
-// EMIT_MIR funky_arms.float_to_exponential_common.ConstProp.diff
-fn float_to_exponential_common<T>(fmt: &mut Formatter<'_>, num: &T, upper: bool) -> Result
+// EMIT_MIR funky_arms.float_to_exponential_common.GVN.diff
+pub fn float_to_exponential_common<T>(fmt: &mut Formatter<'_>, num: &T, upper: bool) -> Result
 where
     T: flt2dec::DecodableFloat,
 {

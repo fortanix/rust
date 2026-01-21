@@ -1,9 +1,14 @@
-const C1: &'static mut [usize] = &mut [];
-//~^ ERROR: mutable references are not allowed
+//@ normalize-stderr: "\(size: \d+, align: \d+\)" -> "(size: $$PTR, align: $$PTR)"
+//@ normalize-stderr: "([0-9a-f][0-9a-f] |╾─*A(LLOC)?[0-9]+(\+[a-z0-9]+)?(<imm>)?─*╼ )+ *│.*" -> "HEX_DUMP"
+//@ dont-require-annotations: NOTE
 
-static mut S: usize = 3;
-const C2: &'static mut usize = unsafe { &mut S };
-//~^ ERROR: constants cannot refer to statics
-//~| ERROR: constants cannot refer to statics
+#![allow(static_mut_refs)]
+
+const C1: &'static mut [usize] = &mut [];
+//~^ ERROR: mutable borrows of temporaries
+
+static mut S: i32 = 3;
+const C2: &'static mut i32 = unsafe { &mut S };
+//~^ ERROR: encountered mutable reference
 
 fn main() {}

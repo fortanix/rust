@@ -1,4 +1,5 @@
-// run-pass
+//@ edition: 2015
+//@ check-pass
 // Make sure several unnamed function parameters don't conflict with each other
 
 trait Tr {

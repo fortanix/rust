@@ -1,53 +1,56 @@
-#![deny(rustc::untranslatable_diagnostic)]
-
-use crate::errors;
-use crate::expand::{self, AstFragment, Invocation};
-use crate::module::DirOwnership;
-
-use rustc_ast::attr::MarkedAttrs;
-use rustc_ast::mut_visit::DummyAstNode;
-use rustc_ast::ptr::P;
-use rustc_ast::token::{self, Nonterminal};
-use rustc_ast::tokenstream::TokenStream;
-use rustc_ast::visit::{AssocCtxt, Visitor};
-use rustc_ast::{self as ast, AttrVec, Attribute, HasAttrs, Item, NodeId, PatKind};
-use rustc_attr::{self as attr, Deprecation, Stability};
-use rustc_data_structures::fx::FxIndexMap;
-use rustc_data_structures::sync::{self, Lrc};
-use rustc_errors::{
-    Applicability, DiagnosticBuilder, ErrorGuaranteed, IntoDiagnostic, MultiSpan, PResult,
-};
-use rustc_lint_defs::builtin::PROC_MACRO_BACK_COMPAT;
-use rustc_lint_defs::{BufferedEarlyLint, BuiltinLintDiagnostics, RegisteredTools};
-use rustc_parse::{self, parser, MACRO_ARGUMENTS};
-use rustc_session::errors::report_lit_error;
-use rustc_session::{parse::ParseSess, Limit, Session};
-use rustc_span::def_id::{CrateNum, DefId, LocalDefId};
-use rustc_span::edition::Edition;
-use rustc_span::hygiene::{AstPass, ExpnData, ExpnKind, LocalExpnId};
-use rustc_span::source_map::SourceMap;
-use rustc_span::symbol::{kw, sym, Ident, Symbol};
-use rustc_span::{BytePos, FileName, Span, DUMMY_SP};
-use smallvec::{smallvec, SmallVec};
+use std::any::Any;
 use std::default::Default;
 use std::iter;
+use std::path::Component::Prefix;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
+
+use rustc_ast::attr::{AttributeExt, MarkedAttrs};
+use rustc_ast::token::MetaVarKind;
+use rustc_ast::tokenstream::TokenStream;
+use rustc_ast::visit::{AssocCtxt, Visitor};
+use rustc_ast::{self as ast, AttrVec, Attribute, HasAttrs, Item, NodeId, PatKind, Safety};
+use rustc_data_structures::fx::{FxHashMap, FxIndexMap};
+use rustc_data_structures::sync;
+use rustc_errors::{BufferedEarlyLint, DiagCtxtHandle, ErrorGuaranteed, PResult};
+use rustc_feature::Features;
+use rustc_hir as hir;
+use rustc_hir::attrs::{AttributeKind, CfgEntry, Deprecation};
+use rustc_hir::def::MacroKinds;
+use rustc_hir::limit::Limit;
+use rustc_hir::{Stability, find_attr};
+use rustc_lint_defs::RegisteredTools;
+use rustc_parse::MACRO_ARGUMENTS;
+use rustc_parse::parser::{ForceCollect, Parser};
+use rustc_session::Session;
+use rustc_session::config::CollapseMacroDebuginfo;
+use rustc_session::parse::ParseSess;
+use rustc_span::def_id::{CrateNum, DefId, LocalDefId};
+use rustc_span::edition::Edition;
+use rustc_span::hygiene::{AstPass, ExpnData, ExpnKind, LocalExpnId, MacroKind};
+use rustc_span::source_map::SourceMap;
+use rustc_span::{DUMMY_SP, FileName, Ident, Span, Symbol, kw, sym};
+use smallvec::{SmallVec, smallvec};
 use thin_vec::ThinVec;
 
-pub(crate) use rustc_span::hygiene::MacroKind;
+use crate::base::ast::MetaItemInner;
+use crate::errors;
+use crate::expand::{self, AstFragment, Invocation};
+use crate::mbe::macro_rules::ParserAnyMacro;
+use crate::module::DirOwnership;
+use crate::stats::MacroStat;
 
 // When adding new variants, make sure to
 // adjust the `visit_*` / `flat_map_*` calls in `InvocationCollector`
 // to use `assign_id!`
 #[derive(Debug, Clone)]
 pub enum Annotatable {
-    Item(P<ast::Item>),
-    TraitItem(P<ast::AssocItem>),
-    ImplItem(P<ast::AssocItem>),
-    ForeignItem(P<ast::ForeignItem>),
-    Stmt(P<ast::Stmt>),
-    Expr(P<ast::Expr>),
+    Item(Box<ast::Item>),
+    AssocItem(Box<ast::AssocItem>, AssocCtxt),
+    ForeignItem(Box<ast::ForeignItem>),
+    Stmt(Box<ast::Stmt>),
+    Expr(Box<ast::Expr>),
     Arm(ast::Arm),
     ExprField(ast::ExprField),
     PatField(ast::PatField),
@@ -55,6 +58,7 @@ pub enum Annotatable {
     Param(ast::Param),
     FieldDef(ast::FieldDef),
     Variant(ast::Variant),
+    WherePredicate(ast::WherePredicate),
     Crate(ast::Crate),
 }
 
@@ -62,8 +66,7 @@ impl Annotatable {
     pub fn span(&self) -> Span {
         match self {
             Annotatable::Item(item) => item.span,
-            Annotatable::TraitItem(trait_item) => trait_item.span,
-            Annotatable::ImplItem(impl_item) => impl_item.span,
+            Annotatable::AssocItem(assoc_item, _) => assoc_item.span,
             Annotatable::ForeignItem(foreign_item) => foreign_item.span,
             Annotatable::Stmt(stmt) => stmt.span,
             Annotatable::Expr(expr) => expr.span,
@@ -74,6 +77,7 @@ impl Annotatable {
             Annotatable::Param(p) => p.span,
             Annotatable::FieldDef(sf) => sf.span,
             Annotatable::Variant(v) => v.span,
+            Annotatable::WherePredicate(wp) => wp.span,
             Annotatable::Crate(c) => c.spans.inner_span,
         }
     }
@@ -81,8 +85,7 @@ impl Annotatable {
     pub fn visit_attrs(&mut self, f: impl FnOnce(&mut AttrVec)) {
         match self {
             Annotatable::Item(item) => item.visit_attrs(f),
-            Annotatable::TraitItem(trait_item) => trait_item.visit_attrs(f),
-            Annotatable::ImplItem(impl_item) => impl_item.visit_attrs(f),
+            Annotatable::AssocItem(assoc_item, _) => assoc_item.visit_attrs(f),
             Annotatable::ForeignItem(foreign_item) => foreign_item.visit_attrs(f),
             Annotatable::Stmt(stmt) => stmt.visit_attrs(f),
             Annotatable::Expr(expr) => expr.visit_attrs(f),
@@ -93,15 +96,15 @@ impl Annotatable {
             Annotatable::Param(p) => p.visit_attrs(f),
             Annotatable::FieldDef(sf) => sf.visit_attrs(f),
             Annotatable::Variant(v) => v.visit_attrs(f),
+            Annotatable::WherePredicate(wp) => wp.visit_attrs(f),
             Annotatable::Crate(c) => c.visit_attrs(f),
         }
     }
 
-    pub fn visit_with<'a, V: Visitor<'a>>(&'a self, visitor: &mut V) {
+    pub fn visit_with<'a, V: Visitor<'a>>(&'a self, visitor: &mut V) -> V::Result {
         match self {
             Annotatable::Item(item) => visitor.visit_item(item),
-            Annotatable::TraitItem(item) => visitor.visit_assoc_item(item, AssocCtxt::Trait),
-            Annotatable::ImplItem(item) => visitor.visit_assoc_item(item, AssocCtxt::Impl),
+            Annotatable::AssocItem(item, ctxt) => visitor.visit_assoc_item(item, *ctxt),
             Annotatable::ForeignItem(foreign_item) => visitor.visit_foreign_item(foreign_item),
             Annotatable::Stmt(stmt) => visitor.visit_stmt(stmt),
             Annotatable::Expr(expr) => visitor.visit_expr(expr),
@@ -112,6 +115,7 @@ impl Annotatable {
             Annotatable::Param(p) => visitor.visit_param(p),
             Annotatable::FieldDef(sf) => visitor.visit_field_def(sf),
             Annotatable::Variant(v) => visitor.visit_variant(v),
+            Annotatable::WherePredicate(wp) => visitor.visit_where_predicate(wp),
             Annotatable::Crate(c) => visitor.visit_crate(c),
         }
     }
@@ -119,9 +123,7 @@ impl Annotatable {
     pub fn to_tokens(&self) -> TokenStream {
         match self {
             Annotatable::Item(node) => TokenStream::from_ast(node),
-            Annotatable::TraitItem(node) | Annotatable::ImplItem(node) => {
-                TokenStream::from_ast(node)
-            }
+            Annotatable::AssocItem(node, _) => TokenStream::from_ast(node),
             Annotatable::ForeignItem(node) => TokenStream::from_ast(node),
             Annotatable::Stmt(node) => {
                 assert!(!matches!(node.kind, ast::StmtKind::Empty));
@@ -135,32 +137,33 @@ impl Annotatable {
             | Annotatable::Param(..)
             | Annotatable::FieldDef(..)
             | Annotatable::Variant(..)
+            | Annotatable::WherePredicate(..)
             | Annotatable::Crate(..) => panic!("unexpected annotatable"),
         }
     }
 
-    pub fn expect_item(self) -> P<ast::Item> {
+    pub fn expect_item(self) -> Box<ast::Item> {
         match self {
             Annotatable::Item(i) => i,
             _ => panic!("expected Item"),
         }
     }
 
-    pub fn expect_trait_item(self) -> P<ast::AssocItem> {
+    pub fn expect_trait_item(self) -> Box<ast::AssocItem> {
         match self {
-            Annotatable::TraitItem(i) => i,
+            Annotatable::AssocItem(i, AssocCtxt::Trait) => i,
             _ => panic!("expected Item"),
         }
     }
 
-    pub fn expect_impl_item(self) -> P<ast::AssocItem> {
+    pub fn expect_impl_item(self) -> Box<ast::AssocItem> {
         match self {
-            Annotatable::ImplItem(i) => i,
+            Annotatable::AssocItem(i, AssocCtxt::Impl { .. }) => i,
             _ => panic!("expected Item"),
         }
     }
 
-    pub fn expect_foreign_item(self) -> P<ast::ForeignItem> {
+    pub fn expect_foreign_item(self) -> Box<ast::ForeignItem> {
         match self {
             Annotatable::ForeignItem(i) => i,
             _ => panic!("expected foreign item"),
@@ -169,12 +172,12 @@ impl Annotatable {
 
     pub fn expect_stmt(self) -> ast::Stmt {
         match self {
-            Annotatable::Stmt(stmt) => stmt.into_inner(),
+            Annotatable::Stmt(stmt) => *stmt,
             _ => panic!("expected statement"),
         }
     }
 
-    pub fn expect_expr(self) -> P<ast::Expr> {
+    pub fn expect_expr(self) -> Box<ast::Expr> {
         match self {
             Annotatable::Expr(expr) => expr,
             _ => panic!("expected expression"),
@@ -230,6 +233,13 @@ impl Annotatable {
         }
     }
 
+    pub fn expect_where_predicate(self) -> ast::WherePredicate {
+        match self {
+            Annotatable::WherePredicate(wp) => wp,
+            _ => panic!("expected where predicate"),
+        }
+    }
+
     pub fn expect_crate(self) -> ast::Crate {
         match self {
             Annotatable::Crate(krate) => krate,
@@ -245,6 +255,34 @@ pub enum ExpandResult<T, U> {
     Ready(T),
     /// Expansion could not produce a result and needs to be retried.
     Retry(U),
+}
+
+impl<T, U> ExpandResult<T, U> {
+    pub fn map<E, F: FnOnce(T) -> E>(self, f: F) -> ExpandResult<E, U> {
+        match self {
+            ExpandResult::Ready(t) => ExpandResult::Ready(f(t)),
+            ExpandResult::Retry(u) => ExpandResult::Retry(u),
+        }
+    }
+}
+
+impl<'cx> MacroExpanderResult<'cx> {
+    /// Creates a [`MacroExpanderResult::Ready`] from a [`TokenStream`].
+    ///
+    /// The `TokenStream` is forwarded without any expansion.
+    pub fn from_tts(
+        cx: &'cx mut ExtCtxt<'_>,
+        tts: TokenStream,
+        site_span: Span,
+        arm_span: Span,
+        macro_ident: Ident,
+    ) -> Self {
+        // Emit the SEMICOLON_IN_EXPRESSIONS_FROM_MACROS deprecation lint.
+        let is_local = true;
+
+        let parser = ParserAnyMacro::from_tts(cx, tts, site_span, arm_span, is_local, macro_ident);
+        ExpandResult::Ready(Box::new(parser))
+    }
 }
 
 pub trait MultiItemModifier {
@@ -286,16 +324,16 @@ pub trait BangProcMacro {
 
 impl<F> BangProcMacro for F
 where
-    F: Fn(TokenStream) -> TokenStream,
+    F: Fn(&mut ExtCtxt<'_>, Span, TokenStream) -> Result<TokenStream, ErrorGuaranteed>,
 {
     fn expand<'cx>(
         &self,
-        _ecx: &'cx mut ExtCtxt<'_>,
-        _span: Span,
+        ecx: &'cx mut ExtCtxt<'_>,
+        span: Span,
         ts: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed> {
         // FIXME setup implicit context in TLS before calling self.
-        Ok(self(ts))
+        self(ecx, span, ts)
     }
 }
 
@@ -307,6 +345,21 @@ pub trait AttrProcMacro {
         annotation: TokenStream,
         annotated: TokenStream,
     ) -> Result<TokenStream, ErrorGuaranteed>;
+
+    // Default implementation for safe attributes; override if the attribute can be unsafe.
+    fn expand_with_safety<'cx>(
+        &self,
+        ecx: &'cx mut ExtCtxt<'_>,
+        safety: Safety,
+        span: Span,
+        annotation: TokenStream,
+        annotated: TokenStream,
+    ) -> Result<TokenStream, ErrorGuaranteed> {
+        if let Safety::Unsafe(span) = safety {
+            ecx.dcx().span_err(span, "unnecessary `unsafe` on safe attribute");
+        }
+        self.expand(ecx, span, annotation, annotated)
+    }
 }
 
 impl<F> AttrProcMacro for F
@@ -326,30 +379,36 @@ where
 }
 
 /// Represents a thing that maps token trees to Macro Results
-pub trait TTMacroExpander {
+pub trait TTMacroExpander: Any {
     fn expand<'cx>(
         &self,
         ecx: &'cx mut ExtCtxt<'_>,
         span: Span,
         input: TokenStream,
-    ) -> Box<dyn MacResult + 'cx>;
+    ) -> MacroExpanderResult<'cx>;
 }
 
-pub type MacroExpanderFn =
-    for<'cx> fn(&'cx mut ExtCtxt<'_>, Span, TokenStream) -> Box<dyn MacResult + 'cx>;
+pub type MacroExpanderResult<'cx> = ExpandResult<Box<dyn MacResult + 'cx>, ()>;
 
-impl<F> TTMacroExpander for F
+pub type MacroExpanderFn =
+    for<'cx> fn(&'cx mut ExtCtxt<'_>, Span, TokenStream) -> MacroExpanderResult<'cx>;
+
+impl<F: 'static> TTMacroExpander for F
 where
-    F: for<'cx> Fn(&'cx mut ExtCtxt<'_>, Span, TokenStream) -> Box<dyn MacResult + 'cx>,
+    F: for<'cx> Fn(&'cx mut ExtCtxt<'_>, Span, TokenStream) -> MacroExpanderResult<'cx>,
 {
     fn expand<'cx>(
         &self,
         ecx: &'cx mut ExtCtxt<'_>,
         span: Span,
         input: TokenStream,
-    ) -> Box<dyn MacResult + 'cx> {
+    ) -> MacroExpanderResult<'cx> {
         self(ecx, span, input)
     }
+}
+
+pub trait GlobDelegationExpander {
+    fn expand(&self, ecx: &mut ExtCtxt<'_>) -> ExpandResult<Vec<(Ident, Option<Ident>)>, ()>;
 }
 
 // Use a macro because forwarding to a simple function has type system issues
@@ -369,32 +428,37 @@ macro_rules! make_stmts_default {
 /// methods are spliced into the AST at the callsite of the macro.
 pub trait MacResult {
     /// Creates an expression.
-    fn make_expr(self: Box<Self>) -> Option<P<ast::Expr>> {
+    fn make_expr(self: Box<Self>) -> Option<Box<ast::Expr>> {
         None
     }
 
     /// Creates zero or more items.
-    fn make_items(self: Box<Self>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
+    fn make_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::Item>; 1]>> {
         None
     }
 
     /// Creates zero or more impl items.
-    fn make_impl_items(self: Box<Self>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_impl_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
+        None
+    }
+
+    /// Creates zero or more impl items.
+    fn make_trait_impl_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         None
     }
 
     /// Creates zero or more trait items.
-    fn make_trait_items(self: Box<Self>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_trait_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         None
     }
 
     /// Creates zero or more items in an `extern {}` block
-    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[P<ast::ForeignItem>; 1]>> {
+    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::ForeignItem>; 1]>> {
         None
     }
 
     /// Creates a pattern.
-    fn make_pat(self: Box<Self>) -> Option<P<ast::Pat>> {
+    fn make_pat(self: Box<Self>) -> Option<Box<ast::Pat>> {
         None
     }
 
@@ -406,7 +470,7 @@ pub trait MacResult {
         make_stmts_default!(self)
     }
 
-    fn make_ty(self: Box<Self>) -> Option<P<ast::Ty>> {
+    fn make_ty(self: Box<Self>) -> Option<Box<ast::Ty>> {
         None
     }
 
@@ -435,6 +499,10 @@ pub trait MacResult {
     }
 
     fn make_variants(self: Box<Self>) -> Option<SmallVec<[ast::Variant; 1]>> {
+        None
+    }
+
+    fn make_where_predicates(self: Box<Self>) -> Option<SmallVec<[ast::WherePredicate; 1]>> {
         None
     }
 
@@ -469,34 +537,38 @@ macro_rules! make_MacEager {
 }
 
 make_MacEager! {
-    expr: P<ast::Expr>,
-    pat: P<ast::Pat>,
-    items: SmallVec<[P<ast::Item>; 1]>,
-    impl_items: SmallVec<[P<ast::AssocItem>; 1]>,
-    trait_items: SmallVec<[P<ast::AssocItem>; 1]>,
-    foreign_items: SmallVec<[P<ast::ForeignItem>; 1]>,
+    expr: Box<ast::Expr>,
+    pat: Box<ast::Pat>,
+    items: SmallVec<[Box<ast::Item>; 1]>,
+    impl_items: SmallVec<[Box<ast::AssocItem>; 1]>,
+    trait_items: SmallVec<[Box<ast::AssocItem>; 1]>,
+    foreign_items: SmallVec<[Box<ast::ForeignItem>; 1]>,
     stmts: SmallVec<[ast::Stmt; 1]>,
-    ty: P<ast::Ty>,
+    ty: Box<ast::Ty>,
 }
 
 impl MacResult for MacEager {
-    fn make_expr(self: Box<Self>) -> Option<P<ast::Expr>> {
+    fn make_expr(self: Box<Self>) -> Option<Box<ast::Expr>> {
         self.expr
     }
 
-    fn make_items(self: Box<Self>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
+    fn make_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::Item>; 1]>> {
         self.items
     }
 
-    fn make_impl_items(self: Box<Self>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_impl_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         self.impl_items
     }
 
-    fn make_trait_items(self: Box<Self>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_trait_impl_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
+        self.impl_items
+    }
+
+    fn make_trait_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         self.trait_items
     }
 
-    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[P<ast::ForeignItem>; 1]>> {
+    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::ForeignItem>; 1]>> {
         self.foreign_items
     }
 
@@ -507,16 +579,16 @@ impl MacResult for MacEager {
         }
     }
 
-    fn make_pat(self: Box<Self>) -> Option<P<ast::Pat>> {
+    fn make_pat(self: Box<Self>) -> Option<Box<ast::Pat>> {
         if let Some(p) = self.pat {
             return Some(p);
         }
         if let Some(e) = self.expr {
             if matches!(e.kind, ast::ExprKind::Lit(_) | ast::ExprKind::IncludedBytes(_)) {
-                return Some(P(ast::Pat {
+                return Some(Box::new(ast::Pat {
                     id: ast::DUMMY_NODE_ID,
                     span: e.span,
-                    kind: PatKind::Lit(e),
+                    kind: PatKind::Expr(e),
                     tokens: None,
                 }));
             }
@@ -524,7 +596,7 @@ impl MacResult for MacEager {
         None
     }
 
-    fn make_ty(self: Box<Self>) -> Option<P<ast::Ty>> {
+    fn make_ty(self: Box<Self>) -> Option<Box<ast::Ty>> {
         self.ty
     }
 }
@@ -533,7 +605,7 @@ impl MacResult for MacEager {
 /// after hitting errors.
 #[derive(Copy, Clone)]
 pub struct DummyResult {
-    is_error: bool,
+    guar: Option<ErrorGuaranteed>,
     span: Span,
 }
 
@@ -542,77 +614,83 @@ impl DummyResult {
     ///
     /// Use this as a return value after hitting any errors and
     /// calling `span_err`.
-    pub fn any(span: Span) -> Box<dyn MacResult + 'static> {
-        Box::new(DummyResult { is_error: true, span })
+    pub fn any(span: Span, guar: ErrorGuaranteed) -> Box<dyn MacResult + 'static> {
+        Box::new(DummyResult { guar: Some(guar), span })
     }
 
     /// Same as `any`, but must be a valid fragment, not error.
     pub fn any_valid(span: Span) -> Box<dyn MacResult + 'static> {
-        Box::new(DummyResult { is_error: false, span })
+        Box::new(DummyResult { guar: None, span })
     }
 
     /// A plain dummy expression.
-    pub fn raw_expr(sp: Span, is_error: bool) -> P<ast::Expr> {
-        P(ast::Expr {
+    pub fn raw_expr(sp: Span, guar: Option<ErrorGuaranteed>) -> Box<ast::Expr> {
+        Box::new(ast::Expr {
             id: ast::DUMMY_NODE_ID,
-            kind: if is_error { ast::ExprKind::Err } else { ast::ExprKind::Tup(ThinVec::new()) },
+            kind: if let Some(guar) = guar {
+                ast::ExprKind::Err(guar)
+            } else {
+                ast::ExprKind::Tup(ThinVec::new())
+            },
             span: sp,
             attrs: ast::AttrVec::new(),
-            tokens: None,
-        })
-    }
-
-    /// A plain dummy pattern.
-    pub fn raw_pat(sp: Span) -> ast::Pat {
-        ast::Pat { id: ast::DUMMY_NODE_ID, kind: PatKind::Wild, span: sp, tokens: None }
-    }
-
-    /// A plain dummy type.
-    pub fn raw_ty(sp: Span, is_error: bool) -> P<ast::Ty> {
-        P(ast::Ty {
-            id: ast::DUMMY_NODE_ID,
-            kind: if is_error { ast::TyKind::Err } else { ast::TyKind::Tup(ThinVec::new()) },
-            span: sp,
             tokens: None,
         })
     }
 }
 
 impl MacResult for DummyResult {
-    fn make_expr(self: Box<DummyResult>) -> Option<P<ast::Expr>> {
-        Some(DummyResult::raw_expr(self.span, self.is_error))
+    fn make_expr(self: Box<DummyResult>) -> Option<Box<ast::Expr>> {
+        Some(DummyResult::raw_expr(self.span, self.guar))
     }
 
-    fn make_pat(self: Box<DummyResult>) -> Option<P<ast::Pat>> {
-        Some(P(DummyResult::raw_pat(self.span)))
+    fn make_pat(self: Box<DummyResult>) -> Option<Box<ast::Pat>> {
+        Some(Box::new(ast::Pat {
+            id: ast::DUMMY_NODE_ID,
+            kind: PatKind::Wild,
+            span: self.span,
+            tokens: None,
+        }))
     }
 
-    fn make_items(self: Box<DummyResult>) -> Option<SmallVec<[P<ast::Item>; 1]>> {
+    fn make_items(self: Box<DummyResult>) -> Option<SmallVec<[Box<ast::Item>; 1]>> {
         Some(SmallVec::new())
     }
 
-    fn make_impl_items(self: Box<DummyResult>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_impl_items(self: Box<DummyResult>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         Some(SmallVec::new())
     }
 
-    fn make_trait_items(self: Box<DummyResult>) -> Option<SmallVec<[P<ast::AssocItem>; 1]>> {
+    fn make_trait_impl_items(self: Box<DummyResult>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
         Some(SmallVec::new())
     }
 
-    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[P<ast::ForeignItem>; 1]>> {
+    fn make_trait_items(self: Box<DummyResult>) -> Option<SmallVec<[Box<ast::AssocItem>; 1]>> {
+        Some(SmallVec::new())
+    }
+
+    fn make_foreign_items(self: Box<Self>) -> Option<SmallVec<[Box<ast::ForeignItem>; 1]>> {
         Some(SmallVec::new())
     }
 
     fn make_stmts(self: Box<DummyResult>) -> Option<SmallVec<[ast::Stmt; 1]>> {
         Some(smallvec![ast::Stmt {
             id: ast::DUMMY_NODE_ID,
-            kind: ast::StmtKind::Expr(DummyResult::raw_expr(self.span, self.is_error)),
+            kind: ast::StmtKind::Expr(DummyResult::raw_expr(self.span, self.guar)),
             span: self.span,
         }])
     }
 
-    fn make_ty(self: Box<DummyResult>) -> Option<P<ast::Ty>> {
-        Some(DummyResult::raw_ty(self.span, self.is_error))
+    fn make_ty(self: Box<DummyResult>) -> Option<Box<ast::Ty>> {
+        // FIXME(nnethercote): you might expect `ast::TyKind::Dummy` to be used here, but some
+        // values produced here end up being lowered to HIR, which `ast::TyKind::Dummy` does not
+        // support, so we use an empty tuple instead.
+        Some(Box::new(ast::Ty {
+            id: ast::DUMMY_NODE_ID,
+            kind: ast::TyKind::Tup(ThinVec::new()),
+            span: self.span,
+            tokens: None,
+        }))
     }
 
     fn make_arms(self: Box<DummyResult>) -> Option<SmallVec<[ast::Arm; 1]>> {
@@ -644,30 +722,40 @@ impl MacResult for DummyResult {
     }
 
     fn make_crate(self: Box<DummyResult>) -> Option<ast::Crate> {
-        Some(DummyAstNode::dummy())
+        Some(ast::Crate {
+            attrs: Default::default(),
+            items: Default::default(),
+            spans: Default::default(),
+            id: ast::DUMMY_NODE_ID,
+            is_placeholder: Default::default(),
+        })
     }
 }
 
 /// A syntax extension kind.
+#[derive(Clone)]
 pub enum SyntaxExtensionKind {
+    /// A `macro_rules!` macro that can work as any `MacroKind`
+    MacroRules(Arc<crate::MacroRulesMacroExpander>),
+
     /// A token-based function-like macro.
     Bang(
         /// An expander with signature TokenStream -> TokenStream.
-        Box<dyn BangProcMacro + sync::Sync + sync::Send>,
+        Arc<dyn BangProcMacro + sync::DynSync + sync::DynSend>,
     ),
 
     /// An AST-based function-like macro.
     LegacyBang(
         /// An expander with signature TokenStream -> AST.
-        Box<dyn TTMacroExpander + sync::Sync + sync::Send>,
+        Arc<dyn TTMacroExpander + sync::DynSync + sync::DynSend>,
     ),
 
     /// A token-based attribute macro.
     Attr(
         /// An expander with signature (TokenStream, TokenStream) -> TokenStream.
-        /// The first TokenSteam is the attribute itself, the second is the annotated item.
-        /// The produced TokenSteam replaces the input TokenSteam.
-        Box<dyn AttrProcMacro + sync::Sync + sync::Send>,
+        /// The first TokenStream is the attribute itself, the second is the annotated item.
+        /// The produced TokenStream replaces the input TokenStream.
+        Arc<dyn AttrProcMacro + sync::DynSync + sync::DynSend>,
     ),
 
     /// An AST-based attribute macro.
@@ -675,32 +763,66 @@ pub enum SyntaxExtensionKind {
         /// An expander with signature (AST, AST) -> AST.
         /// The first AST fragment is the attribute itself, the second is the annotated item.
         /// The produced AST fragment replaces the input AST fragment.
-        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
     ),
 
     /// A trivial attribute "macro" that does nothing,
     /// only keeps the attribute and marks it as inert,
     /// thus making it ineligible for further expansion.
+    /// E.g. `#[default]`, `#[rustfmt::skip]`.
     NonMacroAttr,
 
     /// A token-based derive macro.
     Derive(
         /// An expander with signature TokenStream -> TokenStream.
-        /// The produced TokenSteam is appended to the input TokenSteam.
+        /// The produced TokenStream is appended to the input TokenStream.
         ///
         /// FIXME: The text above describes how this should work. Currently it
         /// is handled identically to `LegacyDerive`. It should be migrated to
         /// a token-based representation like `Bang` and `Attr`, instead of
         /// using `MultiItemModifier`.
-        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
     ),
 
     /// An AST-based derive macro.
     LegacyDerive(
         /// An expander with signature AST -> AST.
         /// The produced AST fragment is appended to the input AST fragment.
-        Box<dyn MultiItemModifier + sync::Sync + sync::Send>,
+        Arc<dyn MultiItemModifier + sync::DynSync + sync::DynSend>,
     ),
+
+    /// A glob delegation.
+    ///
+    /// This is for delegated function implementations, and has nothing to do with glob imports.
+    GlobDelegation(Arc<dyn GlobDelegationExpander + sync::DynSync + sync::DynSend>),
+}
+
+impl SyntaxExtensionKind {
+    /// Returns `Some(expander)` for a macro usable as a `LegacyBang`; otherwise returns `None`
+    ///
+    /// This includes a `MacroRules` with function-like rules.
+    pub fn as_legacy_bang(&self) -> Option<&(dyn TTMacroExpander + sync::DynSync + sync::DynSend)> {
+        match self {
+            SyntaxExtensionKind::LegacyBang(exp) => Some(exp.as_ref()),
+            SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::BANG) => {
+                Some(exp.as_ref())
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns `Some(expander)` for a macro usable as an `Attr`; otherwise returns `None`
+    ///
+    /// This includes a `MacroRules` with `attr` rules.
+    pub fn as_attr(&self) -> Option<&(dyn AttrProcMacro + sync::DynSync + sync::DynSend)> {
+        match self {
+            SyntaxExtensionKind::Attr(exp) => Some(exp.as_ref()),
+            SyntaxExtensionKind::MacroRules(exp) if exp.kinds().contains(MacroKinds::ATTR) => {
+                Some(exp.as_ref())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// A struct representing a macro definition in "lowered" form ready for expansion.
@@ -710,7 +832,7 @@ pub struct SyntaxExtension {
     /// Span of the macro definition.
     pub span: Span,
     /// List of unstable features that are treated as stable inside this macro.
-    pub allow_internal_unstable: Option<Lrc<[Symbol]>>,
+    pub allow_internal_unstable: Option<Arc<[Symbol]>>,
     /// The macro's stability info.
     pub stability: Option<Stability>,
     /// The macro's deprecation info.
@@ -732,16 +854,19 @@ pub struct SyntaxExtension {
 }
 
 impl SyntaxExtension {
-    /// Returns which kind of macro calls this syntax extension.
-    pub fn macro_kind(&self) -> MacroKind {
+    /// Returns which kinds of macro call this syntax extension.
+    pub fn macro_kinds(&self) -> MacroKinds {
         match self.kind {
-            SyntaxExtensionKind::Bang(..) | SyntaxExtensionKind::LegacyBang(..) => MacroKind::Bang,
+            SyntaxExtensionKind::Bang(..)
+            | SyntaxExtensionKind::LegacyBang(..)
+            | SyntaxExtensionKind::GlobDelegation(..) => MacroKinds::BANG,
             SyntaxExtensionKind::Attr(..)
             | SyntaxExtensionKind::LegacyAttr(..)
-            | SyntaxExtensionKind::NonMacroAttr => MacroKind::Attr,
+            | SyntaxExtensionKind::NonMacroAttr => MacroKinds::ATTR,
             SyntaxExtensionKind::Derive(..) | SyntaxExtensionKind::LegacyDerive(..) => {
-                MacroKind::Derive
+                MacroKinds::DERIVE
             }
+            SyntaxExtensionKind::MacroRules(ref m) => m.kinds(),
         }
     }
 
@@ -762,6 +887,58 @@ impl SyntaxExtension {
         }
     }
 
+    fn collapse_debuginfo_by_name(
+        attr: &impl AttributeExt,
+    ) -> Result<CollapseMacroDebuginfo, Span> {
+        let list = attr.meta_item_list();
+        let Some([MetaItemInner::MetaItem(item)]) = list.as_deref() else {
+            return Err(attr.span());
+        };
+        if !item.is_word() {
+            return Err(item.span);
+        }
+
+        match item.name() {
+            Some(sym::no) => Ok(CollapseMacroDebuginfo::No),
+            Some(sym::external) => Ok(CollapseMacroDebuginfo::External),
+            Some(sym::yes) => Ok(CollapseMacroDebuginfo::Yes),
+            _ => Err(item.path.span),
+        }
+    }
+
+    /// if-ext - if macro from different crate (related to callsite code)
+    /// | cmd \ attr    | no  | (unspecified) | external | yes |
+    /// | no            | no  | no            | no       | no  |
+    /// | (unspecified) | no  | if-ext        | if-ext   | yes |
+    /// | external      | no  | if-ext        | if-ext   | yes |
+    /// | yes           | yes | yes           | yes      | yes |
+    fn get_collapse_debuginfo(sess: &Session, attrs: &[hir::Attribute], ext: bool) -> bool {
+        let flag = sess.opts.cg.collapse_macro_debuginfo;
+        let attr = ast::attr::find_by_name(attrs, sym::collapse_debuginfo)
+            .and_then(|attr| {
+                Self::collapse_debuginfo_by_name(attr)
+                    .map_err(|span| {
+                        sess.dcx().emit_err(errors::CollapseMacroDebuginfoIllegal { span })
+                    })
+                    .ok()
+            })
+            .unwrap_or_else(|| {
+                if find_attr!(attrs, AttributeKind::RustcBuiltinMacro { .. }) {
+                    CollapseMacroDebuginfo::Yes
+                } else {
+                    CollapseMacroDebuginfo::Unspecified
+                }
+            });
+        #[rustfmt::skip]
+        let collapse_table = [
+            [false, false, false, false],
+            [false, ext,   ext,   true],
+            [false, ext,   ext,   true],
+            [true,  true,  true,  true],
+        ];
+        collapse_table[flag as usize][attr as usize]
+    }
+
     /// Constructs a syntax extension with the given properties
     /// and other properties converted from attributes.
     pub fn new(
@@ -771,39 +948,45 @@ impl SyntaxExtension {
         helper_attrs: Vec<Symbol>,
         edition: Edition,
         name: Symbol,
-        attrs: &[ast::Attribute],
+        attrs: &[hir::Attribute],
+        is_local: bool,
     ) -> SyntaxExtension {
         let allow_internal_unstable =
-            attr::allow_internal_unstable(sess, &attrs).collect::<Vec<Symbol>>();
+            find_attr!(attrs, AttributeKind::AllowInternalUnstable(i, _) => i)
+                .map(|i| i.as_slice())
+                .unwrap_or_default();
+        let allow_internal_unsafe = find_attr!(attrs, AttributeKind::AllowInternalUnsafe(_));
 
-        let allow_internal_unsafe = attr::contains_name(attrs, sym::allow_internal_unsafe);
-        let local_inner_macros = attr::find_by_name(attrs, sym::macro_export)
-            .and_then(|macro_export| macro_export.meta_item_list())
-            .map_or(false, |l| attr::list_contains_name(&l, sym::local_inner_macros));
-        let collapse_debuginfo = attr::contains_name(attrs, sym::collapse_debuginfo);
-        tracing::debug!(?local_inner_macros, ?collapse_debuginfo, ?allow_internal_unsafe);
+        let local_inner_macros =
+            *find_attr!(attrs, AttributeKind::MacroExport {local_inner_macros: l, ..} => l)
+                .unwrap_or(&false);
+        let collapse_debuginfo = Self::get_collapse_debuginfo(sess, attrs, !is_local);
+        tracing::debug!(?name, ?local_inner_macros, ?collapse_debuginfo, ?allow_internal_unsafe);
 
-        let (builtin_name, helper_attrs) = attr::find_by_name(attrs, sym::rustc_builtin_macro)
-            .map(|attr| {
-                // Override `helper_attrs` passed above if it's a built-in macro,
-                // marking `proc_macro_derive` macros as built-in is not a realistic use case.
-                parse_macro_name_and_helper_attrs(sess.diagnostic(), attr, "built-in").map_or_else(
-                    || (Some(name), Vec::new()),
-                    |(name, helper_attrs)| (Some(name), helper_attrs),
-                )
-            })
-            .unwrap_or_else(|| (None, helper_attrs));
-        let stability = attr::find_stability(&sess, attrs, span);
-        let const_stability = attr::find_const_stability(&sess, attrs, span);
-        let body_stability = attr::find_body_stability(&sess, attrs);
-        if let Some((_, sp)) = const_stability {
-            sess.emit_err(errors::MacroConstStability {
+        let (builtin_name, helper_attrs) = match find_attr!(attrs, AttributeKind::RustcBuiltinMacro { builtin_name, helper_attrs, .. } => (builtin_name, helper_attrs))
+        {
+            // Override `helper_attrs` passed above if it's a built-in macro,
+            // marking `proc_macro_derive` macros as built-in is not a realistic use case.
+            Some((Some(name), helper_attrs)) => {
+                (Some(*name), helper_attrs.iter().copied().collect())
+            }
+            Some((None, _)) => (Some(name), Vec::new()),
+
+            // Not a built-in macro
+            None => (None, helper_attrs),
+        };
+
+        let stability = find_attr!(attrs, AttributeKind::Stability { stability, .. } => *stability);
+
+        // FIXME(jdonszelmann): make it impossible to miss the or_else in the typesystem
+        if let Some(sp) = find_attr!(attrs, AttributeKind::ConstStability { span, .. } => *span) {
+            sess.dcx().emit_err(errors::MacroConstStability {
                 span: sp,
                 head_span: sess.source_map().guess_head_span(span),
             });
         }
-        if let Some((_, sp)) = body_stability {
-            sess.emit_err(errors::MacroBodyStability {
+        if let Some(sp) = find_attr!(attrs, AttributeKind::BodyStability{ span, .. } => *span) {
+            sess.dcx().emit_err(errors::MacroBodyStability {
                 span: sp,
                 head_span: sess.source_map().guess_head_span(span),
             });
@@ -813,9 +996,13 @@ impl SyntaxExtension {
             kind,
             span,
             allow_internal_unstable: (!allow_internal_unstable.is_empty())
-                .then(|| allow_internal_unstable.into()),
-            stability: stability.map(|(s, _)| s),
-            deprecation: attr::find_deprecation(&sess, attrs).map(|(d, _)| d),
+                // FIXME(jdonszelmann): avoid the into_iter/collect?
+                .then(|| allow_internal_unstable.iter().map(|i| i.0).collect::<Vec<_>>().into()),
+            stability,
+            deprecation: find_attr!(
+                attrs,
+                AttributeKind::Deprecation { deprecation, .. } => *deprecation
+            ),
             helper_attrs,
             edition,
             builtin_name,
@@ -825,17 +1012,19 @@ impl SyntaxExtension {
         }
     }
 
+    /// A dummy bang macro `foo!()`.
     pub fn dummy_bang(edition: Edition) -> SyntaxExtension {
-        fn expander<'cx>(
-            _: &'cx mut ExtCtxt<'_>,
+        fn expand(
+            ecx: &mut ExtCtxt<'_>,
             span: Span,
-            _: TokenStream,
-        ) -> Box<dyn MacResult + 'cx> {
-            DummyResult::any(span)
+            _ts: TokenStream,
+        ) -> Result<TokenStream, ErrorGuaranteed> {
+            Err(ecx.dcx().span_delayed_bug(span, "expanded a dummy bang macro"))
         }
-        SyntaxExtension::default(SyntaxExtensionKind::LegacyBang(Box::new(expander)), edition)
+        SyntaxExtension::default(SyntaxExtensionKind::Bang(Arc::new(expand)), edition)
     }
 
+    /// A dummy derive macro `#[derive(Foo)]`.
     pub fn dummy_derive(edition: Edition) -> SyntaxExtension {
         fn expander(
             _: &mut ExtCtxt<'_>,
@@ -845,11 +1034,37 @@ impl SyntaxExtension {
         ) -> Vec<Annotatable> {
             Vec::new()
         }
-        SyntaxExtension::default(SyntaxExtensionKind::Derive(Box::new(expander)), edition)
+        SyntaxExtension::default(SyntaxExtensionKind::Derive(Arc::new(expander)), edition)
     }
 
     pub fn non_macro_attr(edition: Edition) -> SyntaxExtension {
         SyntaxExtension::default(SyntaxExtensionKind::NonMacroAttr, edition)
+    }
+
+    pub fn glob_delegation(
+        trait_def_id: DefId,
+        impl_def_id: LocalDefId,
+        edition: Edition,
+    ) -> SyntaxExtension {
+        struct GlobDelegationExpanderImpl {
+            trait_def_id: DefId,
+            impl_def_id: LocalDefId,
+        }
+        impl GlobDelegationExpander for GlobDelegationExpanderImpl {
+            fn expand(
+                &self,
+                ecx: &mut ExtCtxt<'_>,
+            ) -> ExpandResult<Vec<(Ident, Option<Ident>)>, ()> {
+                match ecx.resolver.glob_delegation_suffixes(self.trait_def_id, self.impl_def_id) {
+                    Ok(suffixes) => ExpandResult::Ready(suffixes),
+                    Err(Indeterminate) if ecx.force_mode => ExpandResult::Ready(Vec::new()),
+                    Err(Indeterminate) => ExpandResult::Retry(()),
+                }
+            }
+        }
+
+        let expander = GlobDelegationExpanderImpl { trait_def_id, impl_def_id };
+        SyntaxExtension::default(SyntaxExtensionKind::GlobDelegation(Arc::new(expander)), edition)
     }
 
     pub fn expn_data(
@@ -857,11 +1072,12 @@ impl SyntaxExtension {
         parent: LocalExpnId,
         call_site: Span,
         descr: Symbol,
+        kind: MacroKind,
         macro_def_id: Option<DefId>,
         parent_module: Option<DefId>,
     ) -> ExpnData {
         ExpnData::new(
-            ExpnKind::Macro(self.macro_kind(), descr),
+            ExpnKind::Macro(kind, descr),
             parent.to_expn_id(),
             call_site,
             self.span,
@@ -872,6 +1088,7 @@ impl SyntaxExtension {
             self.allow_internal_unsafe,
             self.local_inner_macros,
             self.collapse_debuginfo,
+            self.builtin_name.is_some(),
         )
     }
 }
@@ -879,13 +1096,18 @@ impl SyntaxExtension {
 /// Error type that denotes indeterminacy.
 pub struct Indeterminate;
 
-pub type DeriveResolutions = Vec<(ast::Path, Annotatable, Option<Lrc<SyntaxExtension>>, bool)>;
+pub struct DeriveResolution {
+    pub path: ast::Path,
+    pub item: Annotatable,
+    pub exts: Option<Arc<SyntaxExtension>>,
+    pub is_const: bool,
+}
 
 pub trait ResolverExpand {
     fn next_node_id(&mut self) -> NodeId;
     fn invocation_parent(&self, id: LocalExpnId) -> LocalDefId;
 
-    fn resolve_dollar_crates(&mut self);
+    fn resolve_dollar_crates(&self);
     fn visit_ast_fragment_with_placeholders(
         &mut self,
         expn_id: LocalExpnId,
@@ -908,7 +1130,7 @@ pub trait ResolverExpand {
         invoc: &Invocation,
         eager_expansion_root: LocalExpnId,
         force: bool,
-    ) -> Result<Lrc<SyntaxExtension>, Indeterminate>;
+    ) -> Result<Arc<SyntaxExtension>, Indeterminate>;
 
     fn record_macro_rule_usage(&mut self, mac_id: NodeId, rule_index: usize);
 
@@ -922,13 +1144,18 @@ pub trait ResolverExpand {
         &mut self,
         expn_id: LocalExpnId,
         force: bool,
-        derive_paths: &dyn Fn() -> DeriveResolutions,
+        derive_paths: &dyn Fn() -> Vec<DeriveResolution>,
     ) -> Result<(), Indeterminate>;
     /// Take resolutions for paths inside the `#[derive(...)]` attribute with the given `ExpnId`
     /// back from resolver.
-    fn take_derive_resolutions(&mut self, expn_id: LocalExpnId) -> Option<DeriveResolutions>;
+    fn take_derive_resolutions(&mut self, expn_id: LocalExpnId) -> Option<Vec<DeriveResolution>>;
     /// Path resolution logic for `#[cfg_accessible(path)]`.
     fn cfg_accessible(
+        &mut self,
+        expn_id: LocalExpnId,
+        path: &ast::Path,
+    ) -> Result<bool, Indeterminate>;
+    fn macro_accessible(
         &mut self,
         expn_id: LocalExpnId,
         path: &ast::Path,
@@ -946,25 +1173,48 @@ pub trait ResolverExpand {
     /// HIR proc macros items back to their harness items.
     fn declare_proc_macro(&mut self, id: NodeId);
 
+    fn append_stripped_cfg_item(
+        &mut self,
+        parent_node: NodeId,
+        ident: Ident,
+        cfg: CfgEntry,
+        cfg_span: Span,
+    );
+
     /// Tools registered with `#![register_tool]` and used by tool attributes and lints.
     fn registered_tools(&self) -> &RegisteredTools;
+
+    /// Mark this invocation id as a glob delegation.
+    fn register_glob_delegation(&mut self, invoc_id: LocalExpnId);
+
+    /// Names of specific methods to which glob delegation expands.
+    fn glob_delegation_suffixes(
+        &self,
+        trait_def_id: DefId,
+        impl_def_id: LocalDefId,
+    ) -> Result<Vec<(Ident, Option<Ident>)>, Indeterminate>;
+
+    /// Record the name of an opaque `Ty::ImplTrait` pre-expansion so that it can be used
+    /// to generate an item name later that does not reference placeholder macros.
+    fn insert_impl_trait_name(&mut self, id: NodeId, name: Symbol);
 }
 
 pub trait LintStoreExpand {
     fn pre_expansion_lint(
         &self,
         sess: &Session,
+        features: &Features,
         registered_tools: &RegisteredTools,
         node_id: NodeId,
         attrs: &[Attribute],
-        items: &[P<Item>],
+        items: &[Box<Item>],
         name: Symbol,
     );
 }
 
 type LintStoreExpandDyn<'a> = Option<&'a (dyn LintStoreExpand + 'a)>;
 
-#[derive(Clone, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ModuleData {
     /// Path to the module starting from the crate name, like `my_crate::foo::bar`.
     pub mod_path: Vec<Ident>,
@@ -1004,7 +1254,7 @@ pub struct ExtCtxt<'a> {
     pub sess: &'a Session,
     pub ecfg: expand::ExpansionConfig<'a>,
     pub num_standard_library_imports: usize,
-    pub reduced_recursion_limit: Option<Limit>,
+    pub reduced_recursion_limit: Option<(Limit, ErrorGuaranteed)>,
     pub root_path: PathBuf,
     pub resolver: &'a mut dyn ResolverExpand,
     pub current_expansion: ExpansionData,
@@ -1020,6 +1270,9 @@ pub struct ExtCtxt<'a> {
     /// in the AST, but insert it here so that we know
     /// not to expand it again.
     pub(super) expanded_inert_attrs: MarkedAttrs,
+    /// `-Zmacro-stats` data.
+    pub macro_stats: FxHashMap<(Symbol, MacroKind), MacroStat>,
+    pub nb_macro_errors: usize,
 }
 
 impl<'a> ExtCtxt<'a> {
@@ -1049,7 +1302,13 @@ impl<'a> ExtCtxt<'a> {
             expansions: FxIndexMap::default(),
             expanded_inert_attrs: MarkedAttrs::new(),
             buffered_early_lint: vec![],
+            macro_stats: Default::default(),
+            nb_macro_errors: 0,
         }
+    }
+
+    pub fn dcx(&self) -> DiagCtxtHandle<'a> {
+        self.sess.dcx()
     }
 
     /// Returns a `Folder` for deeply expanding all macros in an AST node.
@@ -1062,14 +1321,14 @@ impl<'a> ExtCtxt<'a> {
     pub fn monotonic_expander<'b>(&'b mut self) -> expand::MacroExpander<'b, 'a> {
         expand::MacroExpander::new(self, true)
     }
-    pub fn new_parser_from_tts(&self, stream: TokenStream) -> parser::Parser<'a> {
-        rustc_parse::stream_to_parser(&self.sess.parse_sess, stream, MACRO_ARGUMENTS)
+    pub fn new_parser_from_tts(&self, stream: TokenStream) -> Parser<'a> {
+        Parser::new(&self.sess.psess, stream, MACRO_ARGUMENTS)
     }
     pub fn source_map(&self) -> &'a SourceMap {
-        self.sess.parse_sess.source_map()
+        self.sess.psess.source_map()
     }
-    pub fn parse_sess(&self) -> &'a ParseSess {
-        &self.sess.parse_sess
+    pub fn psess(&self) -> &'a ParseSess {
+        &self.sess.psess
     }
     pub fn call_site(&self) -> Span {
         self.current_expansion.id.expn_data().call_site
@@ -1106,55 +1365,24 @@ impl<'a> ExtCtxt<'a> {
         self.current_expansion.id.expansion_cause()
     }
 
-    #[rustc_lint_diagnostics]
-    pub fn struct_span_err<S: Into<MultiSpan>>(
-        &self,
-        sp: S,
-        msg: &str,
-    ) -> DiagnosticBuilder<'a, ErrorGuaranteed> {
-        self.sess.parse_sess.span_diagnostic.struct_span_err(sp, msg)
+    /// This method increases the internal macro errors count and then call `trace_macros_diag`.
+    pub fn macro_error_and_trace_macros_diag(&mut self) {
+        self.nb_macro_errors += 1;
+        self.trace_macros_diag();
     }
 
-    pub fn create_err(
-        &self,
-        err: impl IntoDiagnostic<'a>,
-    ) -> DiagnosticBuilder<'a, ErrorGuaranteed> {
-        self.sess.create_err(err)
-    }
-
-    pub fn emit_err(&self, err: impl IntoDiagnostic<'a>) -> ErrorGuaranteed {
-        self.sess.emit_err(err)
-    }
-
-    /// Emit `msg` attached to `sp`, without immediately stopping
-    /// compilation.
-    ///
-    /// Compilation will be stopped in the near future (at the end of
-    /// the macro expansion phase).
-    #[rustc_lint_diagnostics]
-    pub fn span_err<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
-        self.sess.parse_sess.span_diagnostic.span_err(sp, msg);
-    }
-    #[rustc_lint_diagnostics]
-    pub fn span_warn<S: Into<MultiSpan>>(&self, sp: S, msg: &str) {
-        self.sess.parse_sess.span_diagnostic.span_warn(sp, msg);
-    }
-    pub fn span_bug<S: Into<MultiSpan>>(&self, sp: S, msg: &str) -> ! {
-        self.sess.parse_sess.span_diagnostic.span_bug(sp, msg);
-    }
     pub fn trace_macros_diag(&mut self) {
         for (span, notes) in self.expansions.iter() {
-            let mut db = self.sess.parse_sess.create_note(errors::TraceMacro { span: *span });
+            let mut db = self.dcx().create_note(errors::TraceMacro { span: *span });
             for note in notes {
+                // FIXME: make this translatable
+                #[allow(rustc::untranslatable_diagnostic)]
                 db.note(note.clone());
             }
             db.emit();
         }
         // Fixme: does this result in errors?
         self.expansions.clear();
-    }
-    pub fn bug(&self, msg: &str) -> ! {
-        self.sess.parse_sess.span_diagnostic.bug(msg);
     }
     pub fn trace_macros(&self) -> bool {
         self.ecfg.trace_mac
@@ -1181,318 +1409,108 @@ impl<'a> ExtCtxt<'a> {
 /// Resolves a `path` mentioned inside Rust code, returning an absolute path.
 ///
 /// This unifies the logic used for resolving `include_X!`.
-pub fn resolve_path(
-    parse_sess: &ParseSess,
-    path: impl Into<PathBuf>,
-    span: Span,
-) -> PResult<'_, PathBuf> {
+pub fn resolve_path(sess: &Session, path: impl Into<PathBuf>, span: Span) -> PResult<'_, PathBuf> {
     let path = path.into();
 
     // Relative paths are resolved relative to the file in which they are found
     // after macro expansion (that is, they are unhygienic).
     if !path.is_absolute() {
         let callsite = span.source_callsite();
-        let mut result = match parse_sess.source_map().span_to_filename(callsite) {
-            FileName::Real(name) => name
-                .into_local_path()
-                .expect("attempting to resolve a file path in an external file"),
-            FileName::DocTest(path, _) => path,
-            other => {
-                return Err(errors::ResolveRelativePath {
-                    span,
-                    path: parse_sess.source_map().filename_for_diagnostics(&other).to_string(),
-                }
-                .into_diagnostic(&parse_sess.span_diagnostic));
-            }
+        let source_map = sess.source_map();
+        let Some(mut base_path) = source_map.span_to_filename(callsite).into_local_path() else {
+            return Err(sess.dcx().create_err(errors::ResolveRelativePath {
+                span,
+                path: source_map
+                    .filename_for_diagnostics(&source_map.span_to_filename(callsite))
+                    .to_string(),
+            }));
         };
-        result.pop();
-        result.push(path);
-        Ok(result)
+        base_path.pop();
+        base_path.push(path);
+        Ok(base_path)
     } else {
-        Ok(path)
-    }
-}
-
-/// Extracts a string literal from the macro expanded version of `expr`,
-/// returning a diagnostic error of `err_msg` if `expr` is not a string literal.
-/// The returned bool indicates whether an applicable suggestion has already been
-/// added to the diagnostic to avoid emitting multiple suggestions. `Err(None)`
-/// indicates that an ast error was encountered.
-// FIXME(Nilstrieb) Make this function setup translatable
-#[allow(rustc::untranslatable_diagnostic)]
-pub fn expr_to_spanned_string<'a>(
-    cx: &'a mut ExtCtxt<'_>,
-    expr: P<ast::Expr>,
-    err_msg: &str,
-) -> Result<(Symbol, ast::StrStyle, Span), Option<(DiagnosticBuilder<'a, ErrorGuaranteed>, bool)>> {
-    // Perform eager expansion on the expression.
-    // We want to be able to handle e.g., `concat!("foo", "bar")`.
-    let expr = cx.expander().fully_expand_fragment(AstFragment::Expr(expr)).make_expr();
-
-    Err(match expr.kind {
-        ast::ExprKind::Lit(token_lit) => match ast::LitKind::from_token_lit(token_lit) {
-            Ok(ast::LitKind::Str(s, style)) => return Ok((s, style, expr.span)),
-            Ok(ast::LitKind::ByteStr(..)) => {
-                let mut err = cx.struct_span_err(expr.span, err_msg);
-                let span = expr.span.shrink_to_lo();
-                err.span_suggestion(
-                    span.with_hi(span.lo() + BytePos(1)),
-                    "consider removing the leading `b`",
-                    "",
-                    Applicability::MaybeIncorrect,
-                );
-                Some((err, true))
-            }
-            Ok(ast::LitKind::Err) => None,
-            Err(err) => {
-                report_lit_error(&cx.sess.parse_sess, err, token_lit, expr.span);
-                None
-            }
-            _ => Some((cx.struct_span_err(expr.span, err_msg), false)),
-        },
-        ast::ExprKind::Err => None,
-        _ => Some((cx.struct_span_err(expr.span, err_msg), false)),
-    })
-}
-
-/// Extracts a string literal from the macro expanded version of `expr`,
-/// emitting `err_msg` if `expr` is not a string literal. This does not stop
-/// compilation on error, merely emits a non-fatal error and returns `None`.
-pub fn expr_to_string(
-    cx: &mut ExtCtxt<'_>,
-    expr: P<ast::Expr>,
-    err_msg: &str,
-) -> Option<(Symbol, ast::StrStyle)> {
-    expr_to_spanned_string(cx, expr, err_msg)
-        .map_err(|err| {
-            err.map(|(mut err, _)| {
-                err.emit();
-            })
-        })
-        .ok()
-        .map(|(symbol, style, _)| (symbol, style))
-}
-
-/// Non-fatally assert that `tts` is empty. Note that this function
-/// returns even when `tts` is non-empty, macros that *need* to stop
-/// compilation should call
-/// `cx.parse_sess.span_diagnostic.abort_if_errors()` (this should be
-/// done as rarely as possible).
-pub fn check_zero_tts(cx: &ExtCtxt<'_>, span: Span, tts: TokenStream, name: &str) {
-    if !tts.is_empty() {
-        cx.emit_err(errors::TakesNoArguments { span, name });
-    }
-}
-
-/// Parse an expression. On error, emit it, advancing to `Eof`, and return `None`.
-pub fn parse_expr(p: &mut parser::Parser<'_>) -> Option<P<ast::Expr>> {
-    match p.parse_expr() {
-        Ok(e) => return Some(e),
-        Err(mut err) => {
-            err.emit();
+        // This ensures that Windows verbatim paths are fixed if mixed path separators are used,
+        // which can happen when `concat!` is used to join paths.
+        match path.components().next() {
+            Some(Prefix(prefix)) if prefix.kind().is_verbatim() => Ok(path.components().collect()),
+            _ => Ok(path),
         }
     }
-    while p.token != token::Eof {
-        p.bump();
-    }
-    None
 }
 
-/// Interpreting `tts` as a comma-separated sequence of expressions,
-/// expect exactly one string literal, or emit an error and return `None`.
-pub fn get_single_str_from_tts(
-    cx: &mut ExtCtxt<'_>,
-    span: Span,
-    tts: TokenStream,
-    name: &str,
-) -> Option<Symbol> {
-    let mut p = cx.new_parser_from_tts(tts);
-    if p.token == token::Eof {
-        cx.emit_err(errors::OnlyOneArgument { span, name });
-        return None;
-    }
-    let ret = parse_expr(&mut p)?;
-    let _ = p.eat(&token::Comma);
-
-    if p.token != token::Eof {
-        cx.emit_err(errors::OnlyOneArgument { span, name });
-    }
-    expr_to_string(cx, ret, "argument must be a string literal").map(|(s, _)| s)
-}
-
-/// Extracts comma-separated expressions from `tts`.
-/// On error, emit it, and return `None`.
-pub fn get_exprs_from_tts(cx: &mut ExtCtxt<'_>, tts: TokenStream) -> Option<Vec<P<ast::Expr>>> {
-    let mut p = cx.new_parser_from_tts(tts);
-    let mut es = Vec::new();
-    while p.token != token::Eof {
-        let expr = parse_expr(&mut p)?;
-
-        // Perform eager expansion on the expression.
-        // We want to be able to handle e.g., `concat!("foo", "bar")`.
-        let expr = cx.expander().fully_expand_fragment(AstFragment::Expr(expr)).make_expr();
-
-        es.push(expr);
-        if p.eat(&token::Comma) {
-            continue;
-        }
-        if p.token != token::Eof {
-            cx.emit_err(errors::ExpectedCommaInList { span: p.token.span });
-            return None;
-        }
-    }
-    Some(es)
-}
-
-pub fn parse_macro_name_and_helper_attrs(
-    diag: &rustc_errors::Handler,
-    attr: &Attribute,
-    macro_type: &str,
-) -> Option<(Symbol, Vec<Symbol>)> {
-    // Once we've located the `#[proc_macro_derive]` attribute, verify
-    // that it's of the form `#[proc_macro_derive(Foo)]` or
-    // `#[proc_macro_derive(Foo, attributes(A, ..))]`
-    let list = attr.meta_item_list()?;
-    if list.len() != 1 && list.len() != 2 {
-        diag.emit_err(errors::AttrNoArguments { span: attr.span });
-        return None;
-    }
-    let Some(trait_attr) = list[0].meta_item() else {
-        diag.emit_err(errors::NotAMetaItem {span: list[0].span()});
-        return None;
-    };
-    let trait_ident = match trait_attr.ident() {
-        Some(trait_ident) if trait_attr.is_word() => trait_ident,
-        _ => {
-            diag.emit_err(errors::OnlyOneWord { span: trait_attr.span });
-            return None;
-        }
-    };
-
-    if !trait_ident.name.can_be_raw() {
-        diag.emit_err(errors::CannotBeNameOfMacro {
-            span: trait_attr.span,
-            trait_ident,
-            macro_type,
-        });
-    }
-
-    let attributes_attr = list.get(1);
-    let proc_attrs: Vec<_> = if let Some(attr) = attributes_attr {
-        if !attr.has_name(sym::attributes) {
-            diag.emit_err(errors::ArgumentNotAttributes { span: attr.span() });
-        }
-        attr.meta_item_list()
-            .unwrap_or_else(|| {
-                diag.emit_err(errors::AttributesWrongForm { span: attr.span() });
-                &[]
-            })
-            .iter()
-            .filter_map(|attr| {
-                let Some(attr) = attr.meta_item() else {
-                    diag.emit_err(errors::AttributeMetaItem { span: attr.span() });
-                    return None;
-                };
-
-                let ident = match attr.ident() {
-                    Some(ident) if attr.is_word() => ident,
-                    _ => {
-                        diag.emit_err(errors::AttributeSingleWord { span: attr.span });
-                        return None;
-                    }
-                };
-                if !ident.name.can_be_raw() {
-                    diag.emit_err(errors::HelperAttributeNameInvalid {
-                        span: attr.span,
-                        name: ident,
-                    });
-                }
-
-                Some(ident.name)
-            })
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    Some((trait_ident.name, proc_attrs))
-}
-
-/// This nonterminal looks like some specific enums from
-/// `proc-macro-hack` and `procedural-masquerade` crates.
-/// We need to maintain some special pretty-printing behavior for them due to incorrect
-/// asserts in old versions of those crates and their wide use in the ecosystem.
-/// See issue #73345 for more details.
+/// If this item looks like a specific enums from `rental`, emit a fatal error.
+/// See #73345 and #83125 for more details.
 /// FIXME(#73933): Remove this eventually.
-fn pretty_printing_compatibility_hack(item: &Item, sess: &ParseSess) -> bool {
-    let name = item.ident.name;
-    if name == sym::ProceduralMasqueradeDummyType {
-        if let ast::ItemKind::Enum(enum_def, _) = &item.kind {
-            if let [variant] = &*enum_def.variants {
-                if variant.ident.name == sym::Input {
-                    let filename = sess.source_map().span_to_filename(item.ident.span);
-                    if let FileName::Real(real) = filename {
-                        if let Some(c) = real
-                            .local_path()
-                            .unwrap_or(Path::new(""))
-                            .components()
-                            .flat_map(|c| c.as_os_str().to_str())
-                            .find(|c| c.starts_with("rental") || c.starts_with("allsorts-rental"))
-                        {
-                            let crate_matches = if c.starts_with("allsorts-rental") {
-                                true
-                            } else {
-                                let mut version = c.trim_start_matches("rental-").split('.');
-                                version.next() == Some("0")
-                                    && version.next() == Some("5")
-                                    && version
-                                        .next()
-                                        .and_then(|c| c.parse::<u32>().ok())
-                                        .map_or(false, |v| v < 6)
-                            };
+fn pretty_printing_compatibility_hack(item: &Item, psess: &ParseSess) {
+    if let ast::ItemKind::Enum(ident, _, enum_def) = &item.kind
+        && ident.name == sym::ProceduralMasqueradeDummyType
+        && let [variant] = &*enum_def.variants
+        && variant.ident.name == sym::Input
+        && let FileName::Real(real) = psess.source_map().span_to_filename(ident.span)
+        && let Some(c) = real
+            .local_path()
+            .unwrap_or(Path::new(""))
+            .components()
+            .flat_map(|c| c.as_os_str().to_str())
+            .find(|c| c.starts_with("rental") || c.starts_with("allsorts-rental"))
+    {
+        let crate_matches = if c.starts_with("allsorts-rental") {
+            true
+        } else {
+            let mut version = c.trim_start_matches("rental-").split('.');
+            version.next() == Some("0")
+                && version.next() == Some("5")
+                && version.next().and_then(|c| c.parse::<u32>().ok()).is_some_and(|v| v < 6)
+        };
 
-                            if crate_matches {
-                                sess.buffer_lint_with_diagnostic(
-                                        &PROC_MACRO_BACK_COMPAT,
-                                        item.ident.span,
-                                        ast::CRATE_NODE_ID,
-                                        "using an old version of `rental`",
-                                        BuiltinLintDiagnostics::ProcMacroBackCompat(
-                                        "older versions of the `rental` crate will stop compiling in future versions of Rust; \
-                                        please update to `rental` v0.5.6, or switch to one of the `rental` alternatives".to_string()
-                                        )
-                                    );
-                                return true;
-                            }
-                        }
-                    }
-                }
-            }
+        if crate_matches {
+            psess.dcx().emit_fatal(errors::ProcMacroBackCompat {
+                crate_name: "rental".to_string(),
+                fixed_version: "0.5.6".to_string(),
+            });
         }
     }
-    false
 }
 
-pub(crate) fn ann_pretty_printing_compatibility_hack(ann: &Annotatable, sess: &ParseSess) -> bool {
+pub(crate) fn ann_pretty_printing_compatibility_hack(ann: &Annotatable, psess: &ParseSess) {
     let item = match ann {
         Annotatable::Item(item) => item,
         Annotatable::Stmt(stmt) => match &stmt.kind {
             ast::StmtKind::Item(item) => item,
-            _ => return false,
+            _ => return,
         },
-        _ => return false,
+        _ => return,
     };
-    pretty_printing_compatibility_hack(item, sess)
+    pretty_printing_compatibility_hack(item, psess)
 }
 
-pub(crate) fn nt_pretty_printing_compatibility_hack(nt: &Nonterminal, sess: &ParseSess) -> bool {
-    let item = match nt {
-        Nonterminal::NtItem(item) => item,
-        Nonterminal::NtStmt(stmt) => match &stmt.kind {
-            ast::StmtKind::Item(item) => item,
-            _ => return false,
-        },
-        _ => return false,
+pub(crate) fn stream_pretty_printing_compatibility_hack(
+    kind: MetaVarKind,
+    stream: &TokenStream,
+    psess: &ParseSess,
+) {
+    let item = match kind {
+        MetaVarKind::Item => {
+            let mut parser = Parser::new(psess, stream.clone(), None);
+            // No need to collect tokens for this simple check.
+            parser
+                .parse_item(ForceCollect::No)
+                .expect("failed to reparse item")
+                .expect("an actual item")
+        }
+        MetaVarKind::Stmt => {
+            let mut parser = Parser::new(psess, stream.clone(), None);
+            // No need to collect tokens for this simple check.
+            let stmt = parser
+                .parse_stmt(ForceCollect::No)
+                .expect("failed to reparse")
+                .expect("an actual stmt");
+            match &stmt.kind {
+                ast::StmtKind::Item(item) => item.clone(),
+                _ => return,
+            }
+        }
+        _ => return,
     };
-    pretty_printing_compatibility_hack(item, sess)
+    pretty_printing_compatibility_hack(&item, psess)
 }

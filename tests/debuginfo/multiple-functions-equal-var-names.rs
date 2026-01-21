@@ -1,6 +1,5 @@
-// min-lldb-version: 310
-
-// compile-flags:-g
+//@ compile-flags:-g
+//@ disable-gdb-pretty-printers
 
 // === GDB TESTS ===================================================================================
 
@@ -22,23 +21,18 @@
 
 // lldb-command:run
 
-// lldb-command:print abc
-// lldbg-check:[...]$0 = 10101
-// lldbr-check:(i32) abc = 10101
+// lldb-command:v abc
+// lldb-check:[...] 10101
 // lldb-command:continue
 
-// lldb-command:print abc
-// lldbg-check:[...]$1 = 20202
-// lldbr-check:(i32) abc = 20202
+// lldb-command:v abc
+// lldb-check:[...] 20202
 // lldb-command:continue
 
-// lldb-command:print abc
-// lldbg-check:[...]$2 = 30303
-// lldbr-check:(i32) abc = 30303
+// lldb-command:v abc
+// lldb-check:[...] 30303
 
 #![allow(unused_variables)]
-#![feature(omit_gdb_pretty_printer_section)]
-#![omit_gdb_pretty_printer_section]
 
 fn function_one() {
     let abc = 10101;

@@ -11,7 +11,10 @@ fn main() {
     size_of_val(y); // no lint
 
     size_of_val(&&x);
+    //~^ size_of_ref
+
     size_of_val(&y);
+    //~^ size_of_ref
 }
 
 struct S {
@@ -23,5 +26,6 @@ impl S {
     /// Get size of object including `self`, in bytes.
     pub fn size(&self) -> usize {
         std::mem::size_of_val(&self) + (std::mem::size_of::<u8>() * self.data.capacity())
+        //~^ size_of_ref
     }
 }

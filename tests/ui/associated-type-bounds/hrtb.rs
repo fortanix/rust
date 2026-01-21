@@ -1,6 +1,7 @@
-// check-pass
-
-#![feature(associated_type_bounds)]
+//@ check-pass
+//@ revisions: current next
+//@[next] compile-flags: -Znext-solver
+//@ ignore-compare-mode-next-solver (explicit revisions)
 
 trait A<'a> {}
 trait B<'b> {}

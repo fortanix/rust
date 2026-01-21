@@ -1,14 +1,17 @@
 use hir::HasSource;
-use ide_db::syntax_helpers::insert_whitespace_into_node::insert_ws_into;
-use syntax::ast::{self, make, AstNode};
+use syntax::{
+    Edition,
+    ast::{self, AstNode, make},
+    syntax_editor::{Position, SyntaxEditor},
+};
 
 use crate::{
+    AssistId,
     assist_context::{AssistContext, Assists},
     utils::{
-        add_trait_assoc_items_to_impl, filter_assoc_items, gen_trait_fn_body, render_snippet,
-        Cursor, DefaultMethods,
+        DefaultMethods, IgnoreAssocItems, add_trait_assoc_items_to_impl, filter_assoc_items,
+        gen_trait_fn_body,
     },
-    AssistId, AssistKind,
 };
 
 // Assist: add_impl_missing_members
@@ -47,6 +50,7 @@ pub(crate) fn add_missing_impl_members(acc: &mut Assists, ctx: &AssistContext<'_
         acc,
         ctx,
         DefaultMethods::No,
+        IgnoreAssocItems::DocHiddenAttrPresent,
         "add_impl_missing_members",
         "Implement missing members",
     )
@@ -91,6 +95,7 @@ pub(crate) fn add_missing_default_members(
         acc,
         ctx,
         DefaultMethods::Only,
+        IgnoreAssocItems::DocHiddenAttrPresent,
         "add_impl_default_members",
         "Implement default members",
     )
@@ -100,10 +105,11 @@ fn add_missing_impl_members_inner(
     acc: &mut Assists,
     ctx: &AssistContext<'_>,
     mode: DefaultMethods,
+    ignore_items: IgnoreAssocItems,
     assist_id: &'static str,
     label: &'static str,
 ) -> Option<()> {
-    let _p = profile::span("add_missing_impl_members_inner");
+    let _p = tracing::info_span!("add_missing_impl_members_inner").entered();
     let impl_def = ctx.find_node_at_offset::<ast::Impl>()?;
     let impl_ = ctx.sema.to_def(&impl_def)?;
 
@@ -119,10 +125,21 @@ fn add_missing_impl_members_inner(
     let trait_ref = impl_.trait_ref(ctx.db())?;
     let trait_ = trait_ref.trait_();
 
+    let mut ign_item = ignore_items;
+
+    if let IgnoreAssocItems::DocHiddenAttrPresent = ignore_items {
+        // Relax condition for local crates.
+        let db = ctx.db();
+        if trait_.module(db).krate().origin(db).is_local() {
+            ign_item = IgnoreAssocItems::No;
+        }
+    }
+
     let missing_items = filter_assoc_items(
         &ctx.sema,
         &ide_db::traits::get_missing_assoc_items(&ctx.sema, &impl_def),
         mode,
+        ign_item,
     );
 
     if missing_items.is_empty() {
@@ -130,61 +147,88 @@ fn add_missing_impl_members_inner(
     }
 
     let target = impl_def.syntax().text_range();
-    acc.add(AssistId(assist_id, AssistKind::QuickFix), label, target, |builder| {
-        let missing_items = missing_items
-            .into_iter()
-            .map(|it| {
-                if ctx.sema.hir_file_for(it.syntax()).is_macro() {
-                    if let Some(it) = ast::AssocItem::cast(insert_ws_into(it.syntax().clone())) {
-                        return it;
-                    }
-                }
-                it.clone_for_update()
-            })
-            .collect();
-        let (new_impl_def, first_new_item) = add_trait_assoc_items_to_impl(
+    acc.add(AssistId::quick_fix(assist_id), label, target, |edit| {
+        let new_item = add_trait_assoc_items_to_impl(
             &ctx.sema,
-            missing_items,
+            ctx.config,
+            &missing_items,
             trait_,
-            impl_def.clone(),
-            target_scope,
+            &impl_def,
+            &target_scope,
         );
-        match ctx.config.snippet_cap {
-            None => builder.replace(target, new_impl_def.to_string()),
-            Some(cap) => {
-                let mut cursor = Cursor::Before(first_new_item.syntax());
-                let placeholder;
-                if let DefaultMethods::No = mode {
-                    if let ast::AssocItem::Fn(func) = &first_new_item {
-                        if try_gen_trait_body(ctx, func, trait_ref, &impl_def).is_none() {
-                            if let Some(m) =
-                                func.syntax().descendants().find_map(ast::MacroCall::cast)
-                            {
-                                if m.syntax().text() == "todo!()" {
-                                    placeholder = m;
-                                    cursor = Cursor::Replace(placeholder.syntax());
-                                }
-                            }
-                        }
-                    }
-                }
-                builder.replace_snippet(
-                    cap,
-                    target,
-                    render_snippet(cap, new_impl_def.syntax(), cursor),
-                )
-            }
+
+        let Some((first_new_item, other_items)) = new_item.split_first() else {
+            return;
         };
+
+        let mut first_new_item = if let DefaultMethods::No = mode
+            && let ast::AssocItem::Fn(func) = &first_new_item
+            && let Some(body) = try_gen_trait_body(
+                ctx,
+                func,
+                trait_ref,
+                &impl_def,
+                target_scope.krate().edition(ctx.sema.db),
+            )
+            && let Some(func_body) = func.body()
+        {
+            let mut func_editor = SyntaxEditor::new(first_new_item.syntax().clone_subtree());
+            func_editor.replace(func_body.syntax(), body.syntax());
+            ast::AssocItem::cast(func_editor.finish().new_root().clone())
+        } else {
+            Some(first_new_item.clone())
+        };
+
+        let new_assoc_items = first_new_item
+            .clone()
+            .into_iter()
+            .chain(other_items.iter().cloned())
+            .collect::<Vec<_>>();
+
+        let mut editor = edit.make_editor(impl_def.syntax());
+        if let Some(assoc_item_list) = impl_def.assoc_item_list() {
+            assoc_item_list.add_items(&mut editor, new_assoc_items);
+        } else {
+            let assoc_item_list = make::assoc_item_list(Some(new_assoc_items)).clone_for_update();
+            editor.insert_all(
+                Position::after(impl_def.syntax()),
+                vec![make::tokens::whitespace(" ").into(), assoc_item_list.syntax().clone().into()],
+            );
+            first_new_item = assoc_item_list.assoc_items().next();
+        }
+
+        if let Some(cap) = ctx.config.snippet_cap {
+            let mut placeholder = None;
+            if let DefaultMethods::No = mode
+                && let Some(ast::AssocItem::Fn(func)) = &first_new_item
+                && let Some(m) = func.syntax().descendants().find_map(ast::MacroCall::cast)
+                && m.syntax().text() == "todo!()"
+            {
+                placeholder = Some(m);
+            }
+
+            if let Some(macro_call) = placeholder {
+                let placeholder = edit.make_placeholder_snippet(cap);
+                editor.add_annotation(macro_call.syntax(), placeholder);
+            } else if let Some(first_new_item) = first_new_item {
+                let tabstop = edit.make_tabstop_before(cap);
+                editor.add_annotation(first_new_item.syntax(), tabstop);
+            };
+        };
+        edit.add_file_edits(ctx.vfs_file_id(), editor);
     })
 }
 
 fn try_gen_trait_body(
     ctx: &AssistContext<'_>,
     func: &ast::Fn,
-    trait_ref: hir::TraitRef,
+    trait_ref: hir::TraitRef<'_>,
     impl_def: &ast::Impl,
-) -> Option<()> {
-    let trait_path = make::ext::ident_path(&trait_ref.trait_().name(ctx.db()).to_string());
+    edition: Edition,
+) -> Option<ast::BlockExpr> {
+    let trait_path = make::ext::ident_path(
+        &trait_ref.trait_().name(ctx.db()).display(ctx.db(), edition).to_string(),
+    );
     let hir_ty = ctx.sema.resolve_type(&impl_def.self_ty()?)?;
     let adt = hir_ty.as_adt()?.source(ctx.db())?;
     gen_trait_fn_body(func, &trait_path, &adt.value, Some(trait_ref))
@@ -252,7 +296,7 @@ impl Foo for S {
     }
 
     #[test]
-    fn test_copied_overriden_members() {
+    fn test_copied_overridden_members() {
         check_assist(
             add_missing_impl_members,
             r#"
@@ -308,7 +352,7 @@ impl Foo for S {
     }
 
     #[test]
-    fn test_impl_def_without_braces() {
+    fn test_impl_def_without_braces_macro() {
         check_assist(
             add_missing_impl_members,
             r#"
@@ -321,6 +365,33 @@ struct S;
 impl Foo for S {
     fn foo(&self) {
         ${0:todo!()}
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_impl_def_without_braces_tabstop_first_item() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+trait Foo {
+    type Output;
+    fn foo(&self);
+}
+struct S;
+impl Foo for S { $0 }"#,
+            r#"
+trait Foo {
+    type Output;
+    fn foo(&self);
+}
+struct S;
+impl Foo for S {
+    $0type Output;
+
+    fn foo(&self) {
+        todo!()
     }
 }"#,
         );
@@ -362,6 +433,226 @@ impl<U> Foo<U> for S {
     }
 }"#,
         );
+    }
+
+    #[test]
+    fn test_lifetime_substitution() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+pub trait Trait<'a, 'b, A, B, C> {
+    fn foo(&self, one: &'a A, another: &'b B) -> &'a C;
+}
+
+impl<'x, 'y, T, V, U> Trait<'x, 'y, T, V, U> for () {$0}"#,
+            r#"
+pub trait Trait<'a, 'b, A, B, C> {
+    fn foo(&self, one: &'a A, another: &'b B) -> &'a C;
+}
+
+impl<'x, 'y, T, V, U> Trait<'x, 'y, T, V, U> for () {
+    fn foo(&self, one: &'x T, another: &'y V) -> &'x U {
+        ${0:todo!()}
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_lifetime_substitution_with_body() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+pub trait Trait<'a, 'b, A, B, C: Default> {
+    fn foo(&self, _one: &'a A, _another: &'b B) -> (C, &'a i32) {
+        let value: &'a i32 = &0;
+        (C::default(), value)
+    }
+}
+
+impl<'x, 'y, T, V, U: Default> Trait<'x, 'y, T, V, U> for () {$0}"#,
+            r#"
+pub trait Trait<'a, 'b, A, B, C: Default> {
+    fn foo(&self, _one: &'a A, _another: &'b B) -> (C, &'a i32) {
+        let value: &'a i32 = &0;
+        (C::default(), value)
+    }
+}
+
+impl<'x, 'y, T, V, U: Default> Trait<'x, 'y, T, V, U> for () {
+    $0fn foo(&self, _one: &'x T, _another: &'y V) -> (U, &'x i32) {
+        let value: &'x i32 = &0;
+        (<U>::default(), value)
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_const_substitution() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+struct Bar<const N: usize> {
+    bar: [i32, N]
+}
+
+trait Foo<const N: usize, T> {
+    fn get_n_sq(&self, arg: &T) -> usize { N * N }
+    fn get_array(&self, arg: Bar<N>) -> [i32; N] { [1; N] }
+}
+
+struct S<T> {
+    wrapped: T
+}
+
+impl<const X: usize, Y, Z> Foo<X, Z> for S<Y> {
+    $0
+}"#,
+            r#"
+struct Bar<const N: usize> {
+    bar: [i32, N]
+}
+
+trait Foo<const N: usize, T> {
+    fn get_n_sq(&self, arg: &T) -> usize { N * N }
+    fn get_array(&self, arg: Bar<N>) -> [i32; N] { [1; N] }
+}
+
+struct S<T> {
+    wrapped: T
+}
+
+impl<const X: usize, Y, Z> Foo<X, Z> for S<Y> {
+    $0fn get_n_sq(&self, arg: &Z) -> usize { X * X }
+
+    fn get_array(&self, arg: Bar<X>) -> [i32; X] { [1; X] }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_const_substitution_2() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+trait Foo<const N: usize, const M: usize, T> {
+    fn get_sum(&self, arg: &T) -> usize { N + M }
+}
+
+impl<X> Foo<42, {20 + 22}, X> for () {
+    $0
+}"#,
+            r#"
+trait Foo<const N: usize, const M: usize, T> {
+    fn get_sum(&self, arg: &T) -> usize { N + M }
+}
+
+impl<X> Foo<42, {20 + 22}, X> for () {
+    $0fn get_sum(&self, arg: &X) -> usize { 42 + {20 + 22} }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+trait Foo<T, const N: usize = 42, const M: bool = false, const P: char = 'a'> {
+    fn get_n(&self) -> usize { N }
+    fn get_m(&self) -> bool { M }
+    fn get_p(&self) -> char { P }
+    fn get_array(&self, arg: &T) -> [bool; N] { [M; N] }
+}
+
+impl<X> Foo<X> for () {
+    $0
+}"#,
+            r#"
+trait Foo<T, const N: usize = 42, const M: bool = false, const P: char = 'a'> {
+    fn get_n(&self) -> usize { N }
+    fn get_m(&self) -> bool { M }
+    fn get_p(&self) -> char { P }
+    fn get_array(&self, arg: &T) -> [bool; N] { [M; N] }
+}
+
+impl<X> Foo<X> for () {
+    $0fn get_n(&self) -> usize { 42 }
+
+    fn get_m(&self) -> bool { false }
+
+    fn get_p(&self) -> char { 'a' }
+
+    fn get_array(&self, arg: &X) -> [bool; 42] { [false; 42] }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults_2() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub const LEN: usize = 42;
+    pub trait Foo<const M: usize = LEN, const N: usize = M, T = [bool; N]> {
+        fn get_t(&self) -> T;
+    }
+}
+
+impl m::Foo for () {
+    $0
+}"#,
+            r#"
+mod m {
+    pub const LEN: usize = 42;
+    pub trait Foo<const M: usize = LEN, const N: usize = M, T = [bool; N]> {
+        fn get_t(&self) -> T;
+    }
+}
+
+impl m::Foo for () {
+    fn get_t(&self) -> [bool; m::LEN] {
+        ${0:todo!()}
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_const_substitution_with_defaults_3() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+mod m {
+    pub const VAL: usize = 0;
+
+    pub trait Foo<const N: usize = {40 + 2}, const M: usize = {VAL + 1}> {
+        fn get_n(&self) -> usize { N }
+        fn get_m(&self) -> usize { M }
+    }
+}
+
+impl m::Foo for () {
+    $0
+}"#,
+            r#"
+mod m {
+    pub const VAL: usize = 0;
+
+    pub trait Foo<const N: usize = {40 + 2}, const M: usize = {VAL + 1}> {
+        fn get_n(&self) -> usize { N }
+        fn get_m(&self) -> usize { M }
+    }
+}
+
+impl m::Foo for () {
+    $0fn get_n(&self) -> usize { N }
+
+    fn get_m(&self) -> usize { M }
+}"#,
+        )
     }
 
     #[test]
@@ -743,6 +1034,115 @@ impl Foo<T> for S<T> {
     }
 }"#,
         )
+    }
+
+    #[test]
+    fn test_qualify_generic_default_parameter() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub struct S;
+    pub trait Foo<T = S> {
+        fn bar(&self, other: &T);
+    }
+}
+
+struct S;
+impl m::Foo for S { $0 }"#,
+            r#"
+mod m {
+    pub struct S;
+    pub trait Foo<T = S> {
+        fn bar(&self, other: &T);
+    }
+}
+
+struct S;
+impl m::Foo for S {
+    fn bar(&self, other: &m::S) {
+        ${0:todo!()}
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn test_qualify_generic_default_parameter_2() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub struct Wrapper<T, V> {
+        one: T,
+        another: V
+    };
+    pub struct S;
+    pub trait Foo<T = Wrapper<S, bool>> {
+        fn bar(&self, other: &T);
+    }
+}
+
+struct S;
+impl m::Foo for S { $0 }"#,
+            r#"
+mod m {
+    pub struct Wrapper<T, V> {
+        one: T,
+        another: V
+    };
+    pub struct S;
+    pub trait Foo<T = Wrapper<S, bool>> {
+        fn bar(&self, other: &T);
+    }
+}
+
+struct S;
+impl m::Foo for S {
+    fn bar(&self, other: &m::Wrapper<m::S, bool>) {
+        ${0:todo!()}
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_qualify_generic_default_parameter_3() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub struct Wrapper<T, V> {
+        one: T,
+        another: V
+    };
+    pub struct S;
+    pub trait Foo<T = S, V = Wrapper<T, S>> {
+        fn bar(&self, other: &V);
+    }
+}
+
+struct S;
+impl m::Foo for S { $0 }"#,
+            r#"
+mod m {
+    pub struct Wrapper<T, V> {
+        one: T,
+        another: V
+    };
+    pub struct S;
+    pub trait Foo<T = S, V = Wrapper<T, S>> {
+        fn bar(&self, other: &V);
+    }
+}
+
+struct S;
+impl m::Foo for S {
+    fn bar(&self, other: &m::Wrapper<m::S, m::S>) {
+        ${0:todo!()}
+    }
+}"#,
+        );
     }
 
     #[test]
@@ -1346,8 +1746,8 @@ struct SomeStruct {
 }
 impl PartialEq for SomeStruct {
     $0fn ne(&self, other: &Self) -> bool {
-            !self.eq(other)
-        }
+        !self.eq(other)
+    }
 }
 "#,
         );
@@ -1511,11 +1911,563 @@ fn main() {
     struct S;
     impl Tr for S {
         fn method() {
-        ${0:todo!()}
-    }
+            ${0:todo!()}
+        }
     }
 }
 "#,
+        );
+    }
+
+    #[test]
+    fn test_add_missing_preserves_indentation() {
+        // in different modules
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    pub trait Foo {
+        const CONST_MULTILINE: (
+            i32,
+            i32
+        );
+
+        fn foo(&self);
+    }
+}
+struct S;
+impl m::Foo for S { $0 }"#,
+            r#"
+mod m {
+    pub trait Foo {
+        const CONST_MULTILINE: (
+            i32,
+            i32
+        );
+
+        fn foo(&self);
+    }
+}
+struct S;
+impl m::Foo for S {
+    $0const CONST_MULTILINE: (
+        i32,
+        i32
+    );
+
+    fn foo(&self) {
+        todo!()
+    }
+}"#,
+        );
+        // in the same module
+        check_assist(
+            add_missing_impl_members,
+            r#"
+mod m {
+    trait Foo {
+        type Output;
+
+        const CONST: usize = 42;
+        const CONST_2: i32;
+        const CONST_MULTILINE: (
+            i32,
+            i32
+        );
+
+        fn foo(&self);
+        fn bar(&self);
+        fn baz(&self);
+    }
+
+    struct S;
+
+    impl Foo for S {
+        fn bar(&self) {}
+$0
+    }
+}"#,
+            r#"
+mod m {
+    trait Foo {
+        type Output;
+
+        const CONST: usize = 42;
+        const CONST_2: i32;
+        const CONST_MULTILINE: (
+            i32,
+            i32
+        );
+
+        fn foo(&self);
+        fn bar(&self);
+        fn baz(&self);
+    }
+
+    struct S;
+
+    impl Foo for S {
+        fn bar(&self) {}
+
+        $0type Output;
+
+        const CONST_2: i32;
+
+        const CONST_MULTILINE: (
+            i32,
+            i32
+        );
+
+        fn foo(&self) {
+            todo!()
+        }
+
+        fn baz(&self) {
+            todo!()
+        }
+
+    }
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_add_default_preserves_indentation() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+mod m {
+    pub trait Foo {
+        type Output;
+
+        const CONST: usize = 42;
+        const CONST_2: i32;
+        const CONST_MULTILINE: = (
+            i32,
+            i32,
+        ) = (3, 14);
+
+        fn valid(some: u32) -> bool { false }
+        fn foo(some: u32) -> bool;
+    }
+}
+struct S;
+impl m::Foo for S { $0 }"#,
+            r#"
+mod m {
+    pub trait Foo {
+        type Output;
+
+        const CONST: usize = 42;
+        const CONST_2: i32;
+        const CONST_MULTILINE: = (
+            i32,
+            i32,
+        ) = (3, 14);
+
+        fn valid(some: u32) -> bool { false }
+        fn foo(some: u32) -> bool;
+    }
+}
+struct S;
+impl m::Foo for S {
+    $0const CONST: usize = 42;
+
+    const CONST_MULTILINE: = (
+        i32,
+        i32,
+    ) = (3, 14);
+
+    fn valid(some: u32) -> bool { false }
+}"#,
+        )
+    }
+
+    #[test]
+    fn nested_macro_should_not_cause_crash() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+macro_rules! ty { () => { i32 } }
+trait SomeTrait { type Output; }
+impl SomeTrait for i32 { type Output = i64; }
+macro_rules! define_method {
+    () => {
+        fn method(&mut self, params: <ty!() as SomeTrait>::Output);
+    };
+}
+trait AnotherTrait { define_method!(); }
+impl $0AnotherTrait for () {
+}
+"#,
+            r#"
+macro_rules! ty { () => { i32 } }
+trait SomeTrait { type Output; }
+impl SomeTrait for i32 { type Output = i64; }
+macro_rules! define_method {
+    () => {
+        fn method(&mut self, params: <ty!() as SomeTrait>::Output);
+    };
+}
+trait AnotherTrait { define_method!(); }
+impl AnotherTrait for () {
+    $0fn method(&mut self,params: <ty!()as SomeTrait>::Output) {
+        todo!()
+    }
+}
+"#,
+        );
+    }
+
+    // FIXME: `T` in `ty!(T)` should be replaced by `PathTransform`.
+    #[test]
+    fn paths_in_nested_macro_should_get_transformed() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+macro_rules! ty { ($me:ty) => { $me } }
+trait SomeTrait { type Output; }
+impl SomeTrait for i32 { type Output = i64; }
+macro_rules! define_method {
+    ($t:ty) => {
+        fn method(&mut self, params: <ty!($t) as SomeTrait>::Output);
+    };
+}
+trait AnotherTrait<T: SomeTrait> { define_method!(T); }
+impl $0AnotherTrait<i32> for () {
+}
+"#,
+            r#"
+macro_rules! ty { ($me:ty) => { $me } }
+trait SomeTrait { type Output; }
+impl SomeTrait for i32 { type Output = i64; }
+macro_rules! define_method {
+    ($t:ty) => {
+        fn method(&mut self, params: <ty!($t) as SomeTrait>::Output);
+    };
+}
+trait AnotherTrait<T: SomeTrait> { define_method!(T); }
+impl AnotherTrait<i32> for () {
+    $0fn method(&mut self,params: <ty!(T)as SomeTrait>::Output) {
+        todo!()
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_ignored() {
+        // doc(hidden) attr is ignored trait and impl both belong to the local crate.
+        check_assist(
+            add_missing_default_members,
+            r#"
+struct Foo;
+trait Trait {
+    #[doc(hidden)]
+    fn func_with_default_impl() -> u32 {
+        42
+    }
+    fn another_default_impl() -> u32 {
+        43
+    }
+}
+impl Tra$0it for Foo {}"#,
+            r#"
+struct Foo;
+trait Trait {
+    #[doc(hidden)]
+    fn func_with_default_impl() -> u32 {
+        42
+    }
+    fn another_default_impl() -> u32 {
+        43
+    }
+}
+impl Trait for Foo {
+    $0fn func_with_default_impl() -> u32 {
+        42
+    }
+
+    fn another_default_impl() -> u32 {
+        43
+    }
+}"#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_lang_crates() {
+        // Not applicable because Eq has a single method and this has a #[doc(hidden)] attr set.
+        check_assist_not_applicable(
+            add_missing_default_members,
+            r#"
+//- minicore: eq
+use core::cmp::Eq;
+struct Foo;
+impl E$0q for Foo { /* $0 */ }
+"#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_lib_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+    //- /main.rs crate:a deps:b
+    struct B;
+    impl b::Exte$0rnTrait for B {}
+    //- /lib.rs crate:b new_source_root:library
+    pub trait ExternTrait {
+        #[doc(hidden)]
+        fn hidden_default() -> Option<()> {
+            todo!()
+        }
+
+        fn unhidden_default() -> Option<()> {
+            todo!()
+        }
+
+        fn unhidden_nondefault() -> Option<()>;
+    }
+                "#,
+            r#"
+    struct B;
+    impl b::ExternTrait for B {
+        $0fn unhidden_default() -> Option<()> {
+            todo!()
+        }
+    }
+    "#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_local_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+struct B;
+impl Loc$0alTrait for B {}
+            "#,
+            r#"
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+struct B;
+impl LocalTrait for B {
+    $0fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+            "#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_default_impls_workspace_crates() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+//- /lib.rs crate:b new_source_root:local
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+
+//- /main.rs crate:a deps:b
+struct B;
+impl b::Loc$0alTrait for B {}
+            "#,
+            r#"
+struct B;
+impl b::LocalTrait for B {
+    $0fn no_skip_default() -> Option<()> {
+        todo!()
+    }
+
+    fn no_skip_default_2() -> Option<()> {
+        todo!()
+    }
+}
+            "#,
+        )
+    }
+
+    #[test]
+    fn doc_hidden_nondefault_member() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+//- /lib.rs crate:b new_source_root:local
+trait LocalTrait {
+    #[doc(hidden)]
+    fn no_skip_non_default() -> Option<()>;
+
+    #[doc(hidden)]
+    fn skip_default() -> Option<()> {
+        todo!()
+    }
+}
+
+//- /main.rs crate:a deps:b
+struct B;
+impl b::Loc$0alTrait for B {}
+            "#,
+            r#"
+struct B;
+impl b::LocalTrait for B {
+    fn no_skip_non_default() -> Option<()> {
+        ${0:todo!()}
+    }
+}
+            "#,
+        )
+    }
+
+    #[test]
+    fn impl_with_type_param_with_former_param_as_default() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+pub trait Test<'a, T, U = T> {
+    fn test(item: &'a T) -> U;
+}
+impl<'a> Test<'a, i32> for bool {
+    $0
+}
+"#,
+            r#"
+pub trait Test<'a, T, U = T> {
+    fn test(item: &'a T) -> U;
+}
+impl<'a> Test<'a, i32> for bool {
+    fn test(item: &'a i32) -> i32 {
+        ${0:todo!()}
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn issue_17321() {
+        check_assist(
+            add_missing_impl_members,
+            r#"
+fn main() {}
+
+mod other_file_1 {
+    pub const SOME_CONSTANT: usize = 8;
+}
+
+mod other_file_2 {
+    use crate::other_file_1::SOME_CONSTANT;
+
+    pub trait Trait {
+        type Iter: Iterator<Item = [u8; SOME_CONSTANT]>;
+    }
+}
+
+pub struct MyStruct;
+
+impl other_file_2::Trait for MyStruct$0 {}"#,
+            r#"
+fn main() {}
+
+mod other_file_1 {
+    pub const SOME_CONSTANT: usize = 8;
+}
+
+mod other_file_2 {
+    use crate::other_file_1::SOME_CONSTANT;
+
+    pub trait Trait {
+        type Iter: Iterator<Item = [u8; SOME_CONSTANT]>;
+    }
+}
+
+pub struct MyStruct;
+
+impl other_file_2::Trait for MyStruct {
+    $0type Iter;
+}"#,
+        );
+    }
+
+    #[test]
+    fn test_qualify_ident_pat_in_default_members() {
+        check_assist(
+            add_missing_default_members,
+            r#"
+//- /lib.rs crate:b new_source_root:library
+pub enum State {
+    Active,
+    Inactive,
+}
+
+use State::*;
+
+pub trait Checker {
+    fn check(&self) -> State;
+
+    fn is_active(&self) -> bool {
+        match self.check() {
+            Active => true,
+            Inactive => false,
+        }
+    }
+}
+//- /main.rs crate:a deps:b
+struct MyChecker;
+
+impl b::Checker for MyChecker {
+    fn check(&self) -> b::State {
+        todo!();
+    }$0
+}"#,
+            r#"
+struct MyChecker;
+
+impl b::Checker for MyChecker {
+    fn check(&self) -> b::State {
+        todo!();
+    }
+
+    $0fn is_active(&self) -> bool {
+        match self.check() {
+            b::State::Active => true,
+            b::State::Inactive => false,
+        }
+    }
+}"#,
         );
     }
 }

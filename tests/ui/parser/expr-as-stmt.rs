@@ -1,5 +1,5 @@
-// run-rustfix
-// rustfix-only-machine-applicable
+//@ run-rustfix
+//@ rustfix-only-machine-applicable
 #![allow(unused_variables)]
 #![allow(dead_code)]
 #![allow(unused_must_use)]
@@ -76,4 +76,13 @@ fn r#unsafe() -> i32 {
     //~^ ERROR mismatched types
 }
 
+// https://github.com/rust-lang/rust/issues/88727
+fn matches() -> bool {
+    match () { _ => true } && match () { _ => true }; //~ ERROR mismatched types
+    match () { _ => true } && match () { _ => true } //~ ERROR mismatched types
+    //~^ ERROR expected `;`, found keyword `match`
+    match () { _ => true } && true; //~ ERROR mismatched types
+    match () { _ => true } && true //~ ERROR mismatched types
+    //~^ ERROR mismatched types
+}
 fn main() {}

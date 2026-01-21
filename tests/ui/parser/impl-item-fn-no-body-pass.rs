@@ -1,8 +1,8 @@
-// check-pass
+//@ check-pass
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 impl X {
     fn f();
 }

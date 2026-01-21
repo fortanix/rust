@@ -1,5 +1,6 @@
-// run-rustfix
-// check-pass
+//@ edition: 2015
+//@ run-rustfix
+//@ check-pass
 
 #![warn(rust_2018_compatibility)]
 

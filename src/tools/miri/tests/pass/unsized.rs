@@ -1,20 +1,7 @@
 //@revisions: stack tree
 //@[tree]compile-flags: -Zmiri-tree-borrows
-#![feature(unsized_tuple_coercion)]
 #![feature(unsized_fn_params)]
-
-use std::mem;
-
-fn unsized_tuple() {
-    let x: &(i32, i32, [i32]) = &(0, 1, [2, 3]);
-    let y: &(i32, i32, [i32]) = &(0, 1, [2, 3, 4]);
-    let mut a = [y, x];
-    a.sort();
-    assert_eq!(a, [x, y]);
-
-    assert_eq!(&format!("{:?}", a), "[(0, 1, [2, 3]), (0, 1, [2, 3, 4])]");
-    assert_eq!(mem::size_of_val(x), 16);
-}
+#![feature(custom_mir, core_intrinsics)]
 
 fn unsized_params() {
     pub fn f0(_f: dyn FnOnce()) {}
@@ -32,7 +19,29 @@ fn unsized_params() {
     f3(*p);
 }
 
+fn unsized_field_projection() {
+    use std::intrinsics::mir::*;
+
+    pub struct S<T: ?Sized>(T);
+
+    #[custom_mir(dialect = "runtime", phase = "optimized")]
+    fn f(x: S<[u8]>) {
+        mir! {
+            {
+                let idx = 0;
+                // Project to an unsized field of an unsized local.
+                x.0[idx] = 0;
+                let _val = x.0[idx];
+                Return()
+            }
+        }
+    }
+
+    let x: Box<S<[u8]>> = Box::new(S([0]));
+    f(*x);
+}
+
 fn main() {
-    unsized_tuple();
     unsized_params();
+    unsized_field_projection();
 }

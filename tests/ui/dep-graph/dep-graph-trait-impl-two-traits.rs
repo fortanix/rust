@@ -1,8 +1,8 @@
 // Test that adding an impl to a trait `Foo` does not affect functions
 // that only use `Bar`, so long as they do not have methods in common.
 
-// incremental
-// compile-flags: -Z query-dep-graph
+//@ incremental
+//@ compile-flags: -Z query-dep-graph
 
 #![feature(rustc_attrs)]
 #![allow(warnings)]
@@ -18,7 +18,7 @@ pub trait Bar: Sized {
 }
 
 mod x {
-    use {Foo, Bar};
+    use crate::{Foo, Bar};
 
     #[rustc_if_this_changed]
     impl Foo for char { }
@@ -27,16 +27,16 @@ mod x {
 }
 
 mod y {
-    use {Foo, Bar};
+    use crate::{Foo, Bar};
 
-    #[rustc_then_this_would_need(typeck)] //~ ERROR OK
+    #[rustc_then_this_would_need(typeck)] //~ ERROR no path
     pub fn call_bar() {
         char::bar('a');
     }
 }
 
 mod z {
-    use y;
+    use crate::y;
 
     #[rustc_then_this_would_need(typeck)] //~ ERROR no path
     pub fn z() {

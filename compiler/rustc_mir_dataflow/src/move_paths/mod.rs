@@ -1,19 +1,29 @@
-use crate::move_paths::builder::MoveDat;
-use rustc_data_structures::fx::FxHashMap;
-use rustc_index::{IndexSlice, IndexVec};
-use rustc_middle::mir::*;
-use rustc_middle::ty::{ParamEnv, Ty, TyCtxt};
-use rustc_span::Span;
-use smallvec::SmallVec;
+//! The move-analysis portion of borrowck needs to work in an abstract domain of lifted `Place`s.
+//! Most of the `Place` variants fall into a one-to-one mapping between the concrete and abstract
+//! (e.g., a field projection on a local variable, `x.field`, has the same meaning in both
+//! domains). In other words, all field projections for the same field on the same local do not
+//! have meaningfully different types if ever. Indexed projections are the exception: `a[x]` needs
+//! to be treated as mapping to the same move path as `a[y]` as well as `a[13]`, etc. So we map
+//! these `x`/`y` values to `()`.
+//!
+//! (In theory, the analysis could be extended to work with sets of paths, so that `a[0]` and
+//! `a[13]` could be kept distinct, while `a[x]` would still overlap them both. But that is not
+//! what this representation does today.)
 
 use std::fmt;
 use std::ops::{Index, IndexMut};
 
-use self::abs_domain::{AbstractElem, Lift};
+use rustc_data_structures::fx::FxHashMap;
+use rustc_index::{IndexSlice, IndexVec};
+use rustc_middle::mir::*;
+use rustc_middle::ty::{Ty, TyCtxt};
+use rustc_span::Span;
+use smallvec::SmallVec;
 
-mod abs_domain;
+use crate::un_derefer::UnDerefer;
 
 rustc_index::newtype_index! {
+    #[orderable]
     #[debug_format = "mp{}"]
     pub struct MovePathIndex {}
 }
@@ -25,6 +35,7 @@ impl polonius_engine::Atom for MovePathIndex {
 }
 
 rustc_index::newtype_index! {
+    #[orderable]
     #[debug_format = "mo{}"]
     pub struct MoveOutIndex {}
 }
@@ -175,7 +186,7 @@ pub struct MoveData<'tcx> {
     /// particular path being moved.)
     pub loc_map: LocationMap<SmallVec<[MoveOutIndex; 4]>>,
     pub path_map: IndexVec<MovePathIndex, SmallVec<[MoveOutIndex; 4]>>,
-    pub rev_lookup: MovePathLookup,
+    pub rev_lookup: MovePathLookup<'tcx>,
     pub inits: IndexVec<InitIndex, Init>,
     /// Each Location `l` is mapped to the Inits that are effects
     /// of executing the code at `l`.
@@ -289,8 +300,8 @@ impl Init {
 
 /// Tables mapping from a place to its MovePathIndex.
 #[derive(Debug)]
-pub struct MovePathLookup {
-    locals: IndexVec<Local, MovePathIndex>,
+pub struct MovePathLookup<'tcx> {
+    locals: IndexVec<Local, Option<MovePathIndex>>,
 
     /// projections are made from a base-place and a projection
     /// elem. The base-place will have a unique MovePathIndex; we use
@@ -298,7 +309,9 @@ pub struct MovePathLookup {
     /// subsequent search so that it is solely relative to that
     /// base-place). For the remaining lookup, we map the projection
     /// elem to the associated MovePathIndex.
-    projections: FxHashMap<(MovePathIndex, AbstractElem), MovePathIndex>,
+    projections: FxHashMap<(MovePathIndex, ProjectionKind), MovePathIndex>,
+
+    un_derefer: UnDerefer<'tcx>,
 }
 
 mod builder;
@@ -309,16 +322,18 @@ pub enum LookupResult {
     Parent(Option<MovePathIndex>),
 }
 
-impl MovePathLookup {
+impl<'tcx> MovePathLookup<'tcx> {
     // Unlike the builder `fn move_path_for` below, this lookup
     // alternative will *not* create a MovePath on the fly for an
     // unknown place, but will rather return the nearest available
     // parent.
-    pub fn find(&self, place: PlaceRef<'_>) -> LookupResult {
-        let mut result = self.locals[place.local];
+    pub fn find(&self, place: PlaceRef<'tcx>) -> LookupResult {
+        let Some(mut result) = self.find_local(place.local) else {
+            return LookupResult::Parent(None);
+        };
 
-        for elem in place.projection.iter() {
-            if let Some(&subpath) = self.projections.get(&(result, elem.lift())) {
+        for (_, elem) in self.un_derefer.iter_projections(place) {
+            if let Some(&subpath) = self.projections.get(&(result, elem.kind())) {
                 result = subpath;
             } else {
                 return LookupResult::Parent(Some(result));
@@ -328,7 +343,8 @@ impl MovePathLookup {
         LookupResult::Exact(result)
     }
 
-    pub fn find_local(&self, local: Local) -> MovePathIndex {
+    #[inline]
+    pub fn find_local(&self, local: Local) -> Option<MovePathIndex> {
         self.locals[local]
     }
 
@@ -336,46 +352,8 @@ impl MovePathLookup {
     /// `MovePathIndex`es.
     pub fn iter_locals_enumerated(
         &self,
-    ) -> impl DoubleEndedIterator<Item = (Local, MovePathIndex)> + ExactSizeIterator + '_ {
-        self.locals.iter_enumerated().map(|(l, &idx)| (l, idx))
-    }
-}
-
-#[derive(Debug)]
-pub struct IllegalMoveOrigin<'tcx> {
-    pub location: Location,
-    pub kind: IllegalMoveOriginKind<'tcx>,
-}
-
-#[derive(Debug)]
-pub enum IllegalMoveOriginKind<'tcx> {
-    /// Illegal move due to attempt to move from behind a reference.
-    BorrowedContent {
-        /// The place the reference refers to: if erroneous code was trying to
-        /// move from `(*x).f` this will be `*x`.
-        target_place: Place<'tcx>,
-    },
-
-    /// Illegal move due to attempt to move from field of an ADT that
-    /// implements `Drop`. Rust maintains invariant that all `Drop`
-    /// ADT's remain fully-initialized so that user-defined destructor
-    /// can safely read from all of the ADT's fields.
-    InteriorOfTypeWithDestructor { container_ty: Ty<'tcx> },
-
-    /// Illegal move due to attempt to move out of a slice or array.
-    InteriorOfSliceOrArray { ty: Ty<'tcx>, is_index: bool },
-}
-
-#[derive(Debug)]
-pub enum MoveError<'tcx> {
-    IllegalMove { cannot_move_out_of: IllegalMoveOrigin<'tcx> },
-    UnionMove { path: MovePathIndex },
-}
-
-impl<'tcx> MoveError<'tcx> {
-    fn cannot_move_out_of(location: Location, kind: IllegalMoveOriginKind<'tcx>) -> Self {
-        let origin = IllegalMoveOrigin { location, kind };
-        MoveError::IllegalMove { cannot_move_out_of: origin }
+    ) -> impl DoubleEndedIterator<Item = (Local, MovePathIndex)> {
+        self.locals.iter_enumerated().filter_map(|(l, &idx)| Some((l, idx?)))
     }
 }
 
@@ -383,25 +361,20 @@ impl<'tcx> MoveData<'tcx> {
     pub fn gather_moves(
         body: &Body<'tcx>,
         tcx: TyCtxt<'tcx>,
-        param_env: ParamEnv<'tcx>,
-    ) -> MoveDat<'tcx> {
-        builder::gather_moves(body, tcx, param_env)
+        filter: impl Fn(Ty<'tcx>) -> bool,
+    ) -> MoveData<'tcx> {
+        builder::gather_moves(body, tcx, filter)
     }
 
-    /// For the move path `mpi`, returns the root local variable (if any) that starts the path.
-    /// (e.g., for a path like `a.b.c` returns `Some(a)`)
-    pub fn base_local(&self, mut mpi: MovePathIndex) -> Option<Local> {
+    /// For the move path `mpi`, returns the root local variable that starts the path.
+    /// (e.g., for a path like `a.b.c` returns `a`)
+    pub fn base_local(&self, mut mpi: MovePathIndex) -> Local {
         loop {
             let path = &self.move_paths[mpi];
             if let Some(l) = path.place.as_local() {
-                return Some(l);
+                return l;
             }
-            if let Some(parent) = path.parent {
-                mpi = parent;
-                continue;
-            } else {
-                return None;
-            }
+            mpi = path.parent.expect("root move paths should be locals");
         }
     }
 

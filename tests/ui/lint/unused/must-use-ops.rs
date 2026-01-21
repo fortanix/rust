@@ -1,12 +1,12 @@
 // Issue #50124 - Test warning for unused operator expressions
 
-// check-pass
+//@ check-pass
 
 #![warn(unused_must_use)]
 #![feature(never_type)]
 
 fn deref_never(x: &!) {
-    // Don't lint for uninhabited typess
+    // Don't lint for uninhabited types
     *x;
 }
 

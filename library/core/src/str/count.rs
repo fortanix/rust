@@ -17,14 +17,15 @@
 //! Note: Because the term "leading byte" can sometimes be ambiguous (for
 //! example, it could also refer to the first byte of a slice), we'll often use
 //! the term "non-continuation byte" to refer to these bytes in the code.
+
 use core::intrinsics::unlikely;
 
-const USIZE_SIZE: usize = core::mem::size_of::<usize>();
+const USIZE_SIZE: usize = size_of::<usize>();
 const UNROLL_INNER: usize = 4;
 
 #[inline]
 pub(super) fn count_chars(s: &str) -> usize {
-    if s.len() < USIZE_SIZE * UNROLL_INNER {
+    if cfg!(feature = "optimize_for_size") || s.len() < USIZE_SIZE * UNROLL_INNER {
         // Avoid entering the optimized implementation for strings where the
         // difference is not likely to matter, or where it might even be slower.
         // That said, a ton of thought was not spent on the particular threshold
@@ -51,7 +52,7 @@ fn do_count_chars(s: &str) -> usize {
     // Check the properties of `CHUNK_SIZE` and `UNROLL_INNER` that are required
     // for correctness.
     const _: () = assert!(CHUNK_SIZE < 256);
-    const _: () = assert!(CHUNK_SIZE % UNROLL_INNER == 0);
+    const _: () = assert!(CHUNK_SIZE.is_multiple_of(UNROLL_INNER));
 
     // SAFETY: transmuting `[u8]` to `[usize]` is safe except for size
     // differences which are handled by `align_to`.

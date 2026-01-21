@@ -1,4 +1,4 @@
-// edition:2021
+//@ edition:2021
 // gate-test-anonymous_lifetime_in_impl_trait
 // Verify the behaviour of `feature(anonymous_lifetime_in_impl_trait)`.
 
@@ -49,6 +49,17 @@ mod alone_in_path {
     //~| ERROR missing lifetime specifier
 }
 
+mod alone_in_path2 {
+    trait Foo<'a> { fn next(&mut self) -> Option<&'a ()>; }
+
+    fn f(_: impl Foo<>) {}
+    //~^ ERROR anonymous lifetimes in `impl Trait` are unstable
+
+    fn g(mut x: impl Foo<>) -> Option<&()> { x.next() }
+    //~^ ERROR anonymous lifetimes in `impl Trait` are unstable
+    //~| ERROR missing lifetime specifier
+}
+
 mod in_path {
     trait Foo<'a, T> { fn next(&mut self) -> Option<&'a T>; }
 
@@ -61,8 +72,8 @@ mod in_path {
 }
 
 // This must not err, as the `&` actually resolves to `'a`.
-fn resolved_anonymous<'a, T>(f: impl Fn(&'a str) -> &T) {
-    f("f")
+fn resolved_anonymous<'a, T: 'a>(f: impl Fn(&'a str) -> &T) {
+    f("f");
 }
 
 fn main() {}

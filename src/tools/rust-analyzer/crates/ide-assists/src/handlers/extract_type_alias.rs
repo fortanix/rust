@@ -1,8 +1,11 @@
 use either::Either;
 use ide_db::syntax_helpers::node_ext::walk_ty;
-use syntax::ast::{self, edit::IndentLevel, make, AstNode, HasGenericParams, HasName};
+use syntax::{
+    ast::{self, AstNode, HasGenericArgs, HasGenericParams, HasName, edit::IndentLevel, make},
+    syntax_editor,
+};
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: extract_type_alias
 //
@@ -34,14 +37,15 @@ pub(crate) fn extract_type_alias(acc: &mut Assists, ctx: &AssistContext<'_>) -> 
         || item.syntax(),
         |impl_| impl_.as_ref().either(AstNode::syntax, AstNode::syntax),
     );
-    let insert_pos = node.text_range().start();
     let target = ty.syntax().text_range();
 
     acc.add(
-        AssistId("extract_type_alias", AssistKind::RefactorExtract),
+        AssistId::refactor_extract("extract_type_alias"),
         "Extract type as type alias",
         target,
         |builder| {
+            let mut edit = builder.make_editor(node);
+
             let mut known_generics = match item.generic_param_list() {
                 Some(it) => it.generic_params().collect(),
                 None => Vec::new(),
@@ -56,29 +60,35 @@ pub(crate) fn extract_type_alias(acc: &mut Assists, ctx: &AssistContext<'_>) -> 
             let generic_params =
                 generics.map(|it| make::generic_param_list(it.into_iter().cloned()));
 
+            // Replace original type with the alias
             let ty_args = generic_params
                 .as_ref()
                 .map_or(String::new(), |it| it.to_generic_args().to_string());
-            let replacement = format!("Type{ty_args}");
-            builder.replace(target, replacement);
+            // FIXME: replace with a `ast::make` constructor
+            let new_ty = make::ty(&format!("Type{ty_args}")).clone_for_update();
+            edit.replace(ty.syntax(), new_ty.syntax());
+
+            // Insert new alias
+            let ty_alias =
+                make::ty_alias(None, "Type", generic_params, None, None, Some((ty, None)))
+                    .clone_for_update();
+
+            if let Some(cap) = ctx.config.snippet_cap
+                && let Some(name) = ty_alias.name()
+            {
+                edit.add_annotation(name.syntax(), builder.make_tabstop_before(cap));
+            }
 
             let indent = IndentLevel::from_node(node);
-            let generic_params = generic_params.map_or(String::new(), |it| it.to_string());
-            match ctx.config.snippet_cap {
-                Some(cap) => {
-                    builder.insert_snippet(
-                        cap,
-                        insert_pos,
-                        format!("type $0Type{generic_params} = {ty};\n\n{indent}"),
-                    );
-                }
-                None => {
-                    builder.insert(
-                        insert_pos,
-                        format!("type Type{generic_params} = {ty};\n\n{indent}"),
-                    );
-                }
-            }
+            edit.insert_all(
+                syntax_editor::Position::before(node),
+                vec![
+                    ty_alias.syntax().clone().into(),
+                    make::tokens::whitespace(&format!("\n\n{indent}")).into(),
+                ],
+            );
+
+            builder.add_file_edits(ctx.vfs_file_id(), edit);
         },
     )
 }
@@ -91,7 +101,7 @@ fn collect_used_generics<'gp>(
     fn find_lifetime(text: &str) -> impl Fn(&&ast::GenericParam) -> bool + '_ {
         move |gp: &&ast::GenericParam| match gp {
             ast::GenericParam::LifetimeParam(lp) => {
-                lp.lifetime().map_or(false, |lt| lt.text() == text)
+                lp.lifetime().is_some_and(|lt| lt.text() == text)
             }
             _ => false,
         }
@@ -102,17 +112,17 @@ fn collect_used_generics<'gp>(
         match ty {
             ast::Type::PathType(ty) => {
                 if let Some(path) = ty.path() {
-                    if let Some(name_ref) = path.as_single_name_ref() {
-                        if let Some(param) = known_generics.iter().find(|gp| {
+                    if let Some(name_ref) = path.as_single_name_ref()
+                        && let Some(param) = known_generics.iter().find(|gp| {
                             match gp {
                                 ast::GenericParam::ConstParam(cp) => cp.name(),
                                 ast::GenericParam::TypeParam(tp) => tp.name(),
                                 _ => None,
                             }
-                            .map_or(false, |n| n.text() == name_ref.text())
-                        }) {
-                            generics.push(param);
-                        }
+                            .is_some_and(|n| n.text() == name_ref.text())
+                        })
+                    {
+                        generics.push(param);
                     }
                     generics.extend(
                         path.segments()
@@ -151,20 +161,18 @@ fn collect_used_generics<'gp>(
                     .and_then(|lt| known_generics.iter().find(find_lifetime(&lt.text()))),
             ),
             ast::Type::ArrayType(ar) => {
-                if let Some(ast::Expr::PathExpr(p)) = ar.expr() {
-                    if let Some(path) = p.path() {
-                        if let Some(name_ref) = path.as_single_name_ref() {
-                            if let Some(param) = known_generics.iter().find(|gp| {
-                                if let ast::GenericParam::ConstParam(cp) = gp {
-                                    cp.name().map_or(false, |n| n.text() == name_ref.text())
-                                } else {
-                                    false
-                                }
-                            }) {
-                                generics.push(param);
-                            }
+                if let Some(ast::Expr::PathExpr(p)) = ar.const_arg().and_then(|x| x.expr())
+                    && let Some(path) = p.path()
+                    && let Some(name_ref) = path.as_single_name_ref()
+                    && let Some(param) = known_generics.iter().find(|gp| {
+                        if let ast::GenericParam::ConstParam(cp) = gp {
+                            cp.name().is_some_and(|n| n.text() == name_ref.text())
+                        } else {
+                            false
                         }
-                    }
+                    })
+                {
+                    generics.push(param);
                 }
             }
             _ => (),
@@ -178,7 +186,7 @@ fn collect_used_generics<'gp>(
         ast::GenericParam::TypeParam(_) => 1,
     });
 
-    Some(generics).filter(|it| it.len() > 0)
+    Some(generics).filter(|it| !it.is_empty())
 }
 
 #[cfg(test)]

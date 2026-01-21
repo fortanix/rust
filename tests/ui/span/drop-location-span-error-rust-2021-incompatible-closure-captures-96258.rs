@@ -1,4 +1,6 @@
-// compile-flags -Wrust-2021-incompatible-closure-captures
+//@ edition: 2015
+
+#![warn(rust_2021_incompatible_closure_captures)]
 
 fn main() {}
 

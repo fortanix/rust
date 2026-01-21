@@ -1,4 +1,4 @@
-// edition:2021
+//@ edition:2021
 
 #![feature(anonymous_lifetime_in_impl_trait)]
 
@@ -15,6 +15,5 @@ async fn h(_: impl Iterator<Item = &'_ ()>) {}
 // But that lifetime does not participate in resolution.
 async fn i(mut x: impl Iterator<Item = &'_ ()>) -> Option<&'_ ()> { x.next() }
 //~^ ERROR missing lifetime specifier
-//~| ERROR lifetime may not live long enough
 
 fn main() {}

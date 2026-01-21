@@ -1,69 +1,82 @@
-#[cfg(feature="master")]
+#[cfg(feature = "master")]
 use gccjit::FnAttribute;
 use gccjit::Function;
-use rustc_attr::InstructionSetAttr;
-use rustc_codegen_ssa::target_features::tied_target_features;
-use rustc_data_structures::fx::FxHashMap;
+#[cfg(feature = "master")]
+use rustc_hir::attrs::InlineAttr;
+use rustc_hir::attrs::InstructionSetAttr;
+#[cfg(feature = "master")]
+use rustc_middle::middle::codegen_fn_attrs::CodegenFnAttrFlags;
+#[cfg(feature = "master")]
+use rustc_middle::mir::TerminatorKind;
 use rustc_middle::ty;
-use rustc_session::Session;
-use rustc_span::symbol::sym;
-use smallvec::{smallvec, SmallVec};
 
-use crate::{context::CodegenCx, errors::TiedTargetFeatures};
+use crate::context::CodegenCx;
+use crate::gcc_util::to_gcc_features;
 
-// Given a map from target_features to whether they are enabled or disabled,
-// ensure only valid combinations are allowed.
-pub fn check_tied_features(sess: &Session, features: &FxHashMap<&str, bool>) -> Option<&'static [&'static str]> {
-    for tied in tied_target_features(sess) {
-        // Tied features must be set to the same value, or not set at all
-        let mut tied_iter = tied.iter();
-        let enabled = features.get(tied_iter.next().unwrap());
-        if tied_iter.any(|feature| enabled != features.get(feature)) {
-            return Some(tied);
+/// Checks if the function `instance` is recursively inline.
+/// Returns `false` if a functions is guaranteed to be non-recursive, and `true` if it *might* be recursive.
+#[cfg(feature = "master")]
+fn recursively_inline<'gcc, 'tcx>(
+    cx: &CodegenCx<'gcc, 'tcx>,
+    instance: ty::Instance<'tcx>,
+) -> bool {
+    // No body, so we can't check if this is recursively inline, so we assume it is.
+    if !cx.tcx.is_mir_available(instance.def_id()) {
+        return true;
+    }
+    // `expect_local` ought to never fail: we should be checking a function within this codegen unit.
+    let body = cx.tcx.optimized_mir(instance.def_id());
+    for block in body.basic_blocks.iter() {
+        let Some(ref terminator) = block.terminator else { continue };
+        // I assume that the recursive-inline issue applies only to functions, and not to drops.
+        // In principle, a recursive, `#[inline(always)]` drop could(?) exist, but I don't think it does.
+        let TerminatorKind::Call { ref func, .. } = terminator.kind else { continue };
+        let Some((def, _args)) = func.const_fn_def() else { continue };
+        // Check if the called function is recursively inline.
+        if matches!(
+            cx.tcx.codegen_fn_attrs(def).inline,
+            InlineAttr::Always | InlineAttr::Force { .. }
+        ) {
+            return true;
         }
     }
-    None
+    false
 }
 
-// TODO(antoyo): maybe move to a new module gcc_util.
-// To find a list of GCC's names, check https://gcc.gnu.org/onlinedocs/gcc/Function-Attributes.html
-fn to_gcc_features<'a>(sess: &Session, s: &'a str) -> SmallVec<[&'a str; 2]> {
-    let arch = if sess.target.arch == "x86_64" { "x86" } else { &*sess.target.arch };
-    match (arch, s) {
-        ("x86", "sse4.2") => smallvec!["sse4.2", "crc32"],
-        ("x86", "pclmulqdq") => smallvec!["pclmul"],
-        ("x86", "rdrand") => smallvec!["rdrnd"],
-        ("x86", "bmi1") => smallvec!["bmi"],
-        ("x86", "cmpxchg16b") => smallvec!["cx16"],
-        ("x86", "avx512vaes") => smallvec!["vaes"],
-        ("x86", "avx512gfni") => smallvec!["gfni"],
-        ("x86", "avx512vpclmulqdq") => smallvec!["vpclmulqdq"],
-        // NOTE: seems like GCC requires 'avx512bw' for 'avx512vbmi2'.
-        ("x86", "avx512vbmi2") => smallvec!["avx512vbmi2", "avx512bw"],
-        // NOTE: seems like GCC requires 'avx512bw' for 'avx512bitalg'.
-        ("x86", "avx512bitalg") => smallvec!["avx512bitalg", "avx512bw"],
-        ("aarch64", "rcpc2") => smallvec!["rcpc-immo"],
-        ("aarch64", "dpb") => smallvec!["ccpp"],
-        ("aarch64", "dpb2") => smallvec!["ccdp"],
-        ("aarch64", "frintts") => smallvec!["fptoint"],
-        ("aarch64", "fcma") => smallvec!["complxnum"],
-        ("aarch64", "pmuv3") => smallvec!["perfmon"],
-        ("aarch64", "paca") => smallvec!["pauth"],
-        ("aarch64", "pacg") => smallvec!["pauth"],
-        // Rust ties fp and neon together. In LLVM neon implicitly enables fp,
-        // but we manually enable neon when a feature only implicitly enables fp
-        ("aarch64", "f32mm") => smallvec!["f32mm", "neon"],
-        ("aarch64", "f64mm") => smallvec!["f64mm", "neon"],
-        ("aarch64", "fhm") => smallvec!["fp16fml", "neon"],
-        ("aarch64", "fp16") => smallvec!["fullfp16", "neon"],
-        ("aarch64", "jsconv") => smallvec!["jsconv", "neon"],
-        ("aarch64", "sve") => smallvec!["sve", "neon"],
-        ("aarch64", "sve2") => smallvec!["sve2", "neon"],
-        ("aarch64", "sve2-aes") => smallvec!["sve2-aes", "neon"],
-        ("aarch64", "sve2-sm4") => smallvec!["sve2-sm4", "neon"],
-        ("aarch64", "sve2-sha3") => smallvec!["sve2-sha3", "neon"],
-        ("aarch64", "sve2-bitperm") => smallvec!["sve2-bitperm", "neon"],
-        (_, s) => smallvec![s],
+/// Get GCC attribute for the provided inline heuristic, attached to `instance`.
+#[cfg(feature = "master")]
+#[inline]
+fn inline_attr<'gcc, 'tcx>(
+    cx: &CodegenCx<'gcc, 'tcx>,
+    inline: InlineAttr,
+    instance: ty::Instance<'tcx>,
+) -> Option<FnAttribute<'gcc>> {
+    match inline {
+        InlineAttr::Always => {
+            // We can't simply always return `always_inline` unconditionally.
+            // It is *NOT A HINT* and does not work for recursive functions.
+            //
+            // So, it can only be applied *if*:
+            // The current function does not call any functions marked `#[inline(always)]`.
+            //
+            // That prevents issues steming from recursive `#[inline(always)]` at a *relatively* small cost.
+            // We *only* need to check all the terminators of a function marked with this attribute.
+            if recursively_inline(cx, instance) {
+                Some(FnAttribute::Inline)
+            } else {
+                Some(FnAttribute::AlwaysInline)
+            }
+        }
+        InlineAttr::Hint => Some(FnAttribute::Inline),
+        InlineAttr::Force { .. } => Some(FnAttribute::AlwaysInline),
+        InlineAttr::Never => {
+            if cx.sess().target.arch != "amdgpu" {
+                Some(FnAttribute::NoInline)
+            } else {
+                None
+            }
+        }
+        InlineAttr::None => None,
     }
 }
 
@@ -71,43 +84,81 @@ fn to_gcc_features<'a>(sess: &Session, s: &'a str) -> SmallVec<[&'a str; 2]> {
 /// attributes.
 pub fn from_fn_attrs<'gcc, 'tcx>(
     cx: &CodegenCx<'gcc, 'tcx>,
-    #[cfg_attr(not(feature="master"), allow(unused_variables))]
-    func: Function<'gcc>,
+    #[cfg_attr(not(feature = "master"), allow(unused_variables))] func: Function<'gcc>,
     instance: ty::Instance<'tcx>,
 ) {
-    let codegen_fn_attrs = cx.tcx.codegen_fn_attrs(instance.def_id());
+    let codegen_fn_attrs = cx.tcx.codegen_instance_attrs(instance.def);
 
-    let function_features =
-        codegen_fn_attrs.target_features.iter().map(|features| features.as_str()).collect::<Vec<&str>>();
+    #[cfg(feature = "master")]
+    {
+        let inline = if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::NAKED) {
+            InlineAttr::Never
+        } else if codegen_fn_attrs.inline == InlineAttr::None
+            && instance.def.requires_inline(cx.tcx)
+        {
+            InlineAttr::Hint
+        } else {
+            codegen_fn_attrs.inline
+        };
+        if let Some(attr) = inline_attr(cx, inline, instance) {
+            if let FnAttribute::AlwaysInline = attr {
+                func.add_attribute(FnAttribute::Inline);
+            }
+            func.add_attribute(attr);
+        }
 
-    if let Some(features) = check_tied_features(cx.tcx.sess, &function_features.iter().map(|features| (*features, true)).collect()) {
-        let span = cx.tcx
-            .get_attr(instance.def_id(), sym::target_feature)
-            .map_or_else(|| cx.tcx.def_span(instance.def_id()), |a| a.span);
-        cx.tcx.sess.create_err(TiedTargetFeatures {
-            features: features.join(", "),
-            span,
-        })
-            .emit();
-        return;
+        if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::COLD) {
+            func.add_attribute(FnAttribute::Cold);
+        }
+        if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::FFI_PURE) {
+            func.add_attribute(FnAttribute::Pure);
+        }
+        if codegen_fn_attrs.flags.contains(CodegenFnAttrFlags::FFI_CONST) {
+            func.add_attribute(FnAttribute::Const);
+        }
     }
 
-    let mut function_features = function_features
+    let mut function_features = codegen_fn_attrs
+        .target_features
         .iter()
+        .map(|features| features.name.as_str())
         .flat_map(|feat| to_gcc_features(cx.tcx.sess, feat).into_iter())
-        .chain(codegen_fn_attrs.instruction_set.iter().map(|x| match x {
+        .chain(codegen_fn_attrs.instruction_set.iter().map(|x| match *x {
             InstructionSetAttr::ArmA32 => "-thumb-mode", // TODO(antoyo): support removing feature.
             InstructionSetAttr::ArmT32 => "thumb-mode",
         }))
         .collect::<Vec<_>>();
 
-    // TODO(antoyo): check if we really need global backend features. (Maybe they could be applied
-    // globally?)
+    // TODO(antoyo): cg_llvm adds global features to each function so that LTO keep them.
+    // Check if GCC requires the same.
     let mut global_features = cx.tcx.global_backend_features(()).iter().map(|s| s.as_str());
     function_features.extend(&mut global_features);
-    let target_features = function_features.join(",");
+    let target_features = function_features
+        .iter()
+        .filter_map(|feature| {
+            // TODO(antoyo): support soft-float.
+            if feature.contains("soft-float") {
+                return None;
+            }
+
+            if feature.starts_with('-') {
+                Some(format!("no{}", feature))
+            } else if let Some(stripped) = feature.strip_prefix('+') {
+                Some(stripped.to_string())
+            } else {
+                Some(feature.to_string())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     if !target_features.is_empty() {
-        #[cfg(feature="master")]
-        func.add_attribute(FnAttribute::Target(&target_features));
+        #[cfg(feature = "master")]
+        match cx.sess().target.arch.as_ref() {
+            "x86" | "x86_64" | "powerpc" => {
+                func.add_attribute(FnAttribute::Target(&target_features))
+            }
+            // The target attribute is not supported on other targets in GCC.
+            _ => (),
+        }
     }
 }

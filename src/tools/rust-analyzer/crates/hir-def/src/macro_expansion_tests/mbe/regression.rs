@@ -13,36 +13,96 @@ fn test_vec() {
     check(
         r#"
 macro_rules! vec {
-   ($($item:expr),*) => {{
-           let mut v = Vec::new();
-           $( v.push($item); )*
-           v
-    }};
+    () => (
+        $crate::__rust_force_expr!($crate::vec::Vec::new())
+    );
+    ($elem:expr; $n:expr) => (
+        $crate::__rust_force_expr!($crate::vec::from_elem($elem, $n))
+    );
+    ($($x:expr),+ $(,)?) => (
+        $crate::__rust_force_expr!(<[_]>::into_vec(
+            // This rustc_box is not required, but it produces a dramatic improvement in compile
+            // time when constructing arrays with many elements.
+            #[rustc_box]
+            $crate::boxed::Box::new([$($x),+])
+        ))
+    );
 }
+
+macro_rules! __rust_force_expr {
+    ($e:expr) => {
+        $e
+    };
+}
+
 fn main() {
     vec!();
     vec![1u32,2];
+    vec![a.];
 }
 "#,
         expect![[r#"
 macro_rules! vec {
-   ($($item:expr),*) => {{
-           let mut v = Vec::new();
-           $( v.push($item); )*
-           v
-    }};
+    () => (
+        $crate::__rust_force_expr!($crate::vec::Vec::new())
+    );
+    ($elem:expr; $n:expr) => (
+        $crate::__rust_force_expr!($crate::vec::from_elem($elem, $n))
+    );
+    ($($x:expr),+ $(,)?) => (
+        $crate::__rust_force_expr!(<[_]>::into_vec(
+            // This rustc_box is not required, but it produces a dramatic improvement in compile
+            // time when constructing arrays with many elements.
+            #[rustc_box]
+            $crate::boxed::Box::new([$($x),+])
+        ))
+    );
 }
+
+macro_rules! __rust_force_expr {
+    ($e:expr) => {
+        $e
+    };
+}
+
 fn main() {
-     {
-        let mut v = Vec::new();
-        v
+    $crate::__rust_force_expr!($crate:: vec:: Vec:: new());
+    $crate::__rust_force_expr!(<[_]>:: into_vec(#[rustc_box]$crate:: boxed:: Box:: new([1u32, 2])));
+    /* error: expected Expr */$crate::__rust_force_expr!($crate:: vec:: from_elem((a.), $n));
+}
+"#]],
+    );
+    // FIXME we should have testing infra for multi level expansion tests
+    check(
+        r#"
+macro_rules! __rust_force_expr {
+    ($e:expr) => {
+        $e
     };
-     {
-        let mut v = Vec::new();
-        v.push(1u32);
-        v.push(2);
-        v
+}
+
+fn main() {
+    __rust_force_expr!(crate:: vec:: Vec:: new());
+    __rust_force_expr!(<[_]>:: into_vec(#[rustc_box] crate:: boxed:: Box:: new([1u32, 2])));
+    __rust_force_expr/*+errors*/!(crate:: vec:: from_elem((a.), $n));
+}
+"#,
+        expect![[r#"
+macro_rules! __rust_force_expr {
+    ($e:expr) => {
+        $e
     };
+}
+
+fn main() {
+    (crate ::vec::Vec::new());
+    (<[_]>::into_vec(#[rustc_box] crate ::boxed::Box::new([1u32, 2])));
+    /* error: expected Expr *//* parse error: expected field name or number */
+/* parse error: expected expression */
+/* parse error: expected R_PAREN */
+/* parse error: expected COMMA */
+/* parse error: expected expression, item or let statement */
+(crate ::vec::from_elem((a.), $n));
 }
 "#]],
     );
@@ -79,7 +139,7 @@ STRUCT!{struct D3DVSHADERCAPS2_0 {Caps: u8,}}
 
 STRUCT!{#[cfg_attr(target_arch = "x86", repr(packed))] struct D3DCONTENTPROTECTIONCAPS {Caps : u8 ,}}
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! STRUCT {
     ($(#[$attrs:meta])* struct $name:ident {
         $($field:ident: $ftype:ty,)+
@@ -134,7 +194,7 @@ impl Clone for D3DCONTENTPROTECTIONCAPS {
         }
     }
 }
-"##]],
+"#]],
     );
 }
 
@@ -154,7 +214,7 @@ macro_rules! int_base {
 }
 int_base!{Binary for isize as usize -> Binary}
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! int_base {
     ($Trait:ident for $T:ident as $U:ident -> $Radix:ident) => {
         #[stable(feature = "rust1", since = "1.0.0")]
@@ -170,7 +230,7 @@ macro_rules! int_base {
         Binary.fmt_int(*self as usize, f)
     }
 }
-"##]],
+"#]],
     );
 }
 
@@ -258,7 +318,7 @@ impl_fn_for_zst !   {
 }
 
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! impl_fn_for_zst  {
     {$( $( #[$attr: meta] )*
     struct $Name: ident impl$( <$( $lifetime : lifetime ),+> )? Fn =
@@ -297,60 +357,60 @@ macro_rules! impl_fn_for_zst  {
 
 #[derive(Clone)] struct CharEscapeDebugContinue;
 impl Fn<(char, )> for CharEscapeDebugContinue {
-    #[inline] extern "rust-call"fn call(&self , (c, ): (char, )) -> char::EscapeDebug { {
+    #[inline] extern "rust-call" fn call(&self , (c, ): (char, )) -> char::EscapeDebug { {
             c.escape_debug_ext(false )
         }
     }
 }
 impl FnMut<(char, )> for CharEscapeDebugContinue {
-    #[inline] extern "rust-call"fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeDebug {
+    #[inline] extern "rust-call" fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeDebug {
         Fn::call(&*self , (c, ))
     }
 }
 impl FnOnce<(char, )> for CharEscapeDebugContinue {
     type Output = char::EscapeDebug;
-    #[inline] extern "rust-call"fn call_once(self , (c, ): (char, )) -> char::EscapeDebug {
+    #[inline] extern "rust-call" fn call_once(self , (c, ): (char, )) -> char::EscapeDebug {
         Fn::call(&self , (c, ))
     }
 }
 #[derive(Clone)] struct CharEscapeUnicode;
 impl Fn<(char, )> for CharEscapeUnicode {
-    #[inline] extern "rust-call"fn call(&self , (c, ): (char, )) -> char::EscapeUnicode { {
+    #[inline] extern "rust-call" fn call(&self , (c, ): (char, )) -> char::EscapeUnicode { {
             c.escape_unicode()
         }
     }
 }
 impl FnMut<(char, )> for CharEscapeUnicode {
-    #[inline] extern "rust-call"fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeUnicode {
+    #[inline] extern "rust-call" fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeUnicode {
         Fn::call(&*self , (c, ))
     }
 }
 impl FnOnce<(char, )> for CharEscapeUnicode {
     type Output = char::EscapeUnicode;
-    #[inline] extern "rust-call"fn call_once(self , (c, ): (char, )) -> char::EscapeUnicode {
+    #[inline] extern "rust-call" fn call_once(self , (c, ): (char, )) -> char::EscapeUnicode {
         Fn::call(&self , (c, ))
     }
 }
 #[derive(Clone)] struct CharEscapeDefault;
 impl Fn<(char, )> for CharEscapeDefault {
-    #[inline] extern "rust-call"fn call(&self , (c, ): (char, )) -> char::EscapeDefault { {
+    #[inline] extern "rust-call" fn call(&self , (c, ): (char, )) -> char::EscapeDefault { {
             c.escape_default()
         }
     }
 }
 impl FnMut<(char, )> for CharEscapeDefault {
-    #[inline] extern "rust-call"fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeDefault {
+    #[inline] extern "rust-call" fn call_mut(&mut self , (c, ): (char, )) -> char::EscapeDefault {
         Fn::call(&*self , (c, ))
     }
 }
 impl FnOnce<(char, )> for CharEscapeDefault {
     type Output = char::EscapeDefault;
-    #[inline] extern "rust-call"fn call_once(self , (c, ): (char, )) -> char::EscapeDefault {
+    #[inline] extern "rust-call" fn call_once(self , (c, ): (char, )) -> char::EscapeDefault {
         Fn::call(&self , (c, ))
     }
 }
 
-"##]],
+"#]],
     );
 }
 
@@ -451,7 +511,7 @@ cfg_if! {
     @__apply cfg(all(not(any(not(any(target_os = "solaris", target_os = "illumos")))))),
 }
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! cfg_if {
     ($(if #[cfg($($meta:meta),*)] { $($it:item)* } )else* else { $($it2:item)* })
     => {
@@ -474,7 +534,7 @@ __cfg_if_items! {
 }
 
 
-"##]],
+"#]],
     );
 }
 
@@ -484,11 +544,11 @@ fn test_proptest_arbitrary() {
     check(
         r#"
 macro_rules! arbitrary {
-    ([$($bounds : tt)*] $typ: ty, $strat: ty, $params: ty;
+    ([$($bounds : tt)*] $typ: ty, $strategy: ty, $params: ty;
         $args: ident => $logic: expr) => {
         impl<$($bounds)*> $crate::arbitrary::Arbitrary for $typ {
             type Parameters = $params;
-            type Strategy = $strat;
+            type Strategy = $strategy;
             fn arbitrary_with($args: Self::Parameters) -> Self::Strategy {
                 $logic
             }
@@ -509,11 +569,11 @@ arbitrary!(
 "#,
         expect![[r#"
 macro_rules! arbitrary {
-    ([$($bounds : tt)*] $typ: ty, $strat: ty, $params: ty;
+    ([$($bounds : tt)*] $typ: ty, $strategy: ty, $params: ty;
         $args: ident => $logic: expr) => {
         impl<$($bounds)*> $crate::arbitrary::Arbitrary for $typ {
             type Parameters = $params;
-            type Strategy = $strat;
+            type Strategy = $strategy;
             fn arbitrary_with($args: Self::Parameters) -> Self::Strategy {
                 $logic
             }
@@ -522,8 +582,8 @@ macro_rules! arbitrary {
 }
 
 impl <A: Arbitrary> $crate::arbitrary::Arbitrary for Vec<A> {
-    type Parameters = RangedParams1<A::Parameters>;
-    type Strategy = VecStrategy<A::Strategy>;
+    type Parameters = RangedParams1<A::Parameters> ;
+    type Strategy = VecStrategy<A::Strategy> ;
     fn arbitrary_with(args: Self::Parameters) -> Self::Strategy { {
             let product_unpack![range, a] = args;
             vec(any_with::<A>(a), range)
@@ -558,7 +618,7 @@ RIDL!{interface ID3D11Asynchronous(ID3D11AsynchronousVtbl): ID3D11DeviceChild(ID
     fn GetDataSize(&mut self) -> UINT
 }}
 "#,
-        expect![[r##"
+        expect![[r#"
 #[macro_export]
 macro_rules! RIDL {
     (interface $interface:ident ($vtbl:ident) : $pinterface:ident ($pvtbl:ident)
@@ -579,7 +639,7 @@ impl ID3D11Asynchronous {
         ((*self .lpVtbl).GetDataSize)(self )
     }
 }
-"##]],
+"#]],
     );
 }
 
@@ -616,7 +676,7 @@ quick_error ! (
 );
 
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! quick_error {
     (SORT [enum $name:ident $( #[$meta:meta] )*]
         items [$($( #[$imeta:meta] )*
@@ -637,7 +697,7 @@ macro_rules! quick_error {
 }
 quick_error!(ENUMINITION[enum Wrapped#[derive(Debug)]]body[]queue[ = > One: UNIT[] = > Two: TUPLE[s: String]]);
 
-"##]],
+"#]],
     )
 }
 
@@ -686,7 +746,7 @@ delegate_impl ! {
     [G, &'a mut G, deref] pub trait Data: GraphBase {@section type type NodeWeight;}
 }
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! delegate_impl {
     ([$self_type:ident, $self_wrap:ty, $self_map:ident]
      pub trait $name:ident $(: $sup:ident)* $(+ $more_sup:ident)* {
@@ -724,8 +784,8 @@ macro_rules! delegate_impl {
         }
     }
 }
-impl <> Data for &'amut G where G: Data {}
-"##]],
+impl <> Data for &'a mut G where G: Data {}
+"#]],
     );
 }
 
@@ -833,7 +893,7 @@ macro_rules! rgb_color {
 /* parse error: expected SEMICOLON */
 /* parse error: expected expression, item or let statement */
 pub fn new() {
-    let _ = 0as u32<<(8+8);
+    let _ = 0 as u32<<(8+8);
 }
 // MACRO_ITEMS@0..31
 //   FN@0..31
@@ -871,11 +931,12 @@ pub fn new() {
 //                             PATH_TYPE@23..26
 //                               PATH@23..26
 //                                 PATH_SEGMENT@23..26
-//                                   L_ANGLE@23..24 "<"
-//                                   PAREN_TYPE@24..26
-//                                     L_PAREN@24..25 "("
-//                                     ERROR@25..26
-//                                       INT_NUMBER@25..26 "8"
+//                                   TYPE_ANCHOR@23..26
+//                                     L_ANGLE@23..24 "<"
+//                                     PAREN_TYPE@24..26
+//                                       L_PAREN@24..25 "("
+//                                       ERROR@25..26
+//                                         INT_NUMBER@25..26 "8"
 //                           PLUS@26..27 "+"
 //                     CONST_ARG@27..28
 //                       LITERAL@27..28
@@ -899,13 +960,212 @@ macro_rules! with_std {
 
 with_std! {mod m;mod f;}
 "#,
-        expect![[r##"
+        expect![[r#"
 macro_rules! with_std {
     ($($i:item)*) => ($(#[cfg(feature = "std")]$i)*)
 }
 
 #[cfg(feature = "std")] mod m;
 #[cfg(feature = "std")] mod f;
-"##]],
+"#]],
     )
+}
+
+#[test]
+fn eager_regression_15403() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! format_args {}
+
+fn main() {
+    format_args /* +errors */ !("{}", line.1.);
+}
+
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! format_args {}
+
+fn main() {
+    /* parse error: expected field name or number */
+builtin #format_args ("{}", line.1.);
+}
+
+"##]],
+    );
+}
+
+#[test]
+fn eager_regression_154032() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! format_args {}
+
+fn main() {
+    format_args /* +errors */ !("{}", &[0 2]);
+}
+
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! format_args {}
+
+fn main() {
+    /* parse error: expected COMMA */
+/* parse error: expected R_BRACK */
+/* parse error: expected COMMA */
+/* parse error: expected COMMA */
+/* parse error: expected expression */
+/* parse error: expected R_PAREN */
+/* parse error: expected expression, item or let statement */
+/* parse error: expected expression, item or let statement */
+builtin #format_args ("{}", &[0 2]);
+}
+
+"##]],
+    );
+}
+
+#[test]
+fn eager_concat_line() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! concat {}
+
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! line {}
+
+fn main() {
+    concat!("event ", line!());
+}
+
+"#,
+        expect![[r##"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! concat {}
+
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! line {}
+
+fn main() {
+    "event 0";
+}
+
+"##]],
+    );
+}
+
+#[test]
+fn eager_concat_bytes_panic() {
+    check(
+        r#"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! concat_bytes {}
+
+fn main() {
+    let x = concat_bytes!(2);
+}
+
+"#,
+        expect![[r#"
+#[rustc_builtin_macro]
+#[macro_export]
+macro_rules! concat_bytes {}
+
+fn main() {
+    let x = /* error: unexpected token */b"";
+}
+
+"#]],
+    );
+}
+
+#[test]
+fn regression_16529() {
+    check(
+        r#"
+mod any {
+    #[macro_export]
+    macro_rules! nameable {
+        {
+            struct $name:ident[$a:lifetime]
+        } => {
+            $crate::any::nameable! {
+                struct $name[$a]
+                a
+            }
+        };
+        {
+            struct $name:ident[$a:lifetime]
+            a
+        } => {};
+    }
+    pub use nameable;
+
+    nameable! {
+        Name['a]
+    }
+}
+"#,
+        expect![[r#"
+mod any {
+    #[macro_export]
+    macro_rules! nameable {
+        {
+            struct $name:ident[$a:lifetime]
+        } => {
+            $crate::any::nameable! {
+                struct $name[$a]
+                a
+            }
+        };
+        {
+            struct $name:ident[$a:lifetime]
+            a
+        } => {};
+    }
+    pub use nameable;
+
+    /* error: unexpected token in input */$crate::any::nameable! {
+        struct $name[$a]a
+    }
+}
+"#]],
+    );
+}
+
+#[test]
+fn regression_18148() {
+    check(
+        r#"
+macro_rules! m {
+    ( $e:expr ) => {};
+}
+
+fn foo() {
+    m!(r#const);
+}
+"#,
+        expect![[r#"
+macro_rules! m {
+    ( $e:expr ) => {};
+}
+
+fn foo() {
+    ;
+}
+"#]],
+    );
 }

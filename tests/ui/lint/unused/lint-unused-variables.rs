@@ -1,7 +1,6 @@
-// compile-flags: --cfg something
-// edition:2018
+//@ compile-flags: --cfg something
+//@ edition:2018
 
-#![feature(async_closure)]
 #![deny(unused_variables)]
 
 async fn foo_async(
@@ -74,6 +73,6 @@ fn main() {
         b: i32,
         //~^ ERROR unused variable: `b`
     | {};
-    let _ = a(1, 2);
-    let _ = b(1, 2);
+    a(1, 2);
+    b(1, 2);
 }

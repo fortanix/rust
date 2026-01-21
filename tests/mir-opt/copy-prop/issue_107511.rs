@@ -1,5 +1,6 @@
-// ignore-wasm32 compiled with panic=abort by default
-// unit-test: CopyProp
+// skip-filecheck
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
+//@ test-mir-pass: CopyProp
 
 // EMIT_MIR issue_107511.main.CopyProp.diff
 fn main() {

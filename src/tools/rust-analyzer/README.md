@@ -1,28 +1,43 @@
 <p align="center">
   <img
-    src="https://raw.githubusercontent.com/rust-analyzer/rust-analyzer/master/assets/logo-wide.svg"
+    src="https://raw.githubusercontent.com/rust-lang/rust-analyzer/master/assets/logo-wide.svg"
     alt="rust-analyzer logo">
 </p>
 
-rust-analyzer is a modular compiler frontend for the Rust language.
-It is a part of a larger rls-2.0 effort to create excellent IDE support for Rust.
+rust-analyzer is a language server that provides IDE functionality for
+writing Rust programs. You can use it with any editor that supports
+the [Language Server
+Protocol](https://microsoft.github.io/language-server-protocol/) (VS
+Code, Vim, Emacs, Zed, etc).
+
+rust-analyzer features include go-to-definition, find-all-references,
+refactorings and code completion. rust-analyzer also supports
+integrated formatting (with rustfmt) and integrated diagnostics (with
+rustc and clippy).
+
+Internally, rust-analyzer is structured as a set of libraries for
+analyzing Rust code. See
+[Architecture](https://rust-analyzer.github.io/book/contributing/architecture.html)
+in the manual.
 
 ## Quick Start
 
-https://rust-analyzer.github.io/manual.html#installation
+https://rust-analyzer.github.io/book/installation.html
 
 ## Documentation
 
-If you want to **contribute** to rust-analyzer or are just curious about how
-things work under the hood, check the [./docs/dev](./docs/dev) folder.
+If you want to **contribute** to rust-analyzer check out the [CONTRIBUTING.md](./CONTRIBUTING.md) or
+if you are just curious about how things work under the hood, see the
+[Contributing](https://rust-analyzer.github.io/book/contributing) section of the manual.
 
 If you want to **use** rust-analyzer's language server with your editor of
-choice, check [the manual](https://rust-analyzer.github.io/manual.html) folder.
+choice, check [the manual](https://rust-analyzer.github.io/book/).
 It also contains some tips & tricks to help you be more productive when using rust-analyzer.
 
 ## Security and Privacy
 
-See the corresponding sections of [the manual](https://rust-analyzer.github.io/manual.html#security).
+See the [security](https://rust-analyzer.github.io/book/security.html) and
+[privacy](https://rust-analyzer.github.io/book/privacy.html) sections of the manual.
 
 ## Communication
 

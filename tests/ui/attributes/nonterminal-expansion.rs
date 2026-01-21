@@ -1,10 +1,11 @@
+//@ compile-flags: -Zdeduplicate-diagnostics=yes
+
 // Macros were previously expanded in `Expr` nonterminal tokens, now they are not.
 
 macro_rules! pass_nonterminal {
     ($n:expr) => {
         #[repr(align($n))]
-        //~^ ERROR expected unsuffixed literal or identifier, found `n!()`
-        //~| ERROR incorrect `repr(align)` attribute format
+        //~^ ERROR expected a literal (`1u8`, `1.0f32`, `"string"`, etc.) here, found `expr` metavariable
         struct S;
     };
 }

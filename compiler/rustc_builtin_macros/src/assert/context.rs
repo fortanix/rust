@@ -1,18 +1,14 @@
+use rustc_ast::token::{self, Delimiter, IdentIsRaw};
+use rustc_ast::tokenstream::{DelimSpan, TokenStream, TokenTree};
 use rustc_ast::{
-    ptr::P,
-    token,
-    tokenstream::{DelimSpan, TokenStream, TokenTree},
-    BinOpKind, BorrowKind, DelimArgs, Expr, ExprKind, ItemKind, MacCall, MacDelimiter, MethodCall,
-    Mutability, Path, PathSegment, Stmt, StructRest, UnOp, UseTree, UseTreeKind, DUMMY_NODE_ID,
+    BinOpKind, BorrowKind, DUMMY_NODE_ID, DelimArgs, Expr, ExprKind, ItemKind, MacCall, MethodCall,
+    Mutability, Path, PathSegment, Stmt, StructRest, UnOp, UseTree, UseTreeKind,
 };
 use rustc_ast_pretty::pprust;
 use rustc_data_structures::fx::FxHashSet;
 use rustc_expand::base::ExtCtxt;
-use rustc_span::{
-    symbol::{sym, Ident, Symbol},
-    Span,
-};
-use thin_vec::{thin_vec, ThinVec};
+use rustc_span::{Ident, Span, Symbol, sym};
+use thin_vec::{ThinVec, thin_vec};
 
 pub(super) struct Context<'cx, 'a> {
     // An optimization.
@@ -57,7 +53,6 @@ impl<'cx, 'a> Context<'cx, 'a> {
     /// Builds the whole `assert!` expression. For example, `let elem = 1; assert!(elem == 1);` expands to:
     ///
     /// ```rust
-    /// #![feature(generic_assert_internals)]
     /// let elem = 1;
     /// {
     ///   #[allow(unused_imports)]
@@ -74,7 +69,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///   }
     /// }
     /// ```
-    pub(super) fn build(mut self, mut cond_expr: P<Expr>, panic_path: Path) -> P<Expr> {
+    pub(super) fn build(mut self, mut cond_expr: Box<Expr>, panic_path: Path) -> Box<Expr> {
         let expr_str = pprust::expr_to_string(&cond_expr);
         self.manage_cond_expr(&mut cond_expr);
         let initial_imports = self.build_initial_imports();
@@ -116,14 +111,16 @@ impl<'cx, 'a> Context<'cx, 'a> {
             self.span,
             self.cx.item(
                 self.span,
-                Ident::empty(),
                 thin_vec![self.cx.attr_nested_word(sym::allow, sym::unused_imports, self.span)],
                 ItemKind::Use(UseTree {
                     prefix: self.cx.path(self.span, self.cx.std_path(&[sym::asserting])),
-                    kind: UseTreeKind::Nested(thin_vec![
-                        nested_tree(self, sym::TryCaptureGeneric),
-                        nested_tree(self, sym::TryCapturePrintable),
-                    ]),
+                    kind: UseTreeKind::Nested {
+                        items: thin_vec![
+                            nested_tree(self, sym::TryCaptureGeneric),
+                            nested_tree(self, sym::TryCapturePrintable),
+                        ],
+                        span: self.span,
+                    },
                     span: self.span,
                 }),
             ),
@@ -131,7 +128,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     }
 
     /// Takes the conditional expression of `assert!` and then wraps it inside `unlikely`
-    fn build_unlikely(&self, cond_expr: P<Expr>) -> P<Expr> {
+    fn build_unlikely(&self, cond_expr: Box<Expr>) -> Box<Expr> {
         let unlikely_path = self.cx.std_path(&[sym::intrinsics, sym::unlikely]);
         self.cx.expr_call(
             self.span,
@@ -147,10 +144,10 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///     __capture0,
     ///     ...
     /// );
-    fn build_panic(&self, expr_str: &str, panic_path: Path) -> P<Expr> {
+    fn build_panic(&self, expr_str: &str, panic_path: Path) -> Box<Expr> {
         let escaped_expr_str = escape_to_fmt(expr_str);
         let initial = [
-            TokenTree::token_alone(
+            TokenTree::token_joint(
                 token::Literal(token::Lit {
                     kind: token::LitKind::Str,
                     symbol: Symbol::intern(&if self.fmt_string.is_empty() {
@@ -169,17 +166,20 @@ impl<'cx, 'a> Context<'cx, 'a> {
         ];
         let captures = self.capture_decls.iter().flat_map(|cap| {
             [
-                TokenTree::token_alone(token::Ident(cap.ident.name, false), cap.ident.span),
+                TokenTree::token_joint(
+                    token::Ident(cap.ident.name, IdentIsRaw::No),
+                    cap.ident.span,
+                ),
                 TokenTree::token_alone(token::Comma, self.span),
             ]
         });
         self.cx.expr(
             self.span,
-            ExprKind::MacCall(P(MacCall {
+            ExprKind::MacCall(Box::new(MacCall {
                 path: panic_path,
-                args: P(DelimArgs {
+                args: Box::new(DelimArgs {
                     dspan: DelimSpan::from_single(self.span),
-                    delim: MacDelimiter::Parenthesis,
+                    delim: Delimiter::Parenthesis,
                     tokens: initial.into_iter().chain(captures).collect::<TokenStream>(),
                 }),
             })),
@@ -189,13 +189,12 @@ impl<'cx, 'a> Context<'cx, 'a> {
     /// Recursive function called until `cond_expr` and `fmt_str` are fully modified.
     ///
     /// See [Self::manage_initial_capture] and [Self::manage_try_capture]
-    fn manage_cond_expr(&mut self, expr: &mut P<Expr>) {
+    fn manage_cond_expr(&mut self, expr: &mut Box<Expr>) {
         match &mut expr.kind {
             ExprKind::AddrOf(_, mutability, local_expr) => {
-                self.with_is_consumed_management(
-                    matches!(mutability, Mutability::Mut),
-                    |this| this.manage_cond_expr(local_expr)
-                );
+                self.with_is_consumed_management(matches!(mutability, Mutability::Mut), |this| {
+                    this.manage_cond_expr(local_expr)
+                });
             }
             ExprKind::Array(local_exprs) => {
                 for local_expr in local_exprs {
@@ -222,7 +221,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
                     |this| {
                         this.manage_cond_expr(lhs);
                         this.manage_cond_expr(rhs);
-                    }
+                    },
                 );
             }
             ExprKind::Call(_, local_exprs) => {
@@ -233,9 +232,18 @@ impl<'cx, 'a> Context<'cx, 'a> {
             ExprKind::Cast(local_expr, _) => {
                 self.manage_cond_expr(local_expr);
             }
-            ExprKind::Index(prefix, suffix) => {
+            ExprKind::If(local_expr, _, _) => {
+                self.manage_cond_expr(local_expr);
+            }
+            ExprKind::Index(prefix, suffix, _) => {
                 self.manage_cond_expr(prefix);
                 self.manage_cond_expr(suffix);
+            }
+            ExprKind::Let(_, local_expr, _, _) => {
+                self.manage_cond_expr(local_expr);
+            }
+            ExprKind::Match(local_expr, ..) => {
+                self.manage_cond_expr(local_expr);
             }
             ExprKind::MethodCall(call) => {
                 for arg in &mut call.args {
@@ -275,10 +283,9 @@ impl<'cx, 'a> Context<'cx, 'a> {
                 }
             }
             ExprKind::Unary(un_op, local_expr) => {
-                self.with_is_consumed_management(
-                    matches!(un_op, UnOp::Neg | UnOp::Not),
-                    |this| this.manage_cond_expr(local_expr)
-                );
+                self.with_is_consumed_management(matches!(un_op, UnOp::Neg | UnOp::Not), |this| {
+                    this.manage_cond_expr(local_expr)
+                });
             }
             // Expressions that are not worth or can not be captured.
             //
@@ -286,26 +293,25 @@ impl<'cx, 'a> Context<'cx, 'a> {
             // sync with the `rfc-2011-nicer-assert-messages/all-expr-kinds.rs` test.
             ExprKind::Assign(_, _, _)
             | ExprKind::AssignOp(_, _, _)
-            | ExprKind::Async(_, _)
+            | ExprKind::Gen(_, _, _, _)
             | ExprKind::Await(_, _)
+            | ExprKind::Use(_, _)
             | ExprKind::Block(_, _)
             | ExprKind::Break(_, _)
             | ExprKind::Closure(_)
             | ExprKind::ConstBlock(_)
             | ExprKind::Continue(_)
-            | ExprKind::Err
+            | ExprKind::Dummy
+            | ExprKind::Err(_)
             | ExprKind::Field(_, _)
+            | ExprKind::ForLoop { .. }
             | ExprKind::FormatArgs(_)
-            | ExprKind::ForLoop(_, _, _, _)
-            | ExprKind::If(_, _, _)
             | ExprKind::IncludedBytes(..)
             | ExprKind::InlineAsm(_)
-            | ExprKind::OffsetOf(_, _)
-            | ExprKind::Let(_, _, _)
             | ExprKind::Lit(_)
             | ExprKind::Loop(_, _, _)
             | ExprKind::MacCall(_)
-            | ExprKind::Match(_, _)
+            | ExprKind::OffsetOf(_, _)
             | ExprKind::Path(_, _)
             | ExprKind::Ret(_)
             | ExprKind::Try(_)
@@ -314,7 +320,9 @@ impl<'cx, 'a> Context<'cx, 'a> {
             | ExprKind::Underscore
             | ExprKind::While(_, _, _)
             | ExprKind::Yeet(_)
-            | ExprKind::Yield(_) => {}
+            | ExprKind::Become(_)
+            | ExprKind::Yield(_)
+            | ExprKind::UnsafeBinderCast(..) => {}
         }
     }
 
@@ -322,7 +330,7 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///
     /// `fmt_str`, the formatting string used for debugging, is constructed to show possible
     /// captured variables.
-    fn manage_initial_capture(&mut self, expr: &mut P<Expr>, path_ident: Ident) {
+    fn manage_initial_capture(&mut self, expr: &mut Box<Expr>, path_ident: Ident) {
         if self.paths.contains(&path_ident) {
             return;
         } else {
@@ -351,7 +359,12 @@ impl<'cx, 'a> Context<'cx, 'a> {
     ///    (&Wrapper(__local_bindN)).try_capture(&mut __captureN);
     ///    __local_bindN
     /// }
-    fn manage_try_capture(&mut self, capture: Ident, curr_capture_idx: usize, expr: &mut P<Expr>) {
+    fn manage_try_capture(
+        &mut self,
+        capture: Ident,
+        curr_capture_idx: usize,
+        expr: &mut Box<Expr>,
+    ) {
         let local_bind_string = format!("__local_bind{curr_capture_idx}");
         let local_bind = Ident::new(Symbol::intern(&local_bind_string), self.span);
         self.local_bind_decls.push(self.cx.stmt_let(
@@ -432,20 +445,20 @@ fn escape_to_fmt(s: &str) -> String {
     rslt
 }
 
-fn expr_addr_of_mut(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {
+fn expr_addr_of_mut(cx: &ExtCtxt<'_>, sp: Span, e: Box<Expr>) -> Box<Expr> {
     cx.expr(sp, ExprKind::AddrOf(BorrowKind::Ref, Mutability::Mut, e))
 }
 
 fn expr_method_call(
     cx: &ExtCtxt<'_>,
     seg: PathSegment,
-    receiver: P<Expr>,
-    args: ThinVec<P<Expr>>,
+    receiver: Box<Expr>,
+    args: ThinVec<Box<Expr>>,
     span: Span,
-) -> P<Expr> {
+) -> Box<Expr> {
     cx.expr(span, ExprKind::MethodCall(Box::new(MethodCall { seg, receiver, args, span })))
 }
 
-fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: P<Expr>) -> P<Expr> {
+fn expr_paren(cx: &ExtCtxt<'_>, sp: Span, e: Box<Expr>) -> Box<Expr> {
     cx.expr(sp, ExprKind::Paren(e))
 }

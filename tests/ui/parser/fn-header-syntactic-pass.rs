@@ -1,11 +1,11 @@
 // Ensures that all `fn` forms can have all the function qualifiers syntactically.
 
-// check-pass
-// edition:2018
+//@ check-pass
+//@ edition:2018
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 fn syntax() {
     async fn f();
     unsafe fn f();

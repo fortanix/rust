@@ -1,10 +1,11 @@
-// check-pass
+//@ check-pass
 
 #![feature(type_alias_impl_trait)]
 
-type A = impl Iterator;
+pub type A = impl Iterator;
 
-fn def_a() -> A {
+#[define_opaque(A)]
+pub fn def_a() -> A {
     0..1
 }
 

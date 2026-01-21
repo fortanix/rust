@@ -1,7 +1,8 @@
-// run-pass
-// aux-build:ver-cfg-rel.rs
-// revisions: assume no_assume
-// [assume]compile-flags: -Z assume-incomplete-release
+//@ run-pass
+//@ proc-macro: ver-cfg-rel.rs
+//@ revisions: assume no_assume
+//@ [assume]compile-flags: -Z assume-incomplete-release
+//@ ignore-backends: gcc
 
 #![feature(cfg_version)]
 

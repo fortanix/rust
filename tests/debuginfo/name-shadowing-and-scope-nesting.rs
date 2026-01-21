@@ -1,6 +1,5 @@
-// min-lldb-version: 310
-
-// compile-flags:-g
+//@ compile-flags:-g
+//@ disable-gdb-pretty-printers
 
 // === GDB TESTS ===================================================================================
 
@@ -47,56 +46,41 @@
 
 // lldb-command:run
 
-// lldb-command:print x
-// lldbg-check:[...]$0 = false
-// lldbr-check:(bool) x = false
-// lldb-command:print y
-// lldbg-check:[...]$1 = true
-// lldbr-check:(bool) y = true
+// lldb-command:v x
+// lldb-check:[...] false
+// lldb-command:v y
+// lldb-check:[...] true
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$2 = 10
-// lldbr-check:(i32) x = 10
-// lldb-command:print y
-// lldbg-check:[...]$3 = true
-// lldbr-check:(bool) y = true
+// lldb-command:v x
+// lldb-check:[...] 10
+// lldb-command:v y
+// lldb-check:[...] true
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$4 = 10.5
-// lldbr-check:(f64) x = 10.5
-// lldb-command:print y
-// lldbg-check:[...]$5 = 20
-// lldbr-check:(i32) y = 20
+// lldb-command:v x
+// lldb-check:[...] 10.5
+// lldb-command:v y
+// lldb-check:[...] 20
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$6 = true
-// lldbr-check:(bool) x = true
-// lldb-command:print y
-// lldbg-check:[...]$7 = 2220
-// lldbr-check:(i32) y = 2220
+// lldb-command:v x
+// lldb-check:[...] true
+// lldb-command:v y
+// lldb-check:[...] 2220
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$8 = 203203.5
-// lldbr-check:(f64) x = 203203.5
-// lldb-command:print y
-// lldbg-check:[...]$9 = 2220
-// lldbr-check:(i32) y = 2220
+// lldb-command:v x
+// lldb-check:[...] 203203.5
+// lldb-command:v y
+// lldb-check:[...] 2220
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$10 = 10.5
-// lldbr-check:(f64) x = 10.5
-// lldb-command:print y
-// lldbg-check:[...]$11 = 20
-// lldbr-check:(i32) y = 20
+// lldb-command:v x
+// lldb-check:[...] 10.5
+// lldb-command:v y
+// lldb-check:[...] 20
 // lldb-command:continue
-
-#![feature(omit_gdb_pretty_printer_section)]
-#![omit_gdb_pretty_printer_section]
 
 fn main() {
     let x = false;

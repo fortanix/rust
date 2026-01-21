@@ -1,7 +1,7 @@
 // Here we test that `..` is allowed in all pattern locations *syntactically*.
 // The semantic test is in `rest-pat-semantic-disallowed.rs`.
 
-// check-pass
+//@ check-pass
 
 fn main() {}
 
@@ -11,7 +11,7 @@ macro_rules! accept_pat {
 
 accept_pat!(..);
 
-#[cfg(FALSE)]
+#[cfg(false)]
 fn rest_patterns() {
     // Top level:
     fn foo(..: u8) {}

@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 
 #![allow(non_camel_case_types)]
 #![allow(dead_code)]
@@ -20,7 +20,7 @@ impl<'a> Drop for r<'a> {
     }
 }
 
-fn r(i: &Cell<isize>) -> r {
+fn r(i: &Cell<isize>) -> r<'_> {
     r {
         i: i
     }

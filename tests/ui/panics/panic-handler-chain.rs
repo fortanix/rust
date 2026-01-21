@@ -1,8 +1,8 @@
-// run-pass
-// needs-unwind
+//@ run-pass
+//@ needs-unwind
+//@ needs-threads
+//@ ignore-backends: gcc
 #![allow(stable_features)]
-
-// ignore-emscripten no threads support
 
 #![feature(std_panic)]
 

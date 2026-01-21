@@ -5,17 +5,17 @@ LL |       needlesArr.iter().fold(|x, y| {
    |  _______________________^^^^-
 LL | |
 LL | |     });
-   | |______- an argument is missing
+   | |______- argument #2 is missing
    |
 note: method defined here
   --> $SRC_DIR/core/src/iter/traits/iterator.rs:LL:COL
 help: provide the argument
    |
-LL ~     needlesArr.iter().fold(|x, y| {
-LL +
+LL |     needlesArr.iter().fold(|x, y| {
+LL |
 LL ~     }, /* f */);
    |
 
-error: aborting due to previous error
+error: aborting due to 1 previous error
 
 For more information about this error, try `rustc --explain E0061`.

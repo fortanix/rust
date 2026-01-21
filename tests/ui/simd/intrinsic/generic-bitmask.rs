@@ -1,10 +1,12 @@
-// build-fail
+//@ build-fail
 
 // Test that the simd_bitmask intrinsic produces ok-ish error
 // messages when misused.
 
-#![feature(repr_simd, platform_intrinsics)]
+#![feature(repr_simd, core_intrinsics)]
 #![allow(non_camel_case_types)]
+
+use std::intrinsics::simd::simd_bitmask;
 
 #[repr(simd)]
 #[derive(Copy, Clone)]
@@ -29,10 +31,6 @@ struct u8x32([u8; 32]);
 #[repr(simd)]
 #[derive(Copy, Clone)]
 struct u8x64([u8; 64]);
-
-extern "platform-intrinsic" {
-    fn simd_bitmask<T, U>(x: T) -> U;
-}
 
 fn main() {
     let m2 = u32x2([0; 2]);
@@ -64,6 +62,5 @@ fn main() {
 
         let _: u128 = simd_bitmask(m64);
         //~^ ERROR invalid monomorphization of `simd_bitmask` intrinsic
-
-   }
+    }
 }

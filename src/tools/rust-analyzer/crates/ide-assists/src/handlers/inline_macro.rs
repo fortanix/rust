@@ -1,7 +1,8 @@
-use ide_db::syntax_helpers::insert_whitespace_into_node::insert_ws_into;
+use hir::db::ExpandDatabase;
+use ide_db::syntax_helpers::prettify_macro_expansion;
 use syntax::ast::{self, AstNode};
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: inline_macro
 //
@@ -36,15 +37,22 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // ```
 pub(crate) fn inline_macro(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
     let unexpanded = ctx.find_node_at_offset::<ast::MacroCall>()?;
-    let expanded = insert_ws_into(ctx.sema.expand(&unexpanded)?.clone_for_update());
-
+    let macro_call = ctx.sema.to_def(&unexpanded)?;
+    let target_crate_id = ctx.sema.file_to_module_def(ctx.vfs_file_id())?.krate().into();
     let text_range = unexpanded.syntax().text_range();
 
     acc.add(
-        AssistId("inline_macro", AssistKind::RefactorRewrite),
-        format!("Inline macro"),
+        AssistId::refactor_inline("inline_macro"),
+        "Inline macro".to_owned(),
         text_range,
-        |builder| builder.replace(text_range, expanded.to_string()),
+        |builder| {
+            let expanded = ctx.sema.parse_or_expand(macro_call.into());
+            let span_map = ctx.sema.db.expansion_span_map(macro_call);
+            // Don't call `prettify_macro_expansion()` outside the actual assist action; it does some heavy rowan tree manipulation,
+            // which can be very costly for big macros when it is done *even without the assist being invoked*.
+            let expanded = prettify_macro_expansion(ctx.db(), expanded, &span_map, target_crate_id);
+            builder.replace(text_range, expanded.to_string())
+        },
     )
 }
 
@@ -148,7 +156,7 @@ macro_rules! num {
     #[test]
     fn inline_macro_simple_not_applicable_broken_macro() {
         // FIXME: This is a bug. The macro should not expand, but it's
-        // the same behaviour as the "Expand Macro Recursively" commmand
+        // the same behaviour as the "Expand Macro Recursively" command
         // so it's presumably OK for the time being.
         check_assist(
             inline_macro,
@@ -253,5 +261,119 @@ macro_rules! whitespace {
 fn f() { if true{}; }
 "#,
         )
+    }
+
+    #[test]
+    fn whitespace_between_text_and_pound() {
+        check_assist(
+            inline_macro,
+            r#"
+macro_rules! foo {
+    () => {
+        cfg_if! {
+            if #[cfg(test)] {
+                1;
+            } else {
+                1;
+            }
+        }
+    }
+}
+fn main() {
+    $0foo!();
+}
+"#,
+            r#"
+macro_rules! foo {
+    () => {
+        cfg_if! {
+            if #[cfg(test)] {
+                1;
+            } else {
+                1;
+            }
+        }
+    }
+}
+fn main() {
+    cfg_if!{
+    if #[cfg(test)]{
+        1;
+    }else {
+        1;
+    }
+};
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn dollar_crate() {
+        check_assist(
+            inline_macro,
+            r#"
+pub struct Foo;
+#[macro_export]
+macro_rules! m {
+    () => { $crate::Foo };
+}
+fn bar() {
+    m$0!();
+}
+"#,
+            r#"
+pub struct Foo;
+#[macro_export]
+macro_rules! m {
+    () => { $crate::Foo };
+}
+fn bar() {
+    crate::Foo;
+}
+"#,
+        );
+        check_assist(
+            inline_macro,
+            r#"
+//- /a.rs crate:a
+pub struct Foo;
+#[macro_export]
+macro_rules! m {
+    () => { $crate::Foo };
+}
+//- /b.rs crate:b deps:a
+fn bar() {
+    a::m$0!();
+}
+"#,
+            r#"
+fn bar() {
+    a::Foo;
+}
+"#,
+        );
+        check_assist(
+            inline_macro,
+            r#"
+//- /a.rs crate:a
+pub struct Foo;
+#[macro_export]
+macro_rules! m {
+    () => { $crate::Foo };
+}
+//- /b.rs crate:b deps:a
+pub use a::m;
+//- /c.rs crate:c deps:b
+fn bar() {
+    b::m$0!();
+}
+"#,
+            r#"
+fn bar() {
+    a::Foo;
+}
+"#,
+        );
     }
 }

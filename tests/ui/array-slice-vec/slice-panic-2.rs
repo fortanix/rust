@@ -1,10 +1,12 @@
-// run-pass
-// needs-unwind
-
-// ignore-emscripten no threads support
+//@ run-pass
+//@ needs-unwind
+//@ needs-threads
+//@ ignore-backends: gcc
 
 // Test that if a slicing expr[..] fails, the correct cleanups happen.
 
+// FIXME(static_mut_refs): this could use an atomic
+#![allow(static_mut_refs)]
 
 use std::thread;
 

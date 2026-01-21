@@ -1,7 +1,7 @@
 // See https://github.com/rust-lang/rust/issues/88470
-// run-rustfix
-// edition:2018
-// check-pass
+//@ run-rustfix
+//@ edition:2018
+//@ check-pass
 #![warn(rust_2021_prelude_collisions)]
 #![allow(dead_code)]
 #![allow(unused_imports)]
@@ -23,7 +23,7 @@ where
     fn try_into(&self) -> Result<&U, i32> {
         <U as PyTryFrom<'_, _>>::try_from(self)
         //~^ WARNING trait-associated function `try_from` will become ambiguous in Rust 2021
-        //~| this is accepted in the current edition (Rust 2018)
+        //~| WARN this is accepted in the current edition (Rust 2018)
     }
 }
 

@@ -1,3 +1,5 @@
+//@ compile-flags: -Zmir-opt-level=0
+// skip-filecheck
 // We must mark a variable whose initialization fails due to an
 // abort statement as StorageDead.
 

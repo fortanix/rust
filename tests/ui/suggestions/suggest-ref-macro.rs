@@ -1,5 +1,6 @@
 // run-check
-// aux-build:proc-macro-type-error.rs
+//@ proc-macro: proc-macro-type-error.rs
+//@ ignore-backends: gcc
 
 extern crate proc_macro_type_error;
 
@@ -14,7 +15,7 @@ macro_rules! bla {
     () => {
         x(123);
         //~^ ERROR mismatched types
-        //~| SUGGESTION &mut 123
+        //~| SUGGESTION &mut
     };
     ($v:expr) => {
         x($v)
@@ -25,5 +26,5 @@ fn main() {
     bla!();
     bla!(456);
     //~^ ERROR mismatched types
-    //~| SUGGESTION &mut 456
+    //~| SUGGESTION &mut
 }

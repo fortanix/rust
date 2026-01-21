@@ -1,5 +1,5 @@
 // We want to control preemption here. Stacked borrows interferes by having its own accesses.
-//@compile-flags: -Zmiri-preemption-rate=0 -Zmiri-disable-stacked-borrows
+//@compile-flags: -Zmiri-deterministic-concurrency -Zmiri-disable-stacked-borrows
 
 use std::thread::spawn;
 
@@ -26,11 +26,13 @@ pub fn main() {
     let c = EvilSend(b);
     unsafe {
         let j1 = spawn(move || {
+            let c = c; // avoid field capturing
             *c.0 = 32;
         });
 
         let j2 = spawn(move || {
-            *c.0 = 64; //~ ERROR: Data race detected between (1) Write on thread `<unnamed>` and (2) Write on thread `<unnamed>`
+            let c = c; // avoid field capturing
+            *c.0 = 64; //~ ERROR: Data race detected between (1) non-atomic write on thread `unnamed-5` and (2) non-atomic write on thread `unnamed-6`
         });
 
         j1.join().unwrap();

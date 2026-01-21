@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 // Here we check that a `:vis` macro matcher subsititued for the empty visibility
 // (`VisibilityKind::Inherited`) is accepted when used before an item in a trait.
@@ -20,7 +20,7 @@ trait Alpha {
 }
 
 // We also accept visibilities on items in traits syntactically but not semantically.
-#[cfg(FALSE)]
+#[cfg(false)]
 trait Foo {
     pub fn bar();
     pub(crate) type baz;

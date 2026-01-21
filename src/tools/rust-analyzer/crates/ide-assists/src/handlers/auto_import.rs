@@ -1,16 +1,18 @@
 use std::cmp::Reverse;
 
-use hir::{db::HirDatabase, Module};
+use either::Either;
+use hir::{Module, Type, db::HirDatabase};
 use ide_db::{
+    active_parameter::ActiveParameter,
     helpers::mod_path_to_ast,
     imports::{
         import_assets::{ImportAssets, ImportCandidate, LocatedImport},
-        insert_use::{insert_use, ImportScope},
+        insert_use::{ImportScope, insert_use, insert_use_as_alias},
     },
 };
-use syntax::{ast, AstNode, NodeOrToken, SyntaxElement};
+use syntax::{AstNode, Edition, SyntaxNode, ast, match_ast};
 
-use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
+use crate::{AssistContext, AssistId, Assists, GroupLabel};
 
 // Feature: Auto Import
 //
@@ -38,7 +40,7 @@ use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 // use super::AssistContext;
 // ```
 //
-// .Import Granularity
+// #### Import Granularity
 //
 // It is possible to configure how use-trees are merged with the `imports.granularity.group` setting.
 // It has the following configurations:
@@ -49,10 +51,12 @@ use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 // - `item`: Don't merge imports at all, creating one import per item.
 // - `preserve`: Do not change the granularity of any imports. For auto-import this has the same
 //  effect as `item`.
+// - `one`: Merge all imports into a single use statement as long as they have the same visibility
+//  and attributes.
 //
 // In `VS Code` the configuration for this is `rust-analyzer.imports.granularity.group`.
 //
-// .Import Prefix
+// #### Import Prefix
 //
 // The style of imports in the same crate is configurable through the `imports.prefix` setting.
 // It has the following configurations:
@@ -66,7 +70,7 @@ use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 //
 // In `VS Code` the configuration for this is `rust-analyzer.imports.prefix`.
 //
-// image::https://user-images.githubusercontent.com/48062697/113020673-b85be580-917a-11eb-9022-59585f35d4f8.gif[]
+// ![Auto Import](https://user-images.githubusercontent.com/48062697/113020673-b85be580-917a-11eb-9022-59585f35d4f8.gif)
 
 // Assist: auto_import
 //
@@ -88,89 +92,141 @@ use crate::{AssistContext, AssistId, AssistKind, Assists, GroupLabel};
 // # pub mod std { pub mod collections { pub struct HashMap { } } }
 // ```
 pub(crate) fn auto_import(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()> {
-    let (import_assets, syntax_under_caret) = find_importable_node(ctx)?;
-    let mut proposed_imports = import_assets.search_for_imports(
-        &ctx.sema,
-        ctx.config.insert_use.prefix_kind,
-        ctx.config.prefer_no_std,
-    );
+    let cfg = ctx.config.import_path_config();
+
+    let (import_assets, syntax_under_caret, expected) = find_importable_node(ctx)?;
+    let mut proposed_imports: Vec<_> = import_assets
+        .search_for_imports(&ctx.sema, cfg, ctx.config.insert_use.prefix_kind)
+        .collect();
     if proposed_imports.is_empty() {
         return None;
     }
 
-    let range = match &syntax_under_caret {
-        NodeOrToken::Node(node) => ctx.sema.original_range(node).range,
-        NodeOrToken::Token(token) => token.text_range(),
-    };
-    let group_label = group_label(import_assets.import_candidate());
-    let scope = ImportScope::find_insert_use_container(
-        &match syntax_under_caret {
-            NodeOrToken::Node(it) => it,
-            NodeOrToken::Token(it) => it.parent()?,
-        },
-        &ctx.sema,
-    )?;
+    let range = ctx.sema.original_range(&syntax_under_caret).range;
+    let scope = ImportScope::find_insert_use_container(&syntax_under_caret, &ctx.sema)?;
 
     // we aren't interested in different namespaces
+    proposed_imports.sort_by(|a, b| a.import_path.cmp(&b.import_path));
     proposed_imports.dedup_by(|a, b| a.import_path == b.import_path);
 
-    let current_node = match ctx.covering_element() {
-        NodeOrToken::Node(node) => Some(node),
-        NodeOrToken::Token(token) => token.parent(),
-    };
-
-    let current_module =
-        current_node.as_ref().and_then(|node| ctx.sema.scope(node)).map(|scope| scope.module());
-
+    let current_module = ctx.sema.scope(scope.as_syntax_node()).map(|scope| scope.module());
     // prioritize more relevant imports
-    proposed_imports
-        .sort_by_key(|import| Reverse(relevance_score(ctx, import, current_module.as_ref())));
+    proposed_imports.sort_by_key(|import| {
+        Reverse(relevance_score(ctx, import, expected.as_ref(), current_module.as_ref()))
+    });
+    let edition = current_module.map(|it| it.krate().edition(ctx.db())).unwrap_or(Edition::CURRENT);
 
+    let group_label = group_label(import_assets.import_candidate());
     for import in proposed_imports {
         let import_path = import.import_path;
 
+        let (assist_id, import_name) =
+            (AssistId::quick_fix("auto_import"), import_path.display(ctx.db(), edition));
         acc.add_group(
             &group_label,
-            AssistId("auto_import", AssistKind::QuickFix),
-            format!("Import `{import_path}`"),
+            assist_id,
+            format!("Import `{import_name}`"),
             range,
             |builder| {
-                let scope = match scope.clone() {
-                    ImportScope::File(it) => ImportScope::File(builder.make_mut(it)),
-                    ImportScope::Module(it) => ImportScope::Module(builder.make_mut(it)),
-                    ImportScope::Block(it) => ImportScope::Block(builder.make_mut(it)),
-                };
-                insert_use(&scope, mod_path_to_ast(&import_path), &ctx.config.insert_use);
+                let scope = builder.make_import_scope_mut(scope.clone());
+                insert_use(&scope, mod_path_to_ast(&import_path, edition), &ctx.config.insert_use);
             },
         );
+
+        match import_assets.import_candidate() {
+            ImportCandidate::TraitAssocItem(name) | ImportCandidate::TraitMethod(name) => {
+                let is_method =
+                    matches!(import_assets.import_candidate(), ImportCandidate::TraitMethod(_));
+                let type_ = if is_method { "method" } else { "item" };
+                let group_label = GroupLabel(format!(
+                    "Import a trait for {} {} by alias",
+                    type_,
+                    name.assoc_item_name.text()
+                ));
+                acc.add_group(
+                    &group_label,
+                    assist_id,
+                    format!("Import `{import_name} as _`"),
+                    range,
+                    |builder| {
+                        let scope = builder.make_import_scope_mut(scope.clone());
+                        insert_use_as_alias(
+                            &scope,
+                            mod_path_to_ast(&import_path, edition),
+                            &ctx.config.insert_use,
+                        );
+                    },
+                );
+            }
+            _ => {}
+        }
     }
     Some(())
 }
 
-pub(super) fn find_importable_node(
-    ctx: &AssistContext<'_>,
-) -> Option<(ImportAssets, SyntaxElement)> {
+pub(super) fn find_importable_node<'a: 'db, 'db>(
+    ctx: &'a AssistContext<'db>,
+) -> Option<(ImportAssets<'db>, SyntaxNode, Option<Type<'db>>)> {
+    // Deduplicate this with the `expected_type_and_name` logic for completions
+    let expected = |expr_or_pat: Either<ast::Expr, ast::Pat>| match expr_or_pat {
+        Either::Left(expr) => {
+            let parent = expr.syntax().parent()?;
+            // FIXME: Expand this
+            match_ast! {
+                match parent {
+                    ast::ArgList(list) => {
+                        ActiveParameter::at_arg(
+                            &ctx.sema,
+                            list,
+                            expr.syntax().text_range().start(),
+                        ).map(|ap| ap.ty)
+                    },
+                    ast::LetStmt(stmt) => {
+                        ctx.sema.type_of_pat(&stmt.pat()?).map(|t| t.original)
+                    },
+                    _ => None,
+                }
+            }
+        }
+        Either::Right(pat) => {
+            let parent = pat.syntax().parent()?;
+            // FIXME: Expand this
+            match_ast! {
+                match parent {
+                    ast::LetStmt(stmt) => {
+                        ctx.sema.type_of_expr(&stmt.initializer()?).map(|t| t.original)
+                    },
+                    _ => None,
+                }
+            }
+        }
+    };
+
     if let Some(path_under_caret) = ctx.find_node_at_offset_with_descend::<ast::Path>() {
+        let expected =
+            path_under_caret.top_path().syntax().parent().and_then(Either::cast).and_then(expected);
         ImportAssets::for_exact_path(&path_under_caret, &ctx.sema)
-            .zip(Some(path_under_caret.syntax().clone().into()))
+            .map(|it| (it, path_under_caret.syntax().clone(), expected))
     } else if let Some(method_under_caret) =
         ctx.find_node_at_offset_with_descend::<ast::MethodCallExpr>()
     {
+        let expected = expected(Either::Left(method_under_caret.clone().into()));
         ImportAssets::for_method_call(&method_under_caret, &ctx.sema)
-            .zip(Some(method_under_caret.syntax().clone().into()))
-    } else if let Some(_) = ctx.find_node_at_offset_with_descend::<ast::Param>() {
+            .map(|it| (it, method_under_caret.syntax().clone(), expected))
+    } else if ctx.find_node_at_offset_with_descend::<ast::Param>().is_some() {
         None
     } else if let Some(pat) = ctx
         .find_node_at_offset_with_descend::<ast::IdentPat>()
         .filter(ast::IdentPat::is_simple_ident)
     {
-        ImportAssets::for_ident_pat(&ctx.sema, &pat).zip(Some(pat.syntax().clone().into()))
+        let expected = expected(Either::Right(pat.clone().into()));
+        ImportAssets::for_ident_pat(&ctx.sema, &pat).map(|it| (it, pat.syntax().clone(), expected))
     } else {
         None
     }
 }
 
-fn group_label(import_candidate: &ImportCandidate) -> GroupLabel {
+fn group_label(import_candidate: &ImportCandidate<'_>) -> GroupLabel {
     let name = match import_candidate {
         ImportCandidate::Path(candidate) => format!("Import {}", candidate.name.text()),
         ImportCandidate::TraitAssocItem(candidate) => {
@@ -185,9 +241,10 @@ fn group_label(import_candidate: &ImportCandidate) -> GroupLabel {
 
 /// Determine how relevant a given import is in the current context. Higher scores are more
 /// relevant.
-fn relevance_score(
+pub(crate) fn relevance_score(
     ctx: &AssistContext<'_>,
     import: &LocatedImport,
+    expected: Option<&Type<'_>>,
     current_module: Option<&Module>,
 ) -> i32 {
     let mut score = 0;
@@ -199,11 +256,40 @@ fn relevance_score(
         hir::ItemInNs::Macros(makro) => Some(makro.module(db)),
     };
 
+    if let Some(expected) = expected {
+        let ty = match import.item_to_import {
+            hir::ItemInNs::Types(module_def) | hir::ItemInNs::Values(module_def) => {
+                match module_def {
+                    hir::ModuleDef::Function(function) => Some(function.ret_type(ctx.db())),
+                    hir::ModuleDef::Adt(adt) => Some(match adt {
+                        hir::Adt::Struct(it) => it.ty(ctx.db()),
+                        hir::Adt::Union(it) => it.ty(ctx.db()),
+                        hir::Adt::Enum(it) => it.ty(ctx.db()),
+                    }),
+                    hir::ModuleDef::Variant(variant) => Some(variant.constructor_ty(ctx.db())),
+                    hir::ModuleDef::Const(it) => Some(it.ty(ctx.db())),
+                    hir::ModuleDef::Static(it) => Some(it.ty(ctx.db())),
+                    hir::ModuleDef::TypeAlias(it) => Some(it.ty(ctx.db())),
+                    hir::ModuleDef::BuiltinType(it) => Some(it.ty(ctx.db())),
+                    _ => None,
+                }
+            }
+            hir::ItemInNs::Macros(_) => None,
+        };
+        if let Some(ty) = ty {
+            if ty == *expected {
+                score = 100000;
+            } else if ty.could_unify_with(ctx.db(), expected) {
+                score = 10000;
+            }
+        }
+    }
+
     match item_module.zip(current_module) {
         // get the distance between the imported path and the current module
         // (prefer items that are more local)
         Some((item_module, current_module)) => {
-            score -= module_distance_hueristic(db, current_module, &item_module) as i32;
+            score -= module_distance_heuristic(db, current_module, &item_module) as i32;
         }
 
         // could not find relevant modules, so just use the length of the path as an estimate
@@ -214,7 +300,7 @@ fn relevance_score(
 }
 
 /// A heuristic that gives a higher score to modules that are more separated.
-fn module_distance_hueristic(db: &dyn HirDatabase, current: &Module, item: &Module) -> usize {
+fn module_distance_heuristic(db: &dyn HirDatabase, current: &Module, item: &Module) -> usize {
     // get the path starting from the item to the respective crate roots
     let mut current_path = current.path_to_root(db);
     let mut item_path = item.path_to_root(db);
@@ -232,8 +318,10 @@ fn module_distance_hueristic(db: &dyn HirDatabase, current: &Module, item: &Modu
     // cost of importing from another crate
     let crate_boundary_cost = if current.krate() == item.krate() {
         0
-    } else if item.krate().is_builtin(db) {
+    } else if item.krate().origin(db).is_local() {
         2
+    } else if item.krate().is_builtin(db) {
+        3
     } else {
         4
     };
@@ -245,15 +333,13 @@ fn module_distance_hueristic(db: &dyn HirDatabase, current: &Module, item: &Modu
 mod tests {
     use super::*;
 
-    use hir::Semantics;
-    use ide_db::{
-        assists::AssistResolveStrategy,
-        base_db::{fixture::WithFixture, FileRange},
-        RootDatabase,
-    };
+    use hir::{FileRange, Semantics};
+    use ide_db::{RootDatabase, assists::AssistResolveStrategy};
+    use test_fixture::WithFixture;
 
     use crate::tests::{
-        check_assist, check_assist_not_applicable, check_assist_target, TEST_CONFIG,
+        TEST_CONFIG, check_assist, check_assist_by_label, check_assist_not_applicable,
+        check_assist_target,
     };
 
     fn check_auto_import_order(before: &str, order: &[&str]) {
@@ -324,6 +410,49 @@ pub struct HashMap;
         check_auto_import_order(
             before,
             &["Import `collections::hash_map::HashMap`", "Import `foo::HashMap`"],
+        )
+    }
+
+    #[test]
+    fn prefer_workspace() {
+        let before = r"
+//- /main.rs crate:main deps:foo,bar
+HashMap$0::new();
+
+//- /lib.rs crate:foo
+pub mod module {
+    pub struct HashMap;
+}
+
+//- /lib.rs crate:bar library
+pub struct HashMap;
+        ";
+
+        check_auto_import_order(before, &["Import `foo::module::HashMap`", "Import `bar::HashMap`"])
+    }
+
+    #[test]
+    fn prefer_non_local_over_long_path() {
+        let before = r"
+//- /main.rs crate:main deps:foo,bar
+HashMap$0::new();
+
+//- /lib.rs crate:foo
+pub mod deeply {
+    pub mod nested {
+        pub mod module {
+            pub struct HashMap;
+        }
+    }
+}
+
+//- /lib.rs crate:bar library
+pub struct HashMap;
+        ";
+
+        check_auto_import_order(
+            before,
+            &["Import `bar::HashMap`", "Import `foo::deeply::nested::module::HashMap`"],
         )
     }
 
@@ -480,7 +609,7 @@ mod baz {
             }
             ",
             r"
-            use PubMod3::PubStruct;
+            use PubMod1::PubStruct;
 
             PubStruct
 
@@ -705,7 +834,7 @@ fn main() {
 
     #[test]
     fn associated_trait_function() {
-        check_assist(
+        check_assist_by_label(
             auto_import,
             r"
             mod test_mod {
@@ -739,6 +868,44 @@ fn main() {
                 test_mod::TestStruct::test_function
             }
             ",
+            "Import `test_mod::TestTrait`",
+        );
+
+        check_assist_by_label(
+            auto_import,
+            r"
+            mod test_mod {
+                pub trait TestTrait {
+                    fn test_function();
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_function() {}
+                }
+            }
+
+            fn main() {
+                test_mod::TestStruct::test_function$0
+            }
+            ",
+            r"
+            use test_mod::TestTrait as _;
+
+            mod test_mod {
+                pub trait TestTrait {
+                    fn test_function();
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_function() {}
+                }
+            }
+
+            fn main() {
+                test_mod::TestStruct::test_function
+            }
+            ",
+            "Import `test_mod::TestTrait as _`",
         );
     }
 
@@ -776,7 +943,44 @@ fn main() {
 
     #[test]
     fn associated_trait_const() {
-        check_assist(
+        check_assist_by_label(
+            auto_import,
+            r"
+            mod test_mod {
+                pub trait TestTrait {
+                    const TEST_CONST: u8;
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    const TEST_CONST: u8 = 42;
+                }
+            }
+
+            fn main() {
+                test_mod::TestStruct::TEST_CONST$0
+            }
+            ",
+            r"
+            use test_mod::TestTrait as _;
+
+            mod test_mod {
+                pub trait TestTrait {
+                    const TEST_CONST: u8;
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    const TEST_CONST: u8 = 42;
+                }
+            }
+
+            fn main() {
+                test_mod::TestStruct::TEST_CONST
+            }
+            ",
+            "Import `test_mod::TestTrait as _`",
+        );
+
+        check_assist_by_label(
             auto_import,
             r"
             mod test_mod {
@@ -810,6 +1014,7 @@ fn main() {
                 test_mod::TestStruct::TEST_CONST
             }
             ",
+            "Import `test_mod::TestTrait`",
         );
     }
 
@@ -847,7 +1052,46 @@ fn main() {
 
     #[test]
     fn trait_method() {
-        check_assist(
+        check_assist_by_label(
+            auto_import,
+            r"
+            mod test_mod {
+                pub trait TestTrait {
+                    fn test_method(&self);
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_method(&self) {}
+                }
+            }
+
+            fn main() {
+                let test_struct = test_mod::TestStruct {};
+                test_struct.test_meth$0od()
+            }
+            ",
+            r"
+            use test_mod::TestTrait as _;
+
+            mod test_mod {
+                pub trait TestTrait {
+                    fn test_method(&self);
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_method(&self) {}
+                }
+            }
+
+            fn main() {
+                let test_struct = test_mod::TestStruct {};
+                test_struct.test_method()
+            }
+            ",
+            "Import `test_mod::TestTrait as _`",
+        );
+
+        check_assist_by_label(
             auto_import,
             r"
             mod test_mod {
@@ -883,12 +1127,43 @@ fn main() {
                 test_struct.test_method()
             }
             ",
+            "Import `test_mod::TestTrait`",
         );
     }
 
     #[test]
     fn trait_method_cross_crate() {
-        check_assist(
+        check_assist_by_label(
+            auto_import,
+            r"
+            //- /main.rs crate:main deps:dep
+            fn main() {
+                let test_struct = dep::test_mod::TestStruct {};
+                test_struct.test_meth$0od()
+            }
+            //- /dep.rs crate:dep
+            pub mod test_mod {
+                pub trait TestTrait {
+                    fn test_method(&self);
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_method(&self) {}
+                }
+            }
+            ",
+            r"
+            use dep::test_mod::TestTrait as _;
+
+            fn main() {
+                let test_struct = dep::test_mod::TestStruct {};
+                test_struct.test_method()
+            }
+            ",
+            "Import `dep::test_mod::TestTrait as _`",
+        );
+
+        check_assist_by_label(
             auto_import,
             r"
             //- /main.rs crate:main deps:dep
@@ -915,12 +1190,41 @@ fn main() {
                 test_struct.test_method()
             }
             ",
+            "Import `dep::test_mod::TestTrait`",
         );
     }
 
     #[test]
     fn assoc_fn_cross_crate() {
-        check_assist(
+        check_assist_by_label(
+            auto_import,
+            r"
+            //- /main.rs crate:main deps:dep
+            fn main() {
+                dep::test_mod::TestStruct::test_func$0tion
+            }
+            //- /dep.rs crate:dep
+            pub mod test_mod {
+                pub trait TestTrait {
+                    fn test_function();
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    fn test_function() {}
+                }
+            }
+            ",
+            r"
+            use dep::test_mod::TestTrait as _;
+
+            fn main() {
+                dep::test_mod::TestStruct::test_function
+            }
+            ",
+            "Import `dep::test_mod::TestTrait as _`",
+        );
+
+        check_assist_by_label(
             auto_import,
             r"
             //- /main.rs crate:main deps:dep
@@ -945,12 +1249,41 @@ fn main() {
                 dep::test_mod::TestStruct::test_function
             }
             ",
+            "Import `dep::test_mod::TestTrait`",
         );
     }
 
     #[test]
     fn assoc_const_cross_crate() {
-        check_assist(
+        check_assist_by_label(
+            auto_import,
+            r"
+            //- /main.rs crate:main deps:dep
+            fn main() {
+                dep::test_mod::TestStruct::CONST$0
+            }
+            //- /dep.rs crate:dep
+            pub mod test_mod {
+                pub trait TestTrait {
+                    const CONST: bool;
+                }
+                pub struct TestStruct {}
+                impl TestTrait for TestStruct {
+                    const CONST: bool = true;
+                }
+            }
+            ",
+            r"
+            use dep::test_mod::TestTrait as _;
+
+            fn main() {
+                dep::test_mod::TestStruct::CONST
+            }
+            ",
+            "Import `dep::test_mod::TestTrait as _`",
+        );
+
+        check_assist_by_label(
             auto_import,
             r"
             //- /main.rs crate:main deps:dep
@@ -975,6 +1308,7 @@ fn main() {
                 dep::test_mod::TestStruct::CONST
             }
             ",
+            "Import `dep::test_mod::TestTrait`",
         );
     }
 
@@ -1308,6 +1642,257 @@ mod bar {
 }
 use foo::Foo$0;
 ",
+        );
+    }
+
+    #[test]
+    fn considers_pub_crate() {
+        check_assist(
+            auto_import,
+            r#"
+mod foo {
+    pub struct Foo;
+}
+
+pub(crate) use self::foo::*;
+
+mod bar {
+    fn main() {
+        Foo$0;
+    }
+}
+"#,
+            r#"
+mod foo {
+    pub struct Foo;
+}
+
+pub(crate) use self::foo::*;
+
+mod bar {
+    use crate::Foo;
+
+    fn main() {
+        Foo;
+    }
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn local_inline_import_has_alias() {
+        // FIXME wrong import
+        check_assist(
+            auto_import,
+            r#"
+struct S<T>(T);
+use S as IoResult;
+
+mod foo {
+    pub fn bar() -> S$0<()> {}
+}
+"#,
+            r#"
+struct S<T>(T);
+use S as IoResult;
+
+mod foo {
+    use crate::S;
+
+    pub fn bar() -> S<()> {}
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn alias_local() {
+        // FIXME wrong import
+        check_assist(
+            auto_import,
+            r#"
+struct S<T>(T);
+use S as IoResult;
+
+mod foo {
+    pub fn bar() -> IoResult$0<()> {}
+}
+"#,
+            r#"
+struct S<T>(T);
+use S as IoResult;
+
+mod foo {
+    use crate::S;
+
+    pub fn bar() -> IoResult<()> {}
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn preserve_raw_identifiers_strict() {
+        check_assist(
+            auto_import,
+            r"
+            r#as$0
+
+            pub mod ffi_mod {
+                pub fn r#as() {};
+            }
+            ",
+            r"
+            use ffi_mod::r#as;
+
+            r#as
+
+            pub mod ffi_mod {
+                pub fn r#as() {};
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn preserve_raw_identifiers_reserved() {
+        check_assist(
+            auto_import,
+            r"
+            r#abstract$0
+
+            pub mod ffi_mod {
+                pub fn r#abstract() {};
+            }
+            ",
+            r"
+            use ffi_mod::r#abstract;
+
+            r#abstract
+
+            pub mod ffi_mod {
+                pub fn r#abstract() {};
+            }
+            ",
+        );
+    }
+
+    #[test]
+    fn prefers_type_match() {
+        check_assist(
+            auto_import,
+            r"
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: sync::atomic::Ordering) {}
+fn main() {
+    takes_ordering(Ordering$0);
+}
+",
+            r"
+use sync::atomic::Ordering;
+
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: sync::atomic::Ordering) {}
+fn main() {
+    takes_ordering(Ordering);
+}
+",
+        );
+        check_assist(
+            auto_import,
+            r"
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: cmp::Ordering) {}
+fn main() {
+    takes_ordering(Ordering$0);
+}
+",
+            r"
+use cmp::Ordering;
+
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: cmp::Ordering) {}
+fn main() {
+    takes_ordering(Ordering);
+}
+",
+        );
+    }
+
+    #[test]
+    fn prefers_type_match2() {
+        check_assist(
+            auto_import,
+            r"
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: sync::atomic::Ordering) {}
+fn main() {
+    takes_ordering(Ordering$0::V);
+}
+",
+            r"
+use sync::atomic::Ordering;
+
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: sync::atomic::Ordering) {}
+fn main() {
+    takes_ordering(Ordering::V);
+}
+",
+        );
+        check_assist(
+            auto_import,
+            r"
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: cmp::Ordering) {}
+fn main() {
+    takes_ordering(Ordering$0::V);
+}
+",
+            r"
+use cmp::Ordering;
+
+mod sync { pub mod atomic { pub enum Ordering { V } } }
+mod cmp { pub enum Ordering { V } }
+fn takes_ordering(_: cmp::Ordering) {}
+fn main() {
+    takes_ordering(Ordering::V);
+}
+",
+        );
+    }
+
+    #[test]
+    fn carries_cfg_attr() {
+        check_assist(
+            auto_import,
+            r#"
+mod m {
+    pub struct S;
+}
+
+#[cfg(test)]
+fn foo(_: S$0) {}
+"#,
+            r#"
+#[cfg(test)]
+use m::S;
+
+mod m {
+    pub struct S;
+}
+
+#[cfg(test)]
+fn foo(_: S) {}
+"#,
         );
     }
 }

@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 // Previously, this would have failed to resolve due to the circular
 // block between `use say` and `pub use hello::*`.
 //
@@ -12,7 +12,7 @@ pub mod say {
 }
 
 pub mod hello {
-    use say;
+    use crate::say;
 
     pub fn hello() {
         say::hello();

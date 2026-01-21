@@ -12,20 +12,23 @@ pub use os_impl::*;
 mod os_impl {
     use std::path::Path;
 
+    use crate::diagnostics::DiagCtx;
+
     pub fn check_filesystem_support(_sources: &[&Path], _output: &Path) -> bool {
         return false;
     }
 
-    pub fn check(_path: &Path, _bad: &mut bool) {}
+    pub fn check(_path: &Path, _diag_ctx: DiagCtx) {}
 }
 
 #[cfg(unix)]
 mod os_impl {
-    use crate::walk::{filter_dirs, walk_no_read};
     use std::fs;
     use std::os::unix::prelude::*;
     use std::path::Path;
     use std::process::{Command, Stdio};
+
+    use crate::walk::{filter_dirs, walk_no_read};
 
     enum FilesystemSupport {
         Supported,
@@ -34,6 +37,8 @@ mod os_impl {
     }
 
     use FilesystemSupport::*;
+
+    use crate::diagnostics::DiagCtx;
 
     fn is_executable(path: &Path) -> std::io::Result<bool> {
         Ok(path.metadata()?.mode() & 0o111 != 0)
@@ -61,7 +66,7 @@ mod os_impl {
                     fs::remove_file(&path).expect("Deleted temp file");
                     // If the file is executable, then we assume that this
                     // filesystem does not track executability, so skip this check.
-                    return if exec { Unsupported } else { Supported };
+                    if exec { Unsupported } else { Supported }
                 }
                 Err(e) => {
                     // If the directory is read-only or we otherwise don't have rights,
@@ -74,47 +79,68 @@ mod os_impl {
                         return ReadOnlyFs;
                     }
 
-                    panic!("unable to create temporary file `{:?}`: {:?}", path, e);
+                    panic!("unable to create temporary file `{path:?}`: {e:?}");
                 }
-            };
+            }
         }
 
         for &source_dir in sources {
             match check_dir(source_dir) {
                 Unsupported => return false,
-                ReadOnlyFs => {
-                    return match check_dir(output) {
-                        Supported => true,
-                        _ => false,
-                    };
-                }
+                ReadOnlyFs => return matches!(check_dir(output), Supported),
                 _ => {}
             }
         }
 
-        return true;
+        true
+    }
+
+    // FIXME: check when rust-installer test sh files will be removed,
+    // and then remove them from exclude list
+    const RI_EXCLUSION_LIST: &[&str] = &[
+        "src/tools/rust-installer/test/image1/bin/program",
+        "src/tools/rust-installer/test/image1/bin/program2",
+        "src/tools/rust-installer/test/image1/bin/bad-bin",
+        "src/tools/rust-installer/test/image2/bin/oldprogram",
+        "src/tools/rust-installer/test/image3/bin/cargo",
+    ];
+
+    fn filter_rust_installer_no_so_bins(path: &Path) -> bool {
+        RI_EXCLUSION_LIST.iter().any(|p| path.ends_with(p))
     }
 
     #[cfg(unix)]
-    pub fn check(path: &Path, bad: &mut bool) {
+    pub fn check(path: &Path, diag_ctx: DiagCtx) {
+        let mut check = diag_ctx.start_check("bins");
+
         use std::ffi::OsStr;
 
         const ALLOWED: &[&str] = &["configure", "x"];
+
+        for p in RI_EXCLUSION_LIST {
+            if !path.join(Path::new(p)).exists() {
+                check.error(format!("rust-installer test bins missed: {p}"));
+            }
+        }
 
         // FIXME: we don't need to look at all binaries, only files that have been modified in this branch
         // (e.g. using `git ls-files`).
         walk_no_read(
             &[path],
-            |path, _is_dir| filter_dirs(path) || path.ends_with("src/etc"),
+            |path, _is_dir| {
+                filter_dirs(path)
+                    || path.ends_with("src/etc")
+                    || filter_rust_installer_no_so_bins(path)
+            },
             &mut |entry| {
                 let file = entry.path();
                 let extension = file.extension();
-                let scripts = ["py", "sh", "ps1"];
+                let scripts = ["py", "sh", "ps1", "woff2"];
                 if scripts.into_iter().any(|e| extension == Some(OsStr::new(e))) {
                     return;
                 }
 
-                if t!(is_executable(&file), file) {
+                if t!(is_executable(file), file) {
                     let rel_path = file.strip_prefix(path).unwrap();
                     let git_friendly_path = rel_path.to_str().unwrap().replace("\\", "/");
 
@@ -133,7 +159,7 @@ mod os_impl {
                         });
                     let path_bytes = rel_path.as_os_str().as_bytes();
                     if output.status.success() && output.stdout.starts_with(path_bytes) {
-                        tidy_error!(bad, "binary checked into source: {}", file.display());
+                        check.error(format!("binary checked into source: {}", file.display()));
                     }
                 }
             },

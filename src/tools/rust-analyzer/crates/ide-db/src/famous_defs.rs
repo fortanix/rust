@@ -1,7 +1,7 @@
 //! See [`FamousDefs`].
 
-use base_db::{CrateOrigin, LangCrateOrigin, SourceDatabase};
-use hir::{Crate, Enum, Macro, Module, ScopeDef, Semantics, Trait};
+use base_db::{CrateOrigin, LangCrateOrigin};
+use hir::{Crate, Enum, Function, Macro, Module, ScopeDef, Semantics, Trait};
 
 use crate::RootDatabase;
 
@@ -15,7 +15,7 @@ use crate::RootDatabase;
 /// you'd want to include minicore (see `test_utils::MiniCore`) declaration at
 /// the start of your tests:
 ///
-/// ```
+/// ```text
 /// //- minicore: iterator, ord, derive
 /// ```
 pub struct FamousDefs<'a, 'b>(pub &'a Semantics<'b, RootDatabase>, pub Crate);
@@ -46,12 +46,28 @@ impl FamousDefs<'_, '_> {
         self.find_trait("core:cmp:Ord")
     }
 
+    pub fn core_convert_FromStr(&self) -> Option<Trait> {
+        self.find_trait("core:str:FromStr")
+    }
+
     pub fn core_convert_From(&self) -> Option<Trait> {
         self.find_trait("core:convert:From")
     }
 
     pub fn core_convert_Into(&self) -> Option<Trait> {
         self.find_trait("core:convert:Into")
+    }
+
+    pub fn core_convert_TryFrom(&self) -> Option<Trait> {
+        self.find_trait("core:convert:TryFrom")
+    }
+
+    pub fn core_convert_TryInto(&self) -> Option<Trait> {
+        self.find_trait("core:convert:TryInto")
+    }
+
+    pub fn core_convert_Index(&self) -> Option<Trait> {
+        self.find_trait("core:ops:Index")
     }
 
     pub fn core_option_Option(&self) -> Option<Enum> {
@@ -90,6 +106,18 @@ impl FamousDefs<'_, '_> {
         self.find_trait("core:convert:AsRef")
     }
 
+    pub fn core_convert_AsMut(&self) -> Option<Trait> {
+        self.find_trait("core:convert:AsMut")
+    }
+
+    pub fn core_borrow_Borrow(&self) -> Option<Trait> {
+        self.find_trait("core:borrow:Borrow")
+    }
+
+    pub fn core_borrow_BorrowMut(&self) -> Option<Trait> {
+        self.find_trait("core:borrow:BorrowMut")
+    }
+
     pub fn core_ops_ControlFlow(&self) -> Option<Enum> {
         self.find_enum("core:ops:ControlFlow")
     }
@@ -102,10 +130,37 @@ impl FamousDefs<'_, '_> {
         self.find_trait("core:marker:Copy")
     }
 
+    pub fn core_marker_Sized(&self) -> Option<Trait> {
+        self.find_trait("core:marker:Sized")
+    }
+
+    pub fn core_future_Future(&self) -> Option<Trait> {
+        self.find_trait("core:future:Future")
+    }
+
     pub fn core_macros_builtin_derive(&self) -> Option<Macro> {
         self.find_macro("core:macros:builtin:derive")
     }
 
+    pub fn core_mem_drop(&self) -> Option<Function> {
+        self.find_function("core:mem:drop")
+    }
+
+    pub fn core_macros_todo(&self) -> Option<Macro> {
+        self.find_macro("core:todo")
+    }
+
+    pub fn core_macros_unimplemented(&self) -> Option<Macro> {
+        self.find_macro("core:unimplemented")
+    }
+
+    pub fn core_fmt_Display(&self) -> Option<Trait> {
+        self.find_trait("core:fmt:Display")
+    }
+
+    pub fn alloc_string_ToString(&self) -> Option<Trait> {
+        self.find_trait("alloc:string:ToString")
+    }
     pub fn builtin_crates(&self) -> impl Iterator<Item = Crate> {
         IntoIterator::into_iter([
             self.std(),
@@ -145,14 +200,24 @@ impl FamousDefs<'_, '_> {
         }
     }
 
+    fn find_function(&self, path: &str) -> Option<Function> {
+        match self.find_def(path)? {
+            hir::ScopeDef::ModuleDef(hir::ModuleDef::Function(it)) => Some(it),
+            _ => None,
+        }
+    }
+
     fn find_lang_crate(&self, origin: LangCrateOrigin) -> Option<Crate> {
         let krate = self.1;
         let db = self.0.db;
-        let crate_graph = self.0.db.crate_graph();
+        if krate.origin(db) == CrateOrigin::Lang(origin) {
+            return Some(krate);
+        }
+
         let res = krate
             .dependencies(db)
             .into_iter()
-            .find(|dep| crate_graph[dep.krate.into()].origin == CrateOrigin::Lang(origin))?
+            .find(|dep| dep.krate.origin(db) == CrateOrigin::Lang(origin))?
             .krate;
         Some(res)
     }
@@ -167,19 +232,15 @@ impl FamousDefs<'_, '_> {
             lang_crate => lang_crate,
         };
         let std_crate = self.find_lang_crate(lang_crate)?;
-        let mut module = std_crate.root_module(db);
+        let mut module = std_crate.root_module();
         for segment in path {
             module = module.children(db).find_map(|child| {
                 let name = child.name(db)?;
-                if name.to_smol_str() == segment {
-                    Some(child)
-                } else {
-                    None
-                }
+                if name.as_str() == segment { Some(child) } else { None }
             })?;
         }
         let def =
-            module.scope(db, None).into_iter().find(|(name, _def)| name.to_smol_str() == trait_)?.1;
+            module.scope(db, None).into_iter().find(|(name, _def)| name.as_str() == trait_)?.1;
         Some(def)
     }
 }

@@ -1,9 +1,10 @@
+use hir::AsAssocItem;
 use syntax::{
-    ast::{self, make, AstNode, HasArgList},
     TextRange,
+    ast::{self, AstNode, HasArgList, prec::ExprPrecedence},
 };
 
-use crate::{AssistContext, AssistId, AssistKind, Assists};
+use crate::{AssistContext, AssistId, Assists};
 
 // Assist: unqualify_method_call
 //
@@ -17,6 +18,8 @@ use crate::{AssistContext, AssistId, AssistKind, Assists};
 // ```
 // ->
 // ```
+// use std::ops::Add;
+//
 // fn main() {
 //     1.add(2);
 // }
@@ -38,9 +41,10 @@ pub(crate) fn unqualify_method_call(acc: &mut Assists, ctx: &AssistContext<'_>) 
     let first_arg = args_iter.next()?;
     let second_arg = args_iter.next();
 
-    _ = path.qualifier()?;
+    let qualifier = path.qualifier()?;
     let method_name = path.segment()?.name_ref()?;
 
+    let scope = ctx.sema.scope(path.syntax())?;
     let res = ctx.sema.resolve_path(&path)?;
     let hir::PathResolution::Def(hir::ModuleDef::Function(fun)) = res else { return None };
     if !fun.has_self_param(ctx.sema.db) {
@@ -52,7 +56,7 @@ pub(crate) fn unqualify_method_call(acc: &mut Assists, ctx: &AssistContext<'_>) 
         TextRange::new(path.syntax().text_range().start(), l_paren.text_range().end());
 
     // Parens around `expr` if needed
-    let parens = needs_parens_as_receiver(&first_arg).then(|| {
+    let parens = first_arg.precedence().needs_parentheses_in(ExprPrecedence::Postfix).then(|| {
         let range = first_arg.syntax().text_range();
         (range.start(), range.end())
     });
@@ -66,7 +70,7 @@ pub(crate) fn unqualify_method_call(acc: &mut Assists, ctx: &AssistContext<'_>) 
     );
 
     acc.add(
-        AssistId("unqualify_method_call", AssistKind::RefactorRewrite),
+        AssistId::refactor_rewrite("unqualify_method_call"),
         "Unqualify method call",
         call.syntax().text_range(),
         |edit| {
@@ -76,26 +80,52 @@ pub(crate) fn unqualify_method_call(acc: &mut Assists, ctx: &AssistContext<'_>) 
                 edit.insert(close, ")");
             }
             edit.replace(replace_comma, format!(".{method_name}("));
+
+            if let Some(fun) = fun.as_assoc_item(ctx.db())
+                && let Some(trait_) = fun.container_or_implemented_trait(ctx.db())
+                && !scope.can_use_trait_methods(trait_)
+            {
+                // Only add an import for trait methods that are not already imported.
+                add_import(qualifier, ctx, edit);
+            }
         },
     )
 }
 
-fn needs_parens_as_receiver(expr: &ast::Expr) -> bool {
-    // Make `(expr).dummy()`
-    let dummy_call = make::expr_method_call(
-        make::expr_paren(expr.clone()),
-        make::name_ref("dummy"),
-        make::arg_list([]),
-    );
+fn add_import(
+    qualifier: ast::Path,
+    ctx: &AssistContext<'_>,
+    edit: &mut ide_db::source_change::SourceChangeBuilder,
+) {
+    if let Some(path_segment) = qualifier.segment() {
+        // for `<i32 as std::ops::Add>`
+        let path_type = path_segment.qualifying_trait();
+        let import = match path_type {
+            Some(it) => {
+                if let Some(path) = it.path() {
+                    path
+                } else {
+                    return;
+                }
+            }
+            None => qualifier,
+        };
 
-    // Get the `expr` clone with the right parent back
-    // (unreachable!s are fine since we've just constructed the expression)
-    let ast::Expr::MethodCallExpr(call) = &dummy_call else { unreachable!() };
-    let Some(receiver) = call.receiver() else { unreachable!() };
-    let ast::Expr::ParenExpr(parens) = receiver else { unreachable!() };
-    let Some(expr) = parens.expr() else { unreachable!() };
+        // in case for `<_>`
+        if import.coloncolon_token().is_none() {
+            return;
+        }
 
-    expr.needs_parens_in(dummy_call.syntax().clone())
+        let scope = ide_db::imports::insert_use::ImportScope::find_insert_use_container(
+            import.syntax(),
+            &ctx.sema,
+        );
+
+        if let Some(scope) = scope {
+            let scope = edit.make_import_scope_mut(scope);
+            ide_db::imports::insert_use::insert_use(&scope, import, &ctx.config.insert_use);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +157,8 @@ fn f() { S.f(S); }"#,
 //- minicore: add
 fn f() { <u32 as core::ops::Add>::$0add(2, 2); }"#,
             r#"
+use core::ops::Add;
+
 fn f() { 2.add(2); }"#,
         );
 
@@ -136,6 +168,8 @@ fn f() { 2.add(2); }"#,
 //- minicore: add
 fn f() { core::ops::Add::$0add(2, 2); }"#,
             r#"
+use core::ops::Add;
+
 fn f() { 2.add(2); }"#,
         );
 
@@ -179,6 +213,8 @@ impl core::ops::Deref for S {
 }
 fn f() { core::ops::Deref::$0deref(&S); }"#,
             r#"
+use core::ops::Deref;
+
 struct S;
 impl core::ops::Deref for S {
     type Target = S;
@@ -206,6 +242,113 @@ fn f() { core::ops::Add::add(2,$0 2); }"#,
 struct S;
 impl S { fn assoc(S: S, S: S) {} }
 fn f() { S::assoc$0(S, S); }"#,
+        );
+    }
+
+    #[test]
+    fn inherent_method() {
+        check_assist(
+            unqualify_method_call,
+            r#"
+mod foo {
+    pub struct Bar;
+    impl Bar {
+        pub fn bar(self) {}
+    }
+}
+
+fn baz() {
+    foo::Bar::b$0ar(foo::Bar);
+}
+        "#,
+            r#"
+mod foo {
+    pub struct Bar;
+    impl Bar {
+        pub fn bar(self) {}
+    }
+}
+
+fn baz() {
+    foo::Bar.bar();
+}
+        "#,
+        );
+    }
+
+    #[test]
+    fn trait_method_in_impl() {
+        check_assist(
+            unqualify_method_call,
+            r#"
+mod foo {
+    pub trait Bar {
+        pub fn bar(self) {}
+    }
+}
+
+struct Baz;
+impl foo::Bar for Baz {
+    fn bar(self) {
+        foo::Bar::b$0ar(Baz);
+    }
+}
+        "#,
+            r#"
+mod foo {
+    pub trait Bar {
+        pub fn bar(self) {}
+    }
+}
+
+struct Baz;
+impl foo::Bar for Baz {
+    fn bar(self) {
+        Baz.bar();
+    }
+}
+        "#,
+        );
+    }
+
+    #[test]
+    fn trait_method_already_imported() {
+        check_assist(
+            unqualify_method_call,
+            r#"
+mod foo {
+    pub struct Foo;
+    pub trait Bar {
+        pub fn bar(self) {}
+    }
+    impl Bar for Foo {
+        pub fn bar(self) {}
+    }
+}
+
+use foo::Bar;
+
+fn baz() {
+    foo::Bar::b$0ar(foo::Foo);
+}
+        "#,
+            r#"
+mod foo {
+    pub struct Foo;
+    pub trait Bar {
+        pub fn bar(self) {}
+    }
+    impl Bar for Foo {
+        pub fn bar(self) {}
+    }
+}
+
+use foo::Bar;
+
+fn baz() {
+    foo::Foo.bar();
+}
+        "#,
         );
     }
 }

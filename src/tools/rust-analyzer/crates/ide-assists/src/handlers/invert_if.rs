@@ -1,13 +1,13 @@
 use ide_db::syntax_helpers::node_ext::is_pattern_cond;
 use syntax::{
-    ast::{self, AstNode},
     T,
+    ast::{self, AstNode},
 };
 
 use crate::{
+    AssistId,
     assist_context::{AssistContext, Assists},
-    utils::invert_boolean_expression,
-    AssistId, AssistKind,
+    utils::invert_boolean_expression_legacy,
 };
 
 // Assist: invert_if
@@ -47,8 +47,8 @@ pub(crate) fn invert_if(acc: &mut Assists, ctx: &AssistContext<'_>) -> Option<()
         ast::ElseBranch::IfExpr(_) => return None,
     };
 
-    acc.add(AssistId("invert_if", AssistKind::RefactorRewrite), "Invert if", if_range, |edit| {
-        let flip_cond = invert_boolean_expression(cond.clone());
+    acc.add(AssistId::refactor_rewrite("invert_if"), "Invert if", if_range, |edit| {
+        let flip_cond = invert_boolean_expression_legacy(cond.clone());
         edit.replace_ast(cond, flip_cond);
 
         let else_node = else_block.syntax();
@@ -122,6 +122,18 @@ mod tests {
             invert_if,
             "fn f() { i$0f let Some(_) = Some(1) { 1 } else { 0 } }",
         )
+    }
+
+    #[test]
+    fn invert_if_doesnt_apply_with_if_let_chain() {
+        check_assist_not_applicable(
+            invert_if,
+            "fn f() { i$0f x && let Some(_) = Some(1) { 1 } else { 0 } }",
+        );
+        check_assist_not_applicable(
+            invert_if,
+            "fn f() { i$0f let Some(_) = Some(1) && x { 1 } else { 0 } }",
+        );
     }
 
     #[test]

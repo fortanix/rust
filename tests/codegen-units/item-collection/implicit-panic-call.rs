@@ -1,5 +1,3 @@
-// compile-flags:-Zprint-mono-items=lazy
-
 // rust-lang/rust#90405
 // Ensure implicit panic calls are collected
 
@@ -16,15 +14,28 @@ struct Location<'a> {
     _col: u32,
 }
 
-#[lang = "panic"]
+#[lang = "panic_const_div_by_zero"]
 #[inline]
 #[track_caller]
-fn panic(_: &'static str) -> ! {
+fn panic_div_zero() -> ! {
     loop {}
 }
 
+#[lang = "panic_const_div_overflow"]
+#[inline]
+#[track_caller]
+fn panic_div_overflow() -> ! {
+    loop {}
+}
+
+#[lang = "pointee_sized"]
+pub trait PointeeSized {}
+
+#[lang = "meta_sized"]
+pub trait MetaSized: PointeeSized {}
+
 #[lang = "sized"]
-trait Sized {}
+pub trait Sized: MetaSized {}
 
 #[lang = "copy"]
 trait Copy {}
@@ -55,4 +66,5 @@ pub fn foo() {
 
 //~ MONO_ITEM fn foo
 //~ MONO_ITEM fn <i32 as Div>::div
-//~ MONO_ITEM fn panic
+//~ MONO_ITEM fn panic_div_zero
+//~ MONO_ITEM fn panic_div_overflow

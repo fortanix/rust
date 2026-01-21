@@ -1,7 +1,8 @@
-// compile-flags: -C lto
-// aux-build:lto-rustc-loads-linker-plugin.rs
-// run-pass
-// no-prefer-dynamic
+//@ compile-flags: -C lto
+//@ aux-build:lto-rustc-loads-linker-plugin.rs
+//@ run-pass
+//@ no-prefer-dynamic
+//@ ignore-backends: gcc
 
 // This test ensures that if a dependency was compiled with
 // `-Clinker-plugin-lto` then we can compile with `-Clto` and still link against

@@ -1,6 +1,5 @@
-// min-lldb-version: 310
-
-// compile-flags:-g
+//@ compile-flags:-g
+//@ disable-gdb-pretty-printers
 
 // === GDB TESTS ===================================================================================
 
@@ -39,44 +38,34 @@
 
 // lldb-command:run
 
-// lldb-command:print x
-// lldbg-check:[...]$0 = false
-// lldbr-check:(bool) x = false
+// lldb-command:v x
+// lldb-check:[...] false
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$1 = false
-// lldbr-check:(bool) x = false
+// lldb-command:v x
+// lldb-check:[...] false
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$2 = 10
-// lldbr-check:(i32) x = 10
+// lldb-command:v x
+// lldb-check:[...] 10
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$3 = 10
-// lldbr-check:(i32) x = 10
+// lldb-command:v x
+// lldb-check:[...] 10
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$4 = 10.5
-// lldbr-check:(f64) x = 10.5
+// lldb-command:v x
+// lldb-check:[...] 10.5
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$5 = 10
-// lldbr-check:(i32) x = 10
+// lldb-command:v x
+// lldb-check:[...] 10
 // lldb-command:continue
 
-// lldb-command:print x
-// lldbg-check:[...]$6 = false
-// lldbr-check:(bool) x = false
+// lldb-command:v x
+// lldb-check:[...] false
 // lldb-command:continue
 
-
-#![feature(omit_gdb_pretty_printer_section)]
-#![omit_gdb_pretty_printer_section]
 
 fn main() {
     let x = false;

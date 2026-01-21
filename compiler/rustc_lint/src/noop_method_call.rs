@@ -1,12 +1,15 @@
-use crate::context::LintContext;
-use crate::lints::{NoopMethodCallDiag, SuspiciousDoubleRefDiag};
-use crate::LateContext;
-use crate::LateLintPass;
 use rustc_hir::def::DefKind;
 use rustc_hir::{Expr, ExprKind};
 use rustc_middle::ty;
 use rustc_middle::ty::adjustment::Adjust;
-use rustc_span::symbol::sym;
+use rustc_session::{declare_lint, declare_lint_pass};
+use rustc_span::sym;
+
+use crate::context::LintContext;
+use crate::lints::{
+    NoopMethodCallDiag, SuspiciousDoubleRefCloneDiag, SuspiciousDoubleRefDerefDiag,
+};
+use crate::{LateContext, LateLintPass};
 
 declare_lint! {
     /// The `noop_method_call` lint detects specific calls to noop methods
@@ -16,7 +19,6 @@ declare_lint! {
     ///
     /// ```rust
     /// # #![allow(unused)]
-    /// #![warn(noop_method_call)]
     /// struct Foo;
     /// let foo = &Foo;
     /// let clone: &Foo = foo.clone();
@@ -32,7 +34,7 @@ declare_lint! {
     /// calling `clone` on a `&T` where `T` does not implement clone, actually doesn't do anything
     /// as references are copy. This lint detects these calls and warns the user about them.
     pub NOOP_METHOD_CALL,
-    Allow,
+    Warn,
     "detects the use of well-known noop methods"
 }
 
@@ -76,38 +78,35 @@ impl<'tcx> LateLintPass<'tcx> for NoopMethodCall {
 
         // We only care about method calls corresponding to the `Clone`, `Deref` and `Borrow`
         // traits and ignore any other method call.
-        let did = match cx.typeck_results().type_dependent_def(expr.hir_id) {
-            // Verify we are dealing with a method/associated function.
-            Some((DefKind::AssocFn, did)) => match cx.tcx.trait_of_item(did) {
-                // Check that we're dealing with a trait method for one of the traits we care about.
-                Some(trait_id)
-                    if matches!(
-                        cx.tcx.get_diagnostic_name(trait_id),
-                        Some(sym::Borrow | sym::Clone | sym::Deref)
-                    ) =>
-                {
-                    did
-                }
-                _ => return,
-            },
-            _ => return,
+
+        let Some((DefKind::AssocFn, did)) = cx.typeck_results().type_dependent_def(expr.hir_id)
+        else {
+            return;
         };
-        let substs = cx
+
+        let Some(trait_id) = cx.tcx.trait_of_assoc(did) else { return };
+
+        let Some(trait_) = cx.tcx.get_diagnostic_name(trait_id) else { return };
+
+        if !matches!(trait_, sym::Borrow | sym::Clone | sym::Deref) {
+            return;
+        };
+
+        let args = cx
             .tcx
-            .normalize_erasing_regions(cx.param_env, cx.typeck_results().node_substs(expr.hir_id));
+            .normalize_erasing_regions(cx.typing_env(), cx.typeck_results().node_args(expr.hir_id));
         // Resolve the trait method instance.
-        let Ok(Some(i)) = ty::Instance::resolve(cx.tcx, cx.param_env, did, substs) else {
-            return
+        let Ok(Some(i)) = ty::Instance::try_resolve(cx.tcx, cx.typing_env(), did, args) else {
+            return;
         };
         // (Re)check that it implements the noop diagnostic.
         let Some(name) = cx.tcx.get_diagnostic_name(i.def_id()) else { return };
-
-        let op = match name {
-            sym::noop_method_borrow => "borrow",
-            sym::noop_method_clone => "clone",
-            sym::noop_method_deref => "deref",
-            _ => return,
-        };
+        if !matches!(
+            name,
+            sym::noop_method_borrow | sym::noop_method_clone | sym::noop_method_deref
+        ) {
+            return;
+        }
 
         let receiver_ty = cx.typeck_results().expr_ty(receiver);
         let expr_ty = cx.typeck_results().expr_ty_adjusted(expr);
@@ -122,18 +121,41 @@ impl<'tcx> LateLintPass<'tcx> for NoopMethodCall {
         let expr_span = expr.span;
         let span = expr_span.with_lo(receiver.span.hi());
 
+        let orig_ty = expr_ty.peel_refs();
+
         if receiver_ty == expr_ty {
-            cx.emit_spanned_lint(
+            let suggest_derive = match orig_ty.kind() {
+                ty::Adt(def, _) => Some(cx.tcx.def_span(def.did()).shrink_to_lo()),
+                _ => None,
+            };
+            cx.emit_span_lint(
                 NOOP_METHOD_CALL,
                 span,
-                NoopMethodCallDiag { method: call.ident.name, receiver_ty, label: span },
+                NoopMethodCallDiag {
+                    method: call.ident,
+                    orig_ty,
+                    trait_,
+                    label: span,
+                    suggest_derive,
+                },
             );
         } else {
-            cx.emit_spanned_lint(
-                SUSPICIOUS_DOUBLE_REF_OP,
-                span,
-                SuspiciousDoubleRefDiag { call: call.ident.name, ty: expr_ty, op },
-            )
+            match name {
+                // If `type_of(x) == T` and `x.borrow()` is used to get `&T`,
+                // then that should be allowed
+                sym::noop_method_borrow => return,
+                sym::noop_method_clone => cx.emit_span_lint(
+                    SUSPICIOUS_DOUBLE_REF_OP,
+                    span,
+                    SuspiciousDoubleRefCloneDiag { ty: expr_ty },
+                ),
+                sym::noop_method_deref => cx.emit_span_lint(
+                    SUSPICIOUS_DOUBLE_REF_OP,
+                    span,
+                    SuspiciousDoubleRefDerefDiag { ty: expr_ty },
+                ),
+                _ => return,
+            }
         }
     }
 }

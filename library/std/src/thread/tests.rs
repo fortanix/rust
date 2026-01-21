@@ -1,16 +1,12 @@
 use super::Builder;
 use crate::any::Any;
-use crate::mem;
 use crate::panic::panic_any;
 use crate::result;
-use crate::sync::{
-    atomic::{AtomicBool, Ordering},
-    mpsc::{channel, Sender},
-    Arc, Barrier,
-};
+use crate::sync::atomic::{AtomicBool, Ordering};
+use crate::sync::mpsc::{Sender, channel};
+use crate::sync::{Arc, Barrier};
 use crate::thread::{self, Scope, ThreadId};
-use crate::time::Duration;
-use crate::time::Instant;
+use crate::time::{Duration, Instant};
 
 // !!! These tests are dangerous. If something is buggy, they will hang, !!!
 // !!! instead of exiting cleanly. This might wedge the buildbots.       !!!
@@ -40,9 +36,7 @@ fn test_named_thread() {
 #[cfg(any(
     // Note: musl didn't add pthread_getname_np until 1.2.3
     all(target_os = "linux", target_env = "gnu"),
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "watchos"
+    target_vendor = "apple",
 ))]
 #[test]
 fn test_named_thread_truncation() {
@@ -114,6 +108,7 @@ fn test_is_finished() {
 }
 
 #[test]
+#[cfg_attr(not(panic = "unwind"), ignore = "test requires unwinding support")]
 fn test_join_panic() {
     match thread::spawn(move || panic!()).join() {
         result::Result::Err(_) => (),
@@ -216,6 +211,7 @@ fn test_simple_newsched_spawn() {
 }
 
 #[test]
+#[cfg_attr(not(panic = "unwind"), ignore = "test requires unwinding support")]
 fn test_try_panic_message_string_literal() {
     match thread::spawn(move || {
         panic!("static string");
@@ -232,6 +228,7 @@ fn test_try_panic_message_string_literal() {
 }
 
 #[test]
+#[cfg_attr(not(panic = "unwind"), ignore = "test requires unwinding support")]
 fn test_try_panic_any_message_owned_str() {
     match thread::spawn(move || {
         panic_any("owned string".to_string());
@@ -248,6 +245,7 @@ fn test_try_panic_any_message_owned_str() {
 }
 
 #[test]
+#[cfg_attr(not(panic = "unwind"), ignore = "test requires unwinding support")]
 fn test_try_panic_any_message_any() {
     match thread::spawn(move || {
         panic_any(Box::new(413u16) as Box<dyn Any + Send>);
@@ -266,6 +264,7 @@ fn test_try_panic_any_message_any() {
 }
 
 #[test]
+#[cfg_attr(not(panic = "unwind"), ignore = "test requires unwinding support")]
 fn test_try_panic_any_message_unit_struct() {
     struct Juju;
 
@@ -288,6 +287,8 @@ fn test_park_unpark_called_other_thread() {
     for _ in 0..10 {
         let th = thread::current();
 
+        // Here we rely on `thread::spawn` (specifically the part that runs after spawning
+        // the thread) to not consume the parking token.
         let _guard = thread::spawn(move || {
             super::sleep(Duration::from_millis(50));
             th.unpark();
@@ -317,6 +318,8 @@ fn test_park_timeout_unpark_called_other_thread() {
     for _ in 0..10 {
         let th = thread::current();
 
+        // Here we rely on `thread::spawn` (specifically the part that runs after spawning
+        // the thread) to not consume the parking token.
         let _guard = thread::spawn(move || {
             super::sleep(Duration::from_millis(50));
             th.unpark();
@@ -333,7 +336,7 @@ fn sleep_ms_smoke() {
 
 #[test]
 fn test_size_of_option_thread_id() {
-    assert_eq!(mem::size_of::<Option<ThreadId>>(), mem::size_of::<ThreadId>());
+    assert_eq!(size_of::<Option<ThreadId>>(), size_of::<ThreadId>());
 }
 
 #[test]
@@ -345,6 +348,13 @@ fn test_thread_id_equal() {
 fn test_thread_id_not_equal() {
     let spawned_id = thread::spawn(|| thread::current().id()).join().unwrap();
     assert!(thread::current().id() != spawned_id);
+}
+
+#[test]
+fn test_thread_os_id_not_equal() {
+    let spawned_id = thread::spawn(|| thread::current_os_id()).join().unwrap();
+    let current_id = thread::current_os_id();
+    assert!(current_id != spawned_id);
 }
 
 #[test]
@@ -375,7 +385,9 @@ fn test_scoped_threads_nll() {
     // this is mostly a *compilation test* for this exact function:
     fn foo(x: &u8) {
         thread::scope(|s| {
-            s.spawn(|| drop(x));
+            s.spawn(|| match x {
+                _ => (),
+            });
         });
     }
     // let's also run it for good measure
@@ -400,4 +412,17 @@ fn scope_join_race() {
             }
         });
     }
+}
+
+// Test that the smallest value for stack_size works on Windows.
+#[cfg(windows)]
+#[test]
+fn test_minimal_thread_stack() {
+    use crate::sync::atomic::AtomicU8;
+    static COUNT: AtomicU8 = AtomicU8::new(0);
+
+    let builder = thread::Builder::new().stack_size(1);
+    let before = builder.spawn(|| COUNT.fetch_add(1, Ordering::Relaxed)).unwrap().join().unwrap();
+    assert_eq!(before, 0);
+    assert_eq!(COUNT.load(Ordering::Relaxed), 1);
 }

@@ -1,7 +1,7 @@
-From c3821e02fbd6cb5ad6e06d759fccdc9073712375 Mon Sep 17 00:00:00 2001
-From: Antoni Boucher <bouanto@zoho.com>
-Date: Tue, 7 Jun 2022 21:40:13 -0400
-Subject: [PATCH] Add stdarch Cargo.toml for testing
+From 190e26c9274b3c93a9ee3516b395590e6bd9213b Mon Sep 17 00:00:00 2001
+From: None <none@example.com>
+Date: Sun, 3 Aug 2025 19:54:56 -0400
+Subject: [PATCH] Patch 0001-Add-stdarch-Cargo.toml-for-testing.patch
 
 ---
  library/stdarch/Cargo.toml | 20 ++++++++++++++++++++
@@ -10,19 +10,19 @@ Subject: [PATCH] Add stdarch Cargo.toml for testing
 
 diff --git a/library/stdarch/Cargo.toml b/library/stdarch/Cargo.toml
 new file mode 100644
-index 0000000..fbe0a95
+index 0000000..bd6725c
 --- /dev/null
 +++ b/library/stdarch/Cargo.toml
 @@ -0,0 +1,20 @@
 +[workspace]
++resolver = "1"
 +members = [
-+  "crates/core_arch",
-+  "crates/std_detect",
-+  "crates/stdarch-gen",
-+  "examples/"
++  "crates/*",
++  #"examples/"
 +]
 +exclude = [
-+  "crates/wasm-assert-instr-tests"
++  "crates/wasm-assert-instr-tests",
++  "rust_programs",
 +]
 +
 +[profile.release]
@@ -35,5 +35,5 @@ index 0000000..fbe0a95
 +opt-level = 3
 +incremental = true
 -- 
-2.26.2.7.g19db9cfb68.dirty
+2.50.1
 

@@ -1,6 +1,6 @@
-// only-x86_64
-
-#![feature(avx512_target_feature)]
+//@ only-x86_64
+// Set the base cpu explicitly, in case the default has been changed.
+//@ compile-flags: -C target-cpu=x86-64
 
 use std::arch::asm;
 

@@ -1,11 +1,11 @@
-use crate::iter::{DoubleEndedIterator, FusedIterator, Iterator, TrustedLen};
-use crate::num::NonZeroUsize;
+use crate::iter::{FusedIterator, TrustedLen};
+use crate::num::NonZero;
 use crate::ops::Try;
 
 /// An iterator that links two iterators together, in a chain.
 ///
-/// This `struct` is created by [`Iterator::chain`]. See its documentation
-/// for more.
+/// This `struct` is created by [`chain`] or [`Iterator::chain`]. See their
+/// documentation for more.
 ///
 /// # Examples
 ///
@@ -15,7 +15,7 @@ use crate::ops::Try;
 ///
 /// let a1 = [1, 2, 3];
 /// let a2 = [4, 5, 6];
-/// let iter: Chain<Iter<_>, Iter<_>> = a1.iter().chain(a2.iter());
+/// let iter: Chain<Iter<'_, _>, Iter<'_, _>> = a1.iter().chain(a2.iter());
 /// ```
 #[derive(Clone, Debug)]
 #[must_use = "iterators are lazy and do nothing unless consumed"]
@@ -36,6 +36,37 @@ impl<A, B> Chain<A, B> {
     pub(in super::super) fn new(a: A, b: B) -> Chain<A, B> {
         Chain { a: Some(a), b: Some(b) }
     }
+}
+
+/// Converts the arguments to iterators and links them together, in a chain.
+///
+/// See the documentation of [`Iterator::chain`] for more.
+///
+/// # Examples
+///
+/// ```
+/// use std::iter::chain;
+///
+/// let a = [1, 2, 3];
+/// let b = [4, 5, 6];
+///
+/// let mut iter = chain(a, b);
+///
+/// assert_eq!(iter.next(), Some(1));
+/// assert_eq!(iter.next(), Some(2));
+/// assert_eq!(iter.next(), Some(3));
+/// assert_eq!(iter.next(), Some(4));
+/// assert_eq!(iter.next(), Some(5));
+/// assert_eq!(iter.next(), Some(6));
+/// assert_eq!(iter.next(), None);
+/// ```
+#[stable(feature = "iter_chain", since = "1.91.0")]
+pub fn chain<A, B>(a: A, b: B) -> Chain<A::IntoIter, B::IntoIter>
+where
+    A: IntoIterator,
+    B: IntoIterator<Item = A::Item>,
+{
+    Chain::new(a.into_iter(), b.into_iter())
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -96,7 +127,7 @@ where
     }
 
     #[inline]
-    fn advance_by(&mut self, mut n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_by(&mut self, mut n: usize) -> Result<(), NonZero<usize>> {
         if let Some(ref mut a) = self.a {
             n = match a.advance_by(n) {
                 Ok(()) => return Ok(()),
@@ -110,7 +141,7 @@ where
             // we don't fuse the second iterator
         }
 
-        NonZeroUsize::new(n).map_or(Ok(()), Err)
+        NonZero::new(n).map_or(Ok(()), Err)
     }
 
     #[inline]
@@ -182,7 +213,7 @@ where
     }
 
     #[inline]
-    fn advance_back_by(&mut self, mut n: usize) -> Result<(), NonZeroUsize> {
+    fn advance_back_by(&mut self, mut n: usize) -> Result<(), NonZero<usize>> {
         if let Some(ref mut b) = self.b {
             n = match b.advance_back_by(n) {
                 Ok(()) => return Ok(()),
@@ -196,7 +227,7 @@ where
             // we don't fuse the second iterator
         }
 
-        NonZeroUsize::new(n).map_or(Ok(()), Err)
+        NonZero::new(n).map_or(Ok(()), Err)
     }
 
     #[inline]
@@ -290,6 +321,7 @@ impl<A: Default, B: Default> Default for Chain<A, B> {
     ///
     /// // take requires `Default`
     /// let _: Chain<_, _> = mem::take(&mut foo.0);
+    /// ```
     fn default() -> Self {
         Chain::new(Default::default(), Default::default())
     }

@@ -4,7 +4,7 @@
 set -eux
 
 arch=$1
-binutils_version=2.25.1
+binutils_version=2.40
 freebsd_version=12.3
 triple=$arch-unknown-freebsd12
 sysroot=/usr/local/$triple
@@ -28,7 +28,9 @@ exit 1
 # First up, build binutils
 mkdir binutils
 cd binutils
-curl https://ftp.gnu.org/gnu/binutils/binutils-${binutils_version}.tar.bz2 | tar xjf -
+# Originally downloaded from:
+# https://sourceware.org/pub/binutils/releases/binutils-${binutils_version}.tar.bz2
+curl https://ci-mirrors.rust-lang.org/rustc/binutils-${binutils_version}.tar.bz2 | tar xjf -
 mkdir binutils-build
 cd binutils-build
 hide_output ../binutils-${binutils_version}/configure \

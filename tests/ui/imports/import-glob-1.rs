@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(dead_code)]
 #![allow(unused_imports)]
 // This should resolve fine. Prior to fix, the last import
@@ -21,7 +21,7 @@ mod bar {
 }
 
 mod foo {
-    use bar::Baz::{Baz1, Baz2};
+    use crate::bar::Baz::{Baz1, Baz2};
 }
 
 fn main() {}

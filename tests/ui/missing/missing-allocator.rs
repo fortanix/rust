@@ -1,5 +1,5 @@
-// compile-flags: -C panic=abort
-// no-prefer-dynamic
+//@ compile-flags: -C panic=abort
+//@ no-prefer-dynamic
 
 #![no_std]
 #![crate_type = "staticlib"]
@@ -16,3 +16,5 @@ fn oom(_: core::alloc::Layout) -> ! {
 }
 
 extern crate alloc;
+
+//~? ERROR no global memory allocator found but one is required

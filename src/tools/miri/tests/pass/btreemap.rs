@@ -1,7 +1,6 @@
 //@revisions: stack tree
 //@[tree]compile-flags: -Zmiri-tree-borrows
 //@compile-flags: -Zmiri-strict-provenance
-#![feature(btree_drain_filter)]
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 
@@ -49,8 +48,8 @@ pub fn main() {
     }
     test_all_refs(&mut 13, b.values_mut());
 
-    // Test forgetting the drain.
-    let mut d = b.drain_filter(|_, i| *i < 30);
+    // Test forgetting the extractor.
+    let mut d = b.extract_if(.., |_, i| *i < 30);
     d.next().unwrap();
     mem::forget(d);
 }

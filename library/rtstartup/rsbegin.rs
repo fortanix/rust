@@ -18,9 +18,18 @@
 #![crate_type = "rlib"]
 #![no_core]
 #![allow(non_camel_case_types)]
+#![allow(internal_features)]
+#![warn(unreachable_pub)]
+
+#[lang = "pointee_sized"]
+pub trait PointeeSized {}
+
+#[lang = "meta_sized"]
+pub trait MetaSized: PointeeSized {}
 
 #[lang = "sized"]
-trait Sized {}
+pub trait Sized: MetaSized {}
+
 #[lang = "sync"]
 auto trait Sync {}
 #[lang = "copy"]
@@ -28,10 +37,12 @@ trait Copy {}
 #[lang = "freeze"]
 auto trait Freeze {}
 
+impl<T: PointeeSized> Copy for *mut T {}
+
 #[lang = "drop_in_place"]
 #[inline]
 #[allow(unconditional_recursion)]
-pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
+pub unsafe fn drop_in_place<T: PointeeSized>(to_drop: *mut T) {
     drop_in_place(to_drop);
 }
 
@@ -48,7 +59,7 @@ pub unsafe fn drop_in_place<T: ?Sized>(to_drop: *mut T) {
 #[cfg(all(target_os = "windows", target_arch = "x86", target_env = "gnu"))]
 pub mod eh_frames {
     #[no_mangle]
-    #[link_section = ".eh_frame"]
+    #[unsafe(link_section = ".eh_frame")]
     // Marks beginning of the stack frame unwind info section
     pub static __EH_FRAME_BEGIN__: [u8; 0] = [];
 
@@ -72,7 +83,7 @@ pub mod eh_frames {
     }
 
     // Unwind info registration/deregistration routines.
-    extern "C" {
+    unsafe extern "C" {
         fn __register_frame_info(eh_frame_begin: *const u8, object: *mut u8);
         fn __deregister_frame_info(eh_frame_begin: *const u8, object: *mut u8);
     }
@@ -97,10 +108,10 @@ pub mod eh_frames {
         // end of the list. Since constructors are run in reverse order, this ensures that our
         // callbacks are the first and last ones executed.
 
-        #[link_section = ".ctors.65535"] // .ctors.* : C initialization callbacks
+        #[unsafe(link_section = ".ctors.65535")] // .ctors.* : C initialization callbacks
         pub static P_INIT: unsafe extern "C" fn() = super::init;
 
-        #[link_section = ".dtors.65535"] // .dtors.* : C termination callbacks
+        #[unsafe(link_section = ".dtors.65535")] // .dtors.* : C termination callbacks
         pub static P_UNINIT: unsafe extern "C" fn() = super::uninit;
     }
 }

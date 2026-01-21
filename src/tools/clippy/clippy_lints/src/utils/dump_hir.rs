@@ -1,10 +1,10 @@
-use clippy_utils::get_attr;
+use clippy_utils::{get_attr, sym};
 use hir::TraitItem;
 use rustc_hir as hir;
 use rustc_lint::{LateContext, LateLintPass, LintContext};
-use rustc_session::{declare_lint_pass, declare_tool_lint};
+use rustc_session::declare_lint_pass;
 
-declare_clippy_lint! {
+declare_lint_pass!(
     /// ### What it does
     /// It formats the attached node with `{:#?}` and writes the result to the
     /// standard output. This is intended for debugging.
@@ -19,12 +19,8 @@ declare_clippy_lint! {
     ///     input as u64
     /// }
     /// ```
-    pub DUMP_HIR,
-    internal_warn,
-    "helper to dump info about code"
-}
-
-declare_lint_pass!(DumpHir => [DUMP_HIR]);
+    DumpHir => []
+);
 
 impl<'tcx> LateLintPass<'tcx> for DumpHir {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx hir::Item<'_>) {
@@ -63,6 +59,6 @@ impl<'tcx> LateLintPass<'tcx> for DumpHir {
 }
 
 fn has_attr(cx: &LateContext<'_>, hir_id: hir::HirId) -> bool {
-    let attrs = cx.tcx.hir().attrs(hir_id);
-    get_attr(cx.sess(), attrs, "dump").count() > 0
+    let attrs = cx.tcx.hir_attrs(hir_id);
+    get_attr(cx.sess(), attrs, sym::dump).count() > 0
 }

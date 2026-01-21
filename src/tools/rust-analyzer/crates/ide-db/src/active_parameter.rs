@@ -1,84 +1,112 @@
 //! This module provides functionality for querying callable information about a token.
 
 use either::Either;
-use hir::{Semantics, Type};
+use hir::{InFile, Semantics, Type};
 use parser::T;
+use span::TextSize;
 use syntax::{
-    ast::{self, HasArgList, HasName},
-    match_ast, AstNode, NodeOrToken, SyntaxToken,
+    AstNode, NodeOrToken, SyntaxToken,
+    ast::{self, AstChildren, HasArgList, HasAttrs, HasName},
+    match_ast,
 };
 
 use crate::RootDatabase;
 
 #[derive(Debug)]
-pub struct ActiveParameter {
-    pub ty: Type,
-    pub pat: Option<Either<ast::SelfParam, ast::Pat>>,
+pub struct ActiveParameter<'db> {
+    pub ty: Type<'db>,
+    pub src: Option<InFile<Either<ast::SelfParam, ast::Param>>>,
 }
 
-impl ActiveParameter {
+impl<'db> ActiveParameter<'db> {
     /// Returns information about the call argument this token is part of.
-    pub fn at_token(sema: &Semantics<'_, RootDatabase>, token: SyntaxToken) -> Option<Self> {
+    pub fn at_token(sema: &Semantics<'db, RootDatabase>, token: SyntaxToken) -> Option<Self> {
         let (signature, active_parameter) = callable_for_token(sema, token)?;
+        Self::from_signature_and_active_parameter(sema, signature, active_parameter)
+    }
 
+    /// Returns information about the call argument this token is part of.
+    pub fn at_arg(
+        sema: &'db Semantics<'db, RootDatabase>,
+        list: ast::ArgList,
+        at: TextSize,
+    ) -> Option<Self> {
+        let (signature, active_parameter) = callable_for_arg_list(sema, list, at)?;
+        Self::from_signature_and_active_parameter(sema, signature, active_parameter)
+    }
+
+    fn from_signature_and_active_parameter(
+        sema: &Semantics<'db, RootDatabase>,
+        signature: hir::Callable<'db>,
+        active_parameter: Option<usize>,
+    ) -> Option<Self> {
         let idx = active_parameter?;
-        let mut params = signature.params(sema.db);
-        if !(idx < params.len()) {
+        let mut params = signature.params();
+        if idx >= params.len() {
             cov_mark::hit!(too_many_arguments);
             return None;
         }
-        let (pat, ty) = params.swap_remove(idx);
-        Some(ActiveParameter { ty, pat })
+        let param = params.swap_remove(idx);
+        Some(ActiveParameter { ty: param.ty().clone(), src: sema.source(param) })
     }
 
     pub fn ident(&self) -> Option<ast::Name> {
-        self.pat.as_ref().and_then(|param| match param {
-            Either::Right(ast::Pat::IdentPat(ident)) => ident.name(),
+        self.src.as_ref().and_then(|param| match param.value.as_ref().right()?.pat()? {
+            ast::Pat::IdentPat(ident) => ident.name(),
             _ => None,
         })
+    }
+
+    pub fn attrs(&self) -> Option<AstChildren<ast::Attr>> {
+        self.src.as_ref().and_then(|param| Some(param.value.as_ref().right()?.attrs()))
     }
 }
 
 /// Returns a [`hir::Callable`] this token is a part of and its argument index of said callable.
-pub fn callable_for_token(
-    sema: &Semantics<'_, RootDatabase>,
+pub fn callable_for_token<'db>(
+    sema: &Semantics<'db, RootDatabase>,
     token: SyntaxToken,
-) -> Option<(hir::Callable, Option<usize>)> {
+) -> Option<(hir::Callable<'db>, Option<usize>)> {
+    let offset = token.text_range().start();
     // Find the calling expression and its NameRef
     let parent = token.parent()?;
-    let calling_node = parent.ancestors().filter_map(ast::CallableExpr::cast).find(|it| {
-        it.arg_list()
-            .map_or(false, |it| it.syntax().text_range().contains(token.text_range().start()))
-    })?;
+    let calling_node = parent
+        .ancestors()
+        .filter_map(ast::CallableExpr::cast)
+        .find(|it| it.arg_list().is_some_and(|it| it.syntax().text_range().contains(offset)))?;
 
-    callable_for_node(sema, &calling_node, &token)
+    callable_for_node(sema, &calling_node, offset)
 }
 
-pub fn callable_for_node(
-    sema: &Semantics<'_, RootDatabase>,
+/// Returns a [`hir::Callable`] this token is a part of and its argument index of said callable.
+pub fn callable_for_arg_list<'db>(
+    sema: &Semantics<'db, RootDatabase>,
+    arg_list: ast::ArgList,
+    at: TextSize,
+) -> Option<(hir::Callable<'db>, Option<usize>)> {
+    debug_assert!(arg_list.syntax().text_range().contains(at));
+    let callable = arg_list.syntax().parent().and_then(ast::CallableExpr::cast)?;
+    callable_for_node(sema, &callable, at)
+}
+
+pub fn callable_for_node<'db>(
+    sema: &Semantics<'db, RootDatabase>,
     calling_node: &ast::CallableExpr,
-    token: &SyntaxToken,
-) -> Option<(hir::Callable, Option<usize>)> {
+    offset: TextSize,
+) -> Option<(hir::Callable<'db>, Option<usize>)> {
     let callable = match calling_node {
-        ast::CallableExpr::Call(call) => {
-            let expr = call.expr()?;
-            sema.type_of_expr(&expr)?.adjusted().as_callable(sema.db)
-        }
+        ast::CallableExpr::Call(call) => sema.resolve_expr_as_callable(&call.expr()?),
         ast::CallableExpr::MethodCall(call) => sema.resolve_method_call_as_callable(call),
     }?;
-    let active_param = if let Some(arg_list) = calling_node.arg_list() {
-        Some(
-            arg_list
-                .syntax()
-                .children_with_tokens()
-                .filter_map(NodeOrToken::into_token)
-                .filter(|t| t.kind() == T![,])
-                .take_while(|t| t.text_range().start() <= token.text_range().start())
-                .count(),
-        )
-    } else {
-        None
-    };
+    let active_param = calling_node.arg_list().map(|arg_list| {
+        arg_list
+            .syntax()
+            .children_with_tokens()
+            .filter_map(NodeOrToken::into_token)
+            .filter(|t| t.kind() == T![,])
+            .take_while(|t| t.text_range().start() <= offset)
+            .count()
+    });
     Some((callable, active_param))
 }
 
@@ -86,8 +114,9 @@ pub fn generic_def_for_node(
     sema: &Semantics<'_, RootDatabase>,
     generic_arg_list: &ast::GenericArgList,
     token: &SyntaxToken,
-) -> Option<(hir::GenericDef, usize, bool)> {
+) -> Option<(hir::GenericDef, usize, bool, Option<hir::Variant>)> {
     let parent = generic_arg_list.syntax().parent()?;
+    let mut variant = None;
     let def = match_ast! {
         match parent {
             ast::PathSegment(ps) => {
@@ -96,9 +125,11 @@ pub fn generic_def_for_node(
                     hir::PathResolution::Def(hir::ModuleDef::Adt(it)) => it.into(),
                     hir::PathResolution::Def(hir::ModuleDef::Function(it)) => it.into(),
                     hir::PathResolution::Def(hir::ModuleDef::Trait(it)) => it.into(),
-                    hir::PathResolution::Def(hir::ModuleDef::TraitAlias(it)) => it.into(),
                     hir::PathResolution::Def(hir::ModuleDef::TypeAlias(it)) => it.into(),
-                    hir::PathResolution::Def(hir::ModuleDef::Variant(it)) => it.into(),
+                    hir::PathResolution::Def(hir::ModuleDef::Variant(it)) => {
+                        variant = Some(it);
+                        it.parent_enum(sema.db).into()
+                    },
                     hir::PathResolution::Def(hir::ModuleDef::BuiltinType(_))
                     | hir::PathResolution::Def(hir::ModuleDef::Const(_))
                     | hir::PathResolution::Def(hir::ModuleDef::Macro(_))
@@ -139,7 +170,7 @@ pub fn generic_def_for_node(
     let first_arg_is_non_lifetime = generic_arg_list
         .generic_args()
         .next()
-        .map_or(false, |arg| !matches!(arg, ast::GenericArg::LifetimeArg(_)));
+        .is_some_and(|arg| !matches!(arg, ast::GenericArg::LifetimeArg(_)));
 
-    Some((def, active_param, first_arg_is_non_lifetime))
+    Some((def, active_param, first_arg_is_non_lifetime, variant))
 }

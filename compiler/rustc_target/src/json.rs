@@ -2,7 +2,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 pub use serde_json::Value as Json;
-use serde_json::{Map, Number};
+use serde_json::{Map, Number, json};
+
+use crate::spec::TargetMetadata;
 
 pub trait ToJson {
     fn to_json(&self) -> Json;
@@ -90,27 +92,40 @@ impl<A: ToJson> ToJson for Option<A> {
     }
 }
 
-impl ToJson for crate::abi::call::Conv {
+impl ToJson for TargetMetadata {
     fn to_json(&self) -> Json {
-        let s = match self {
-            Self::C => "C",
-            Self::Rust => "Rust",
-            Self::RustCold => "RustCold",
-            Self::ArmAapcs => "ArmAapcs",
-            Self::CCmseNonSecureCall => "CCmseNonSecureCall",
-            Self::Msp430Intr => "Msp430Intr",
-            Self::PtxKernel => "PtxKernel",
-            Self::X86Fastcall => "X86Fastcall",
-            Self::X86Intr => "X86Intr",
-            Self::X86Stdcall => "X86Stdcall",
-            Self::X86ThisCall => "X86ThisCall",
-            Self::X86VectorCall => "X86VectorCall",
-            Self::X86_64SysV => "X86_64SysV",
-            Self::X86_64Win64 => "X86_64Win64",
-            Self::AmdGpuKernel => "AmdGpuKernel",
-            Self::AvrInterrupt => "AvrInterrupt",
-            Self::AvrNonBlockingInterrupt => "AvrNonBlockingInterrupt",
-        };
-        Json::String(s.to_owned())
+        json!({
+            "description": self.description,
+            "tier": self.tier,
+            "host_tools": self.host_tools,
+            "std": self.std,
+        })
     }
 }
+
+impl ToJson for rustc_abi::Endian {
+    fn to_json(&self) -> Json {
+        self.as_str().to_json()
+    }
+}
+
+impl ToJson for rustc_abi::CanonAbi {
+    fn to_json(&self) -> Json {
+        self.to_string().to_json()
+    }
+}
+
+macro_rules! serde_deserialize_from_str {
+    ($ty:ty) => {
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let s = String::deserialize(deserializer)?;
+                FromStr::from_str(&s).map_err(serde::de::Error::custom)
+            }
+        }
+    };
+}
+pub(crate) use serde_deserialize_from_str;

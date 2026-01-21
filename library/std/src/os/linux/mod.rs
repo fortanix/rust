@@ -6,5 +6,6 @@
 pub mod fs;
 #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 pub mod net;
+#[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
 pub mod process;
 pub mod raw;

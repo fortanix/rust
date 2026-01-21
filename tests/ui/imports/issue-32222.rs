@@ -1,4 +1,4 @@
-// check-pass
+//@ check-pass
 
 mod foo {
     pub fn bar() {}
@@ -16,7 +16,7 @@ mod a {
 }
 
 mod b {
-    pub use a::bar;
+    pub use crate::a::bar;
 }
 
 fn main() {}

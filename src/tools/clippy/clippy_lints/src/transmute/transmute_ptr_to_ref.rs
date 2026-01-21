@@ -17,43 +17,61 @@ pub(super) fn check<'tcx>(
     to_ty: Ty<'tcx>,
     arg: &'tcx Expr<'_>,
     path: &'tcx Path<'_>,
-    msrv: &Msrv,
+    msrv: Msrv,
 ) -> bool {
     match (&from_ty.kind(), &to_ty.kind()) {
-        (ty::RawPtr(from_ptr_ty), ty::Ref(_, to_ref_ty, mutbl)) => {
+        (ty::RawPtr(from_ptr_ty, _), ty::Ref(_, to_ref_ty, mutbl)) => {
             span_lint_and_then(
                 cx,
                 TRANSMUTE_PTR_TO_REF,
                 e.span,
-                &format!("transmute from a pointer type (`{from_ty}`) to a reference type (`{to_ty}`)"),
+                format!("transmute from a pointer type (`{from_ty}`) to a reference type (`{to_ty}`)"),
                 |diag| {
                     let arg = sugg::Sugg::hir(cx, arg, "..");
-                    let (deref, cast) = if *mutbl == Mutability::Mut {
-                        ("&mut *", "*mut")
-                    } else {
-                        ("&*", "*const")
+                    let (deref, cast) = match mutbl {
+                        Mutability::Mut => ("&mut *", "*mut"),
+                        Mutability::Not => ("&*", "*const"),
                     };
                     let mut app = Applicability::MachineApplicable;
 
                     let sugg = if let Some(ty) = get_explicit_type(path) {
                         let ty_snip = snippet_with_applicability(cx, ty.span, "..", &mut app);
-                        if msrv.meets(msrvs::POINTER_CAST) {
-                            format!("{deref}{}.cast::<{ty_snip}>()", arg.maybe_par())
+                        if !to_ref_ty.is_sized(cx.tcx, cx.typing_env()) {
+                            // We can't suggest `.cast()`, because that requires `to_ref_ty` to be Sized.
+                            if from_ptr_ty.has_erased_regions() {
+                                // We can't suggest `as *mut/const () as *mut/const to_ref_ty`, because the former is a
+                                // thin pointer, whereas the latter is a wide pointer, due of its pointee, `to_ref_ty`,
+                                // being !Sized.
+                                //
+                                // The only remaining option is be to skip `*mut/const ()`, but that might not be safe
+                                // to do because of the erased regions in `from_ptr_ty`, so reduce the applicability.
+                                app = Applicability::MaybeIncorrect;
+                            }
+                            sugg::make_unop(deref, arg.as_ty(format!("{cast} {ty_snip}"))).to_string()
+                        } else if msrv.meets(cx, msrvs::POINTER_CAST) {
+                            format!("{deref}{}.cast::<{ty_snip}>()", arg.maybe_paren())
                         } else if from_ptr_ty.has_erased_regions() {
                             sugg::make_unop(deref, arg.as_ty(format!("{cast} () as {cast} {ty_snip}"))).to_string()
                         } else {
                             sugg::make_unop(deref, arg.as_ty(format!("{cast} {ty_snip}"))).to_string()
                         }
-                    } else if from_ptr_ty.ty == *to_ref_ty {
-                        if from_ptr_ty.has_erased_regions() {
-                            if msrv.meets(msrvs::POINTER_CAST) {
-                                format!("{deref}{}.cast::<{to_ref_ty}>()", arg.maybe_par())
-                            } else {
-                                sugg::make_unop(deref, arg.as_ty(format!("{cast} () as {cast} {to_ref_ty}")))
-                                    .to_string()
-                            }
-                        } else {
+                    } else if *from_ptr_ty == *to_ref_ty {
+                        if !from_ptr_ty.has_erased_regions() {
                             sugg::make_unop(deref, arg).to_string()
+                        } else if !to_ref_ty.is_sized(cx.tcx, cx.typing_env()) {
+                            // 1. We can't suggest `.cast()`, because that requires `to_ref_ty` to be Sized.
+                            // 2. We can't suggest `as *mut/const () as *mut/const to_ref_ty`, because the former is a
+                            //    thin pointer, whereas the latter is a wide pointer, due of its pointee, `to_ref_ty`,
+                            //    being !Sized.
+                            //
+                            // The only remaining option is be to skip `*mut/const ()`, but that might not be safe to do
+                            // because of the erased regions in `from_ptr_ty`, so reduce the applicability.
+                            app = Applicability::MaybeIncorrect;
+                            sugg::make_unop(deref, arg.as_ty(format!("{cast} {to_ref_ty}"))).to_string()
+                        } else if msrv.meets(cx, msrvs::POINTER_CAST) {
+                            format!("{deref}{}.cast::<{to_ref_ty}>()", arg.maybe_paren())
+                        } else {
+                            sugg::make_unop(deref, arg.as_ty(format!("{cast} () as {cast} {to_ref_ty}"))).to_string()
                         }
                     } else {
                         sugg::make_unop(deref, arg.as_ty(format!("{cast} {to_ref_ty}"))).to_string()

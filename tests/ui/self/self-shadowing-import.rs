@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 
 mod a {
     pub mod b {
@@ -9,7 +9,7 @@ mod a {
 }
 
 mod c {
-    use a::b::a;
+    use crate::a::b::a;
     pub fn bar() { assert_eq!(a::foo(), 1); }
 }
 

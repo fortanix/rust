@@ -1,6 +1,6 @@
 // Confirm that we don't accidentally divide or mod by zero in llvm_type
 
-// build-pass
+//@ build-pass
 
 mod a {
     pub trait A {}
@@ -14,7 +14,7 @@ mod b {
     }
 
     impl Builder {
-        pub fn with_a(&mut self, _a: fn() -> dyn (::a::A)) {}
+        pub fn with_a(&mut self, _a: fn() -> dyn (crate::a::A)) {}
     }
 }
 

@@ -80,18 +80,18 @@ pub trait Iterator;
             prelude: t
 
             crate::iter
-            Iterator: t
+            Iterator: ti
             traits: t
 
             crate::iter::traits
-            Iterator: t
+            Iterator: ti
             iterator: t
 
             crate::iter::traits::iterator
             Iterator: t
 
             crate::prelude
-            Iterator: t
+            Iterator: ti
         "#]],
     );
 }
@@ -109,7 +109,7 @@ pub struct Bar;
 "#,
         expect![[r#"
             crate
-            Bar: t v
+            Bar: ti vi
             foo: t
 
             crate::foo
@@ -139,19 +139,19 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Bar: t v
+            Bar: ti vi
             r#async: t
 
             crate::r#async
             Bar: t v
-            foo: t
             r#async: t
-
-            crate::r#async::foo
-            Foo: t v
+            foo: t
 
             crate::r#async::r#async
             Baz: t v
+
+            crate::r#async::foo
+            Foo: t v
         "#]],
     );
 }
@@ -176,8 +176,8 @@ pub struct Bar;
 "#,
         expect![[r#"
             crate
-            Bar: t v
-            Foo: t v
+            Bar: ti vi
+            Foo: ti vi
             r#async: t
 
             crate::r#async
@@ -207,7 +207,7 @@ pub struct Bar;
 "#,
         expect![[r#"
             crate
-            Bar: t v
+            Bar: ti vi
             foo: t
 
             crate::foo
@@ -236,7 +236,7 @@ pub struct Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -265,7 +265,7 @@ pub struct Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -292,7 +292,7 @@ use super::Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
         "#]],
     );
 }
@@ -626,7 +626,7 @@ pub struct Baz;
 "#,
         expect![[r#"
             crate
-            Baz: t v
+            Baz: ti vi
             foo: t
 
             crate::foo
@@ -660,7 +660,7 @@ pub struct Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -694,7 +694,7 @@ pub struct Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -728,7 +728,7 @@ pub struct Baz;
             foo: t
 
             crate::foo
-            Baz: t v
+            Baz: ti vi
             bar: t
 
             crate::foo::bar
@@ -839,6 +839,7 @@ mod foo;
 #[path = "./foo.rs"]
 mod foo;
 "#,
+        |_| (),
     );
 
     compute_crate_def_map(
@@ -852,6 +853,7 @@ mod bar;
 #[path = "./foo.rs"]
 mod foo;
 "#,
+        |_| (),
     );
 }
 
@@ -868,7 +870,7 @@ pub mod hash { pub trait Hash {} }
 "#,
         expect![[r#"
             crate
-            Hash: t
+            Hash: ti
             core: t
 
             crate::core
@@ -887,10 +889,156 @@ mod module;
 //- /module.rs
 #![cfg(NEVER)]
 
-struct AlsoShoulntAppear;
+struct AlsoShouldNotAppear;
         "#,
         expect![[r#"
             crate
         "#]],
     )
+}
+
+#[test]
+fn invalid_imports() {
+    check(
+        r#"
+//- /main.rs
+mod module;
+
+use self::module::S::new;
+use self::module::unresolved;
+use self::module::C::const_based;
+use self::module::Enum::Variant::NoAssoc;
+
+//- /module.rs
+pub struct S;
+impl S {
+    pub fn new() {}
+}
+pub const C: () = ();
+pub enum Enum {
+    Variant,
+}
+        "#,
+        expect![[r#"
+            crate
+            NoAssoc: _
+            const_based: _
+            module: t
+            new: _
+            unresolved: _
+
+            crate::module
+            C: v
+            Enum: t
+            S: t v
+        "#]],
+    );
+}
+
+#[test]
+fn trait_item_imports_same_crate() {
+    check(
+        r#"
+//- /main.rs
+mod module;
+
+use self::module::Trait::{AssocType, ASSOC_CONST, MACRO_CONST, method};
+
+//- /module.rs
+macro_rules! m {
+    ($name:ident) => { const $name: () = (); };
+}
+pub trait Trait {
+    type AssocType;
+    const ASSOC_CONST: ();
+    fn method(&self);
+    m!(MACRO_CONST);
+}
+        "#,
+        expect![[r#"
+            crate
+            ASSOC_CONST: _
+            AssocType: _
+            MACRO_CONST: _
+            method: _
+            module: t
+
+            crate::module
+            Trait: t
+        "#]],
+    );
+    check(
+        r#"
+//- /main.rs
+mod module;
+
+use self::module::Trait::*;
+
+//- /module.rs
+macro_rules! m {
+    ($name:ident) => { const $name: () = (); };
+}
+pub trait Trait {
+    type AssocType;
+    const ASSOC_CONST: ();
+    fn method(&self);
+    m!(MACRO_CONST);
+}
+        "#,
+        expect![[r#"
+            crate
+            module: t
+
+            crate::module
+            Trait: t
+        "#]],
+    );
+}
+
+#[test]
+fn trait_item_imports_differing_crate() {
+    check(
+        r#"
+//- /main.rs deps:lib crate:main
+use lib::Trait::{AssocType, ASSOC_CONST, MACRO_CONST, method};
+
+//- /lib.rs crate:lib
+macro_rules! m {
+    ($name:ident) => { const $name: () = (); };
+}
+pub trait Trait {
+    type AssocType;
+    const ASSOC_CONST: ();
+    fn method(&self);
+    m!(MACRO_CONST);
+}
+        "#,
+        expect![[r#"
+            crate
+            ASSOC_CONST: _
+            AssocType: _
+            MACRO_CONST: _
+            method: _
+        "#]],
+    );
+    check(
+        r#"
+//- /main.rs deps:lib crate:main
+use lib::Trait::*;
+
+//- /lib.rs crate:lib
+macro_rules! m {
+    ($name:ident) => { const $name: () = (); };
+}
+pub trait Trait {
+    type AssocType;
+    const ASSOC_CONST: ();
+    fn method(&self);
+    m!(MACRO_CONST);
+}
+        "#,
+        expect![[r#"
+            crate
+        "#]],
+    );
 }

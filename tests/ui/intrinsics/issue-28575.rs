@@ -1,10 +1,8 @@
-// revisions: mir thir
-// [thir]compile-flags: -Z thir-unsafeck
-
 #![feature(intrinsics)]
 
 extern "C" {
     pub static FOO: extern "rust-intrinsic" fn();
+    //~^ ERROR invalid ABI
 }
 
 fn main() {

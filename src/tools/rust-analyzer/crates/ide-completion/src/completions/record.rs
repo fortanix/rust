@@ -1,11 +1,14 @@
 //! Complete fields in record literals and patterns.
 use ide_db::SymbolKind;
-use syntax::ast::{self, Expr};
+use syntax::{
+    SmolStr,
+    ast::{self, Expr},
+};
 
 use crate::{
-    context::{DotAccess, DotAccessKind, PatternContext},
     CompletionContext, CompletionItem, CompletionItemKind, CompletionRelevance,
     CompletionRelevancePostfixMatch, Completions,
+    context::{DotAccess, DotAccessExprCtx, DotAccessKind, PatternContext},
 };
 
 pub(crate) fn complete_record_pattern_fields(
@@ -25,7 +28,11 @@ pub(crate) fn complete_record_pattern_fields(
                     record_pat.record_pat_field_list().and_then(|fl| fl.fields().next()).is_some();
 
                 match were_fields_specified {
-                    false => un.fields(ctx.db).into_iter().map(|f| (f, f.ty(ctx.db))).collect(),
+                    false => un
+                        .fields(ctx.db)
+                        .into_iter()
+                        .map(|f| (f, f.ty(ctx.db).to_type(ctx.db)))
+                        .collect(),
                     true => return,
                 }
             }
@@ -53,7 +60,11 @@ pub(crate) fn complete_record_expr_fields(
                 record_expr.record_expr_field_list().and_then(|fl| fl.fields().next()).is_some();
 
             match were_fields_specified {
-                false => un.fields(ctx.db).into_iter().map(|f| (f, f.ty(ctx.db))).collect(),
+                false => un
+                    .fields(ctx.db)
+                    .into_iter()
+                    .map(|f| (f, f.ty(ctx.db).to_type(ctx.db)))
+                    .collect(),
                 true => return,
             }
         }
@@ -66,10 +77,14 @@ pub(crate) fn complete_record_expr_fields(
             }
             if dot_prefix {
                 cov_mark::hit!(functional_update_one_dot);
-                let mut item =
-                    CompletionItem::new(CompletionItemKind::Snippet, ctx.source_range(), "..");
+                let mut item = CompletionItem::new(
+                    CompletionItemKind::Snippet,
+                    ctx.source_range(),
+                    SmolStr::new_static(".."),
+                    ctx.edition,
+                );
                 item.insert_text(".");
-                item.add_to(acc);
+                item.add_to(acc, ctx.db);
                 return;
             }
             missing_fields
@@ -81,39 +96,49 @@ pub(crate) fn complete_record_expr_fields(
 pub(crate) fn add_default_update(
     acc: &mut Completions,
     ctx: &CompletionContext<'_>,
-    ty: Option<hir::TypeInfo>,
+    ty: Option<hir::TypeInfo<'_>>,
 ) {
     let default_trait = ctx.famous_defs().core_default_Default();
     let impls_default_trait = default_trait
         .zip(ty.as_ref())
-        .map_or(false, |(default_trait, ty)| ty.original.impls_trait(ctx.db, default_trait, &[]));
+        .is_some_and(|(default_trait, ty)| ty.original.impls_trait(ctx.db, default_trait, &[]));
     if impls_default_trait {
         // FIXME: This should make use of scope_def like completions so we get all the other goodies
         // that is we should handle this like actually completing the default function
         let completion_text = "..Default::default()";
-        let mut item = CompletionItem::new(SymbolKind::Field, ctx.source_range(), completion_text);
+        let mut item = CompletionItem::new(
+            SymbolKind::Field,
+            ctx.source_range(),
+            SmolStr::new_static(completion_text),
+            ctx.edition,
+        );
         let completion_text =
             completion_text.strip_prefix(ctx.token.text()).unwrap_or(completion_text);
         item.insert_text(completion_text).set_relevance(CompletionRelevance {
             postfix_match: Some(CompletionRelevancePostfixMatch::Exact),
             ..Default::default()
         });
-        item.add_to(acc);
+        item.add_to(acc, ctx.db);
     }
 }
 
 fn complete_fields(
     acc: &mut Completions,
     ctx: &CompletionContext<'_>,
-    missing_fields: Vec<(hir::Field, hir::Type)>,
+    missing_fields: Vec<(hir::Field, hir::Type<'_>)>,
 ) {
     for (field, ty) in missing_fields {
+        // This should call something else, we shouldn't be synthesizing a DotAccess here
         acc.add_field(
             ctx,
             &DotAccess {
                 receiver: None,
                 receiver_ty: None,
                 kind: DotAccessKind::Field { receiver_is_ambiguous_float_literal: false },
+                ctx: DotAccessExprCtx {
+                    in_block_expr: false,
+                    in_breakable: crate::context::BreakableKind::None,
+                },
             },
             None,
             field,
@@ -127,8 +152,8 @@ mod tests {
     use ide_db::SnippetCap;
 
     use crate::{
-        tests::{check_edit, check_edit_with_config, TEST_CONFIG},
         CompletionConfig,
+        tests::{TEST_CONFIG, check_edit, check_edit_with_config},
     };
 
     #[test]
@@ -426,6 +451,31 @@ fn foo() {
         foo: 5,
         ..Default::default()
     };
+}
+"#,
+        );
+    }
+
+    #[test]
+    fn callable_field_struct_init() {
+        check_edit(
+            "field",
+            r#"
+struct S {
+    field: fn(),
+}
+
+fn main() {
+    S {fi$0
+}
+"#,
+            r#"
+struct S {
+    field: fn(),
+}
+
+fn main() {
+    S {field
 }
 "#,
         );

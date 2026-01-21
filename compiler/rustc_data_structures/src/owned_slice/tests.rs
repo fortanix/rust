@@ -1,15 +1,9 @@
-use std::{
-    ops::Deref,
-    sync::{
-        atomic::{self, AtomicBool},
-        Arc,
-    },
-};
+use std::ops::Deref;
+use std::sync::Arc;
+use std::sync::atomic::{self, AtomicBool};
 
-use crate::{
-    owned_slice::{slice_owned, try_slice_owned, OwnedSlice},
-    OnDrop,
-};
+use crate::defer;
+use crate::owned_slice::{OwnedSlice, slice_owned, try_slice_owned};
 
 #[test]
 fn smoke() {
@@ -26,11 +20,21 @@ fn static_storage() {
 }
 
 #[test]
-fn slice_the_slice() {
+fn slice_owned_the_slice() {
     let slice = slice_owned(vec![1, 2, 3, 4, 5, 6], Vec::as_slice);
     let slice = slice_owned(slice, |s| &s[1..][..4]);
     let slice = slice_owned(slice, |s| s);
     let slice = slice_owned(slice, |s| &s[1..]);
+
+    assert_eq!(&*slice, &[1, 2, 3, 4, 5, 6][1..][..4][1..]);
+}
+
+#[test]
+fn slice_the_slice() {
+    let slice = slice_owned(vec![1, 2, 3, 4, 5, 6], Vec::as_slice)
+        .slice(|s| &s[1..][..4])
+        .slice(|s| s)
+        .slice(|s| &s[1..]);
 
     assert_eq!(&*slice, &[1, 2, 3, 4, 5, 6][1..][..4][1..]);
 }
@@ -56,7 +60,7 @@ fn boxed() {
 fn drop_drops() {
     let flag = Arc::new(AtomicBool::new(false));
     let flag_prime = Arc::clone(&flag);
-    let d = OnDrop(move || flag_prime.store(true, atomic::Ordering::Relaxed));
+    let d = defer(move || flag_prime.store(true, atomic::Ordering::Relaxed));
 
     let slice = slice_owned(d, |_| &[]);
 
@@ -69,6 +73,6 @@ fn drop_drops() {
 
 #[test]
 fn send_sync() {
-    crate::sync::assert_send::<OwnedSlice>();
-    crate::sync::assert_sync::<OwnedSlice>();
+    crate::sync::assert_dyn_send::<OwnedSlice>();
+    crate::sync::assert_dyn_sync::<OwnedSlice>();
 }

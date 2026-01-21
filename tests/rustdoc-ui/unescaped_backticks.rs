@@ -1,6 +1,7 @@
 #![deny(rustdoc::unescaped_backticks)]
 #![allow(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::invalid_html_tags)]
+#![allow(rustdoc::redundant_explicit_links)]
 
 ///
 pub fn empty() {}
@@ -189,7 +190,7 @@ pub fn complicated_markdown() {}
 pub mod mir {}
 
 pub mod rustc {
-    /// Constructs a `TyKind::Error` type and registers a `delay_span_bug` with the given `msg to
+    /// Constructs a `TyKind::Error` type and registers a `span_delayed_bug` with the given `msg to
     //~^ ERROR unescaped backtick
     /// ensure it gets used.
     pub fn ty_error_with_message() {}
@@ -217,7 +218,7 @@ pub mod rustc {
     pub fn with_options() {}
 
     /// Subtracts `set from `row`. `set` can be either `BitSet` or
-    /// `HybridBitSet`. Has no effect if `row` does not exist.
+    /// `ChunkedBitSet`. Has no effect if `row` does not exist.
     //~^ ERROR unescaped backtick
     ///
     /// Returns true if the row was changed.
@@ -339,4 +340,16 @@ id! {
     /// [`rebuild_interest_cache`][rebuild] is called after the value of the max
     /// level changes.
     pub mod tracing_macro {}
+}
+
+/// Regression test for <https://github.com/rust-lang/rust/issues/111117>
+pub mod trillium_server_common {
+    /// One-indexed, because the first CloneCounter is included. If you don't
+    /// want the original to count, construct a [``CloneCounterObserver`]
+    /// instead and use [`CloneCounterObserver::counter`] to increment.
+    //~^ ERROR unescaped backtick
+    pub struct CloneCounter;
+
+    /// This is used by the above.
+    pub struct CloneCounterObserver;
 }

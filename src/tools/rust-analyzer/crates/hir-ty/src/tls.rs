@@ -2,13 +2,15 @@
 use std::fmt::{self, Display};
 
 use itertools::Itertools;
+use span::Edition;
 
 use crate::{
-    chalk_db, db::HirDatabase, from_assoc_type_id, from_chalk_trait_id, mapping::from_chalk,
-    CallableDefId, Interner, ProjectionTyExt,
+    CallableDefId, Interner, ProjectionTyExt, chalk_db, db::HirDatabase, from_assoc_type_id,
+    from_chalk_trait_id, mapping::from_chalk,
 };
 use hir_def::{AdtId, ItemContainerId, Lookup, TypeAliasId};
 
+#[allow(unused)]
 pub(crate) use unsafe_tls::{set_current_program, with_current_program};
 
 pub(crate) struct DebugContext<'a>(&'a dyn HirDatabase);
@@ -20,11 +22,12 @@ impl DebugContext<'_> {
         f: &mut fmt::Formatter<'_>,
     ) -> Result<(), fmt::Error> {
         let name = match id.0 {
-            AdtId::StructId(it) => self.0.struct_data(it).name.clone(),
-            AdtId::UnionId(it) => self.0.union_data(it).name.clone(),
-            AdtId::EnumId(it) => self.0.enum_data(it).name.clone(),
+            AdtId::StructId(it) => self.0.struct_signature(it).name.clone(),
+            AdtId::UnionId(it) => self.0.union_signature(it).name.clone(),
+            AdtId::EnumId(it) => self.0.enum_signature(it).name.clone(),
         };
-        name.fmt(f)
+        name.display(self.0, Edition::LATEST).fmt(f)?;
+        Ok(())
     }
 
     pub(crate) fn debug_trait_id(
@@ -33,8 +36,9 @@ impl DebugContext<'_> {
         f: &mut fmt::Formatter<'_>,
     ) -> Result<(), fmt::Error> {
         let trait_: hir_def::TraitId = from_chalk_trait_id(id);
-        let trait_data = self.0.trait_data(trait_);
-        trait_data.name.fmt(f)
+        let trait_data = self.0.trait_signature(trait_);
+        trait_data.name.display(self.0, Edition::LATEST).fmt(f)?;
+        Ok(())
     }
 
     pub(crate) fn debug_assoc_type_id(
@@ -43,13 +47,19 @@ impl DebugContext<'_> {
         fmt: &mut fmt::Formatter<'_>,
     ) -> Result<(), fmt::Error> {
         let type_alias: TypeAliasId = from_assoc_type_id(id);
-        let type_alias_data = self.0.type_alias_data(type_alias);
-        let trait_ = match type_alias.lookup(self.0.upcast()).container {
+        let type_alias_data = self.0.type_alias_signature(type_alias);
+        let trait_ = match type_alias.lookup(self.0).container {
             ItemContainerId::TraitId(t) => t,
             _ => panic!("associated type not in trait"),
         };
-        let trait_data = self.0.trait_data(trait_);
-        write!(fmt, "{}::{}", trait_data.name, type_alias_data.name)
+        let trait_data = self.0.trait_signature(trait_);
+        write!(
+            fmt,
+            "{}::{}",
+            trait_data.name.display(self.0, Edition::LATEST),
+            type_alias_data.name.display(self.0, Edition::LATEST)
+        )?;
+        Ok(())
     }
 
     pub(crate) fn debug_projection_ty(
@@ -58,16 +68,16 @@ impl DebugContext<'_> {
         fmt: &mut fmt::Formatter<'_>,
     ) -> Result<(), fmt::Error> {
         let type_alias = from_assoc_type_id(projection_ty.associated_ty_id);
-        let type_alias_data = self.0.type_alias_data(type_alias);
-        let trait_ = match type_alias.lookup(self.0.upcast()).container {
+        let type_alias_data = self.0.type_alias_signature(type_alias);
+        let trait_ = match type_alias.lookup(self.0).container {
             ItemContainerId::TraitId(t) => t,
             _ => panic!("associated type not in trait"),
         };
-        let trait_name = &self.0.trait_data(trait_).name;
+        let trait_name = &self.0.trait_signature(trait_).name;
         let trait_ref = projection_ty.trait_ref(self.0);
         let trait_params = trait_ref.substitution.as_slice(Interner);
         let self_ty = trait_ref.self_type_parameter(Interner);
-        write!(fmt, "<{self_ty:?} as {trait_name}")?;
+        write!(fmt, "<{self_ty:?} as {}", trait_name.display(self.0, Edition::LATEST))?;
         if trait_params.len() > 1 {
             write!(
                 fmt,
@@ -75,10 +85,9 @@ impl DebugContext<'_> {
                 trait_params[1..].iter().format_with(", ", |x, f| f(&format_args!("{x:?}"))),
             )?;
         }
-        write!(fmt, ">::{}", type_alias_data.name)?;
+        write!(fmt, ">::{}", type_alias_data.name.display(self.0, Edition::LATEST))?;
 
-        let proj_params_count = projection_ty.substitution.len(Interner) - trait_params.len();
-        let proj_params = &projection_ty.substitution.as_slice(Interner)[..proj_params_count];
+        let proj_params = &projection_ty.substitution.as_slice(Interner)[trait_params.len()..];
         if !proj_params.is_empty() {
             write!(
                 fmt,
@@ -97,17 +106,19 @@ impl DebugContext<'_> {
     ) -> Result<(), fmt::Error> {
         let def: CallableDefId = from_chalk(self.0, fn_def_id);
         let name = match def {
-            CallableDefId::FunctionId(ff) => self.0.function_data(ff).name.clone(),
-            CallableDefId::StructId(s) => self.0.struct_data(s).name.clone(),
+            CallableDefId::FunctionId(ff) => self.0.function_signature(ff).name.clone(),
+            CallableDefId::StructId(s) => self.0.struct_signature(s).name.clone(),
             CallableDefId::EnumVariantId(e) => {
-                let enum_data = self.0.enum_data(e.parent);
-                enum_data.variants[e.local_id].name.clone()
+                let loc = e.lookup(self.0);
+                loc.parent.enum_variants(self.0).variants[loc.index as usize].1.clone()
             }
         };
         match def {
-            CallableDefId::FunctionId(_) => write!(fmt, "{{fn {name}}}"),
+            CallableDefId::FunctionId(_) => {
+                write!(fmt, "{{fn {}}}", name.display(self.0, Edition::LATEST))
+            }
             CallableDefId::StructId(_) | CallableDefId::EnumVariantId(_) => {
-                write!(fmt, "{{ctor {name}}}")
+                write!(fmt, "{{ctor {}}}", name.display(self.0, Edition::LATEST))
             }
         }
     }
@@ -123,13 +134,10 @@ mod unsafe_tls {
     pub(crate) fn with_current_program<R>(
         op: impl for<'a> FnOnce(Option<&'a DebugContext<'a>>) -> R,
     ) -> R {
-        if PROGRAM.is_set() {
-            PROGRAM.with(|prog| op(Some(prog)))
-        } else {
-            op(None)
-        }
+        if PROGRAM.is_set() { PROGRAM.with(|prog| op(Some(prog))) } else { op(None) }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn set_current_program<OP, R>(p: &dyn HirDatabase, op: OP) -> R
     where
         OP: FnOnce() -> R,

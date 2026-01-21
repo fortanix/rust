@@ -1,8 +1,13 @@
-use crate::stable_hasher::{HashStable, StableHasher, StableOrd};
 use std::borrow::Borrow;
+use std::cmp::Ordering;
 use std::fmt::Debug;
+use std::iter::TrustedLen;
 use std::mem;
 use std::ops::{Bound, Index, IndexMut, RangeBounds};
+
+use rustc_macros::{Decodable_NoContext, Encodable_NoContext};
+
+use crate::stable_hasher::{HashStable, StableHasher, StableOrd};
 
 mod index_map;
 
@@ -16,7 +21,7 @@ pub use index_map::SortedIndexMultiMap;
 /// stores data in a more compact way. It also supports accessing contiguous
 /// ranges of elements as a slice, and slices of already sorted elements can be
 /// inserted efficiently.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Encodable, Decodable)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Encodable_NoContext, Decodable_NoContext)]
 pub struct SortedMap<K, V> {
     data: Vec<(K, V)>,
 }
@@ -49,12 +54,11 @@ impl<K: Ord, V> SortedMap<K, V> {
     }
 
     #[inline]
-    pub fn insert(&mut self, key: K, mut value: V) -> Option<V> {
+    pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         match self.lookup_index_for(&key) {
             Ok(index) => {
                 let slot = unsafe { self.data.get_unchecked_mut(index) };
-                mem::swap(&mut slot.1, &mut value);
-                Some(value)
+                Some(mem::replace(&mut slot.1, value))
             }
             Err(index) => {
                 self.data.insert(index, (key, value));
@@ -125,13 +129,13 @@ impl<K: Ord, V> SortedMap<K, V> {
 
     /// Iterate over the keys, sorted
     #[inline]
-    pub fn keys(&self) -> impl Iterator<Item = &K> + ExactSizeIterator + DoubleEndedIterator {
+    pub fn keys(&self) -> impl ExactSizeIterator<Item = &K> + DoubleEndedIterator {
         self.data.iter().map(|(k, _)| k)
     }
 
     /// Iterate over values, sorted by key
     #[inline]
-    pub fn values(&self) -> impl Iterator<Item = &V> + ExactSizeIterator + DoubleEndedIterator {
+    pub fn values(&self) -> impl ExactSizeIterator<Item = &V> + DoubleEndedIterator {
         self.data.iter().map(|(_, v)| v)
     }
 
@@ -152,6 +156,38 @@ impl<K: Ord, V> SortedMap<K, V> {
     {
         let (start, end) = self.range_slice_indices(range);
         &self.data[start..end]
+    }
+
+    /// `sm.range_is_empty(r)` == `sm.range(r).is_empty()`, but is faster.
+    #[inline]
+    pub fn range_is_empty<R>(&self, range: R) -> bool
+    where
+        R: RangeBounds<K>,
+    {
+        // `range` must (via `range_slice_indices`) search for the start and
+        // end separately. But here we can do a single binary search for the
+        // entire range. If a single `x` matching `range` is found then the
+        // range is *not* empty.
+        self.data
+            .binary_search_by(|(x, _)| {
+                // Is `x` below `range`?
+                match range.start_bound() {
+                    Bound::Included(start) if x < start => return Ordering::Less,
+                    Bound::Excluded(start) if x <= start => return Ordering::Less,
+                    _ => {}
+                };
+
+                // Is `x` above `range`?
+                match range.end_bound() {
+                    Bound::Included(end) if x > end => return Ordering::Greater,
+                    Bound::Excluded(end) if x >= end => return Ordering::Greater,
+                    _ => {}
+                };
+
+                // `x` must be within `range`.
+                Ordering::Equal
+            })
+            .is_err()
     }
 
     #[inline]
@@ -180,36 +216,40 @@ impl<K: Ord, V> SortedMap<K, V> {
     /// It is up to the caller to make sure that the elements are sorted by key
     /// and that there are no duplicates.
     #[inline]
-    pub fn insert_presorted(&mut self, elements: Vec<(K, V)>) {
-        if elements.is_empty() {
+    pub fn insert_presorted(
+        &mut self,
+        // We require `TrustedLen` to ensure that the `splice` below is actually efficient.
+        mut elements: impl Iterator<Item = (K, V)> + DoubleEndedIterator + TrustedLen,
+    ) {
+        let Some(first) = elements.next() else {
             return;
-        }
+        };
 
-        debug_assert!(elements.array_windows().all(|[fst, snd]| fst.0 < snd.0));
-
-        let start_index = self.lookup_index_for(&elements[0].0);
+        let start_index = self.lookup_index_for(&first.0);
 
         let elements = match start_index {
             Ok(index) => {
-                let mut elements = elements.into_iter();
-                self.data[index] = elements.next().unwrap();
-                elements
+                self.data[index] = first; // overwrite first element
+                elements.chain(None) // insert the rest below
             }
             Err(index) => {
-                if index == self.data.len() || elements.last().unwrap().0 < self.data[index].0 {
+                let last = elements.next_back();
+                if index == self.data.len()
+                    || last.as_ref().is_none_or(|l| l.0 < self.data[index].0)
+                {
                     // We can copy the whole range without having to mix with
                     // existing elements.
-                    self.data.splice(index..index, elements.into_iter());
+                    self.data
+                        .splice(index..index, std::iter::once(first).chain(elements).chain(last));
                     return;
                 }
 
-                let mut elements = elements.into_iter();
-                self.data.insert(index, elements.next().unwrap());
-                elements
+                self.data.insert(index, first);
+                elements.chain(last) // insert the rest below
             }
         };
 
-        // Insert the rest
+        // Insert the rest. This is super inefficicent since each insertion copies the entire tail.
         for (k, v) in elements {
             self.insert(k, v);
         }

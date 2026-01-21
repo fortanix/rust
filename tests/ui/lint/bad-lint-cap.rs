@@ -1,4 +1,5 @@
-// compile-flags: --cap-lints test
-// error-pattern: unknown lint level: `test`
+//@ compile-flags: --cap-lints test
 
 fn main() {}
+
+//~? ERROR unknown lint level: `test`

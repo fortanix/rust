@@ -1,5 +1,6 @@
-// run-pass
-// aux-build:attr-args.rs
+//@ run-pass
+//@ proc-macro: attr-args.rs
+//@ ignore-backends: gcc
 
 #![allow(warnings)]
 

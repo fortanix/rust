@@ -1,11 +1,15 @@
-//@run-rustfix
 #![warn(clippy::single_component_path_imports)]
 #![allow(unused_imports)]
 
 use core;
+
 use regex;
+//~^ single_component_path_imports
+
 use serde as edres;
+
 pub use serde;
+
 use std;
 
 macro_rules! m {
@@ -27,6 +31,7 @@ fn main() {
 
 mod hello_mod {
     use regex;
+    //~^ single_component_path_imports
     #[allow(dead_code)]
     fn hello_mod() {}
 }

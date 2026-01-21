@@ -1,7 +1,7 @@
 #![warn(unused)]
 #![deny(warnings)]
 
-struct Inv<'a>(&'a mut &'a ());
+struct Inv<'a>(#[allow(dead_code)] &'a mut &'a ());
 
 trait Trait<'a> {}
 impl<'b> Trait<'b> for for<'a> fn(Inv<'a>) {}
@@ -14,7 +14,7 @@ where
 trait Hello<T> {}
 fn with_dyn_bound<T>()
 where
-    (dyn Hello<(for<'b> fn(&'b ()))>): Hello<T> //~ ERROR unnecessary parentheses around type
+    dyn Hello<(for<'b> fn(&'b ()))>: Hello<T> //~ ERROR unnecessary parentheses around type
 {}
 
 fn main() {

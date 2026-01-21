@@ -6,7 +6,7 @@
 // parameter `x` -- since `'b` cannot be expressed in the caller's
 // space, that got promoted th `'static`.
 //
-// check-pass
+//@ check-pass
 
 use std::cell::{RefCell, Ref};
 
@@ -22,7 +22,7 @@ struct Scratchpad<'a> {
 }
 
 impl<'a> Scratchpad<'a> {
-    fn get<T: GenericVec<T>>(&self) -> Ref<[T]>
+    fn get<T: GenericVec<T>>(&self) -> Ref<'_, [T]>
     where T: 'a
     {
         Ref::map(self.buffers.borrow(), |x| T::unwrap(x.as_ref()))

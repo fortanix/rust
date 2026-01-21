@@ -1,5 +1,6 @@
-// run-pass
-// pretty-expanded FIXME #23616
+//@ run-pass
+
+#![allow(dropping_copy_types)]
 
 struct A { a: isize, b: Box<isize> }
 

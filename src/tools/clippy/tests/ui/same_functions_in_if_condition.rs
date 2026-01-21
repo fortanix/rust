@@ -3,12 +3,9 @@
 // ifs_same_cond warning is different from `ifs_same_cond`.
 // clippy::if_same_then_else, clippy::comparison_chain -- all empty blocks
 #![allow(incomplete_features)]
-#![allow(
-    clippy::comparison_chain,
-    clippy::if_same_then_else,
-    clippy::ifs_same_cond,
-    clippy::uninlined_format_args
-)]
+#![allow(clippy::if_same_then_else, clippy::ifs_same_cond, clippy::uninlined_format_args)]
+
+use std::marker::ConstParamTy;
 
 fn function() -> bool {
     true
@@ -34,33 +31,33 @@ fn ifs_same_cond_fn() {
     let obj = Struct;
 
     if function() {
+        //~^ same_functions_in_if_condition
     } else if function() {
-        //~ ERROR ifs same condition
     }
 
     if fn_arg(a) {
+        //~^ same_functions_in_if_condition
     } else if fn_arg(a) {
-        //~ ERROR ifs same condition
     }
 
     if obj.method() {
+        //~^ same_functions_in_if_condition
     } else if obj.method() {
-        //~ ERROR ifs same condition
     }
 
     if obj.method_arg(a) {
+        //~^ same_functions_in_if_condition
     } else if obj.method_arg(a) {
-        //~ ERROR ifs same condition
     }
 
     let mut v = vec![1];
     if v.pop().is_none() {
-        //~ ERROR ifs same condition
+        //~^ same_functions_in_if_condition
     } else if v.pop().is_none() {
     }
 
     if v.len() == 42 {
-        //~ ERROR ifs same condition
+        //~^ same_functions_in_if_condition
     } else if v.len() == 42 {
     }
 
@@ -96,7 +93,7 @@ fn main() {
     };
     println!("{}", os);
 
-    #[derive(PartialEq, Eq)]
+    #[derive(PartialEq, Eq, ConstParamTy)]
     enum E {
         A,
         B,

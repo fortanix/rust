@@ -1,7 +1,8 @@
-// run-pass
+//@ run-pass
 
 #![allow(unused_variables)]
-// aux-build:lifetimes-rpass.rs
+//@ proc-macro: lifetimes-rpass.rs
+//@ ignore-backends: gcc
 
 extern crate lifetimes_rpass as lifetimes;
 use lifetimes::*;

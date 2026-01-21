@@ -31,8 +31,8 @@ Supported values can also be discovered by running `rustc --print code-models`.
 
 ## codegen-units
 
-This flag controls how many code generation units the crate is split into. It
-takes an integer greater than 0.
+This flag controls the maximum number of code generation units the crate is
+split into. It takes an integer greater than 0.
 
 When a crate is split into multiple codegen units, LLVM is able to process
 them in parallel. Increasing parallelism may speed up compile times, but may
@@ -41,6 +41,18 @@ generated code, but may be slower to compile.
 
 The default value, if not specified, is 16 for non-incremental builds. For
 incremental builds the default is 256 which allows caching to be more granular.
+
+## collapse-macro-debuginfo
+
+This flag controls whether code locations from a macro definition are collapsed into a single
+location associated with that macro's call site, when generating debuginfo for this crate.
+
+This option, if passed, overrides both default collapsing behavior and `#[collapse_debuginfo]`
+attributes in code.
+
+* `y`, `yes`, `on`, `true`: collapse code locations in debuginfo.
+* `n`, `no`, `off` or `false`: do not collapse code locations in debuginfo.
+* `external`: collapse code locations in debuginfo only if the macro comes from a different crate.
 
 ## control-flow-guard
 
@@ -98,6 +110,19 @@ It takes a path to [the dlltool executable](https://sourceware.org/binutils/docs
 If this flag is not specified, a dlltool executable will be inferred based on
 the host environment and target.
 
+## dwarf-version
+
+This option controls the version of DWARF that the compiler emits, on platforms
+that use DWARF to encode debug information. It takes one of the following
+values:
+
+* `2`: DWARF version 2 (the default on certain platforms, like Android).
+* `3`: DWARF version 3 (the default on certain platforms, like AIX).
+* `4`: DWARF version 4 (the default on most platforms, like Linux & macOS).
+* `5`: DWARF version 5.
+
+DWARF version 1 is not supported.
+
 ## embed-bitcode
 
 This flag controls whether or not the compiler embeds LLVM bitcode into object
@@ -107,17 +132,14 @@ files. It takes one of the following values:
 * `n`, `no`, `off` or `false`: omit bitcode from rlibs.
 
 LLVM bitcode is required when rustc is performing link-time optimization (LTO).
-It is also required on some targets like iOS ones where vendors look for LLVM
-bitcode. Embedded bitcode will appear in rustc-generated object files inside of
-a section whose name is defined by the target platform. Most of the time this is
-`.llvmbc`.
+Embedded bitcode will appear in rustc-generated object files inside of a section
+whose name is defined by the target platform. Most of the time this is `.llvmbc`.
 
 The use of `-C embed-bitcode=no` can significantly improve compile times and
 reduce generated file sizes if your compilation does not actually need bitcode
-(e.g. if you're not compiling for iOS or you're not performing LTO). For these
-reasons, Cargo uses `-C embed-bitcode=no` whenever possible. Likewise, if you
-are building directly with `rustc` we recommend using `-C embed-bitcode=no`
-whenever you are not using LTO.
+(e.g. if you're not performing LTO). For these reasons, Cargo uses `-C embed-bitcode=no`
+whenever possible. Likewise, if you are building directly with `rustc` we recommend
+using `-C embed-bitcode=no` whenever you are not using LTO.
 
 If combined with `-C lto`, `-C embed-bitcode=no` will cause `rustc` to abort
 at start-up, because the combination is invalid.
@@ -170,22 +192,13 @@ to save information after compiling a crate to be reused when recompiling the
 crate, improving re-compile times. This takes a path to a directory where
 incremental files will be stored.
 
+Using incremental compilation inhibits certain optimizations (for example by increasing the amount of codegen units) and is therefore not recommended for release builds.
+
 ## inline-threshold
 
-This option lets you set the default threshold for inlining a function. It
-takes an unsigned integer as a value. Inlining is based on a cost model, where
-a higher threshold will allow more inlining.
+This option is deprecated and does nothing.
 
-The default depends on the [opt-level](#opt-level):
-
-| opt-level | Threshold |
-|-----------|-----------|
-| 0         | N/A, only inlines always-inline functions |
-| 1         | N/A, only inlines always-inline functions and LLVM lifetime intrinsics |
-| 2         | 225 |
-| 3         | 275 |
-| s         | 75 |
-| z         | 25 |
+Consider using `-Cllvm-args=--inline-threshold=...`.
 
 ## instrument-coverage
 
@@ -202,6 +215,8 @@ This flag lets you append a single extra argument to the linker invocation.
 
 "Append" is significant; you can pass this flag multiple times to add multiple arguments.
 
+On Unix-like targets that use `cc` as the linker driver, use `-Clink-arg=-Wl,$ARG` to pass an argument to the actual linker.
+
 ## link-args
 
 This flag lets you append multiple extra arguments to the linker invocation. The
@@ -209,26 +224,44 @@ options should be separated by spaces.
 
 ## link-dead-code
 
-This flag controls whether the linker will keep dead code. It takes one of
-the following values:
+Tries to generate and link dead code that would otherwise not be generated or
+linked. It takes one of the following values:
 
-* `y`, `yes`, `on`, `true` or no value: keep dead code.
+* `y`, `yes`, `on`, `true` or no value: try to keep dead code.
 * `n`, `no`, `off` or `false`: remove dead code (the default).
 
-An example of when this flag might be useful is when trying to construct code coverage
-metrics.
+This flag was historically used to help improve some older forms of code
+coverage measurement. Its use is not recommended.
 
 ## link-self-contained
 
-On `windows-gnu`, `linux-musl`, and `wasi` targets, this flag controls whether the
-linker will use libraries and objects shipped with Rust instead or those in the system.
-It takes one of the following values:
+This flag controls whether the linker will use libraries and objects shipped with Rust instead of
+those in the system.  It also controls which binary is used for the linker itself. This allows
+overriding cases when detection fails or the user wants to use shipped libraries.
+
+You can enable or disable the usage of any self-contained components using one of the following values:
 
 * no value: rustc will use heuristic to disable self-contained mode if system has necessary tools.
 * `y`, `yes`, `on`, `true`: use only libraries/objects shipped with Rust.
 * `n`, `no`, `off` or `false`: rely on the user or the linker to provide non-Rust libraries/objects.
 
-This allows overriding cases when detection fails or user wants to use shipped libraries.
+It is also possible to enable or disable specific self-contained components in a more granular way.
+You can pass a comma-separated list of self-contained components, individually enabled
+(`+component`) or disabled (`-component`).
+
+Currently, only the `linker` granular option is stabilized, and only on the `x86_64-unknown-linux-gnu` target:
+- `linker`: toggle the usage of self-contained linker binaries (linker, dlltool, and their necessary libraries)
+
+Note that only the `-linker` opt-out is stable on the `x86_64-unknown-linux-gnu` target: `+linker` is
+already the default on this target.
+
+#### Implementation notes
+
+On the `x86_64-unknown-linux-gnu` target, when using the default linker flavor (using `cc` as the
+linker driver) and linker features (to try using `lld`), `rustc` will try to use the self-contained
+linker by passing a `-B /path/to/sysroot/` link argument to the driver to find `rust-lld` in the
+sysroot. For backwards-compatibility, and to limit name and `PATH` collisions, this is done using a
+shim executable (the `lld-wrapper` tool) that forwards execution to the `rust-lld` executable itself.
 
 ## linker
 
@@ -236,6 +269,43 @@ This flag controls which linker `rustc` invokes to link your code. It takes a
 path to the linker executable. If this flag is not specified, the linker will
 be inferred based on the target. See also the [linker-flavor](#linker-flavor)
 flag for another way to specify the linker.
+
+Note that on Unix-like targets (for example, `*-unknown-linux-gnu` or `*-unknown-freebsd`)
+the C compiler (for example `cc` or `clang`) is used as the "linker" here, serving as a linker driver.
+It will invoke the actual linker with all the necessary flags to be able to link against the system libraries like libc.
+
+## linker-features
+
+The `-Clinker-features` flag allows enabling or disabling specific features used during linking.
+
+These feature flags are a flexible extension mechanism that is complementary to linker flavors,
+designed to avoid the combinatorial explosion of having to create a new set of flavors for each
+linker feature we'd want to use.
+
+The flag accepts a comma-separated list of features, individually enabled (`+feature`) or disabled
+(`-feature`).
+
+Currently only one is stable, and only on the `x86_64-unknown-linux-gnu` target:
+- `lld`: to toggle trying to use the lld linker, either the system-installed binary, or the self-contained
+  `rust-lld` linker (via the [`-Clink-self-contained=+linker`](#link-self-contained) flag).
+
+For example, use:
+- `-Clinker-features=+lld` to opt into using the `lld` linker, when possible (see the Implementation notes below)
+- `-Clinker-features=-lld` to opt out instead, for targets where it is configured as the default linker
+
+Note that only the `-lld` opt-out is stable on the `x86_64-unknown-linux-gnu` target: `+lld` is
+already the default on this target.
+
+#### Implementation notes
+
+On the `x86_64-unknown-linux-gnu` target, when using the default linker flavor (using `cc` as the
+linker driver), `rustc` will try to use lld by passing a `-fuse-ld=lld` link argument to the driver.
+`rustc` will also try to detect if that _causes_ an error during linking (for example, if GCC is too
+old to understand the flag, and returns an error) and will then retry linking without this argument,
+as a fallback.
+
+If the user _also_ passes a `-Clink-arg=-fuse-ld=$value`, both will be given to the linker
+driver but the user's will be passed last, and would generally have priority over `rustc`'s.
 
 ## linker-flavor
 
@@ -249,11 +319,6 @@ flavor. Valid options are:
 * `gcc`: use the `cc` executable, which is typically gcc or clang on many systems.
 * `ld`: use the `ld` executable.
 * `msvc`: use the `link.exe` executable from Microsoft Visual Studio MSVC.
-* `ptx-linker`: use
-  [`rust-ptx-linker`](https://github.com/denzp/rust-ptx-linker) for Nvidia
-  NVPTX GPGPU support.
-* `bpf-linker`: use
-  [`bpf-linker`](https://github.com/alessandrod/bpf-linker) for eBPF support.
 * `wasm-ld`: use the [`wasm-ld`](https://lld.llvm.org/WebAssembly.html)
   executable, a port of LLVM `lld` for WebAssembly.
 * `ld64.lld`: use the LLVM `lld` executable with the [`-flavor darwin`
@@ -263,7 +328,7 @@ flavor. Valid options are:
 * `lld-link`: use the LLVM `lld` executable with the [`-flavor link`
   flag][lld-flavor] for Microsoft's `link.exe`.
 
-[lld-flavor]: https://lld.llvm.org/Driver.html
+[lld-flavor]: https://releases.llvm.org/12.0.0/tools/lld/docs/Driver.html
 
 ## linker-plugin-lto
 
@@ -295,6 +360,12 @@ The list must be separated by spaces.
 
 Pass `--help` to see a list of options.
 
+<div class="warning">
+
+Because this flag directly talks to LLVM, it is not subject to the usual stability guarantees of rustc's CLI interface.
+
+</div>
+
 ## lto
 
 This flag controls whether LLVM uses [link time
@@ -304,11 +375,12 @@ linking time. It takes one of the following values:
 
 * `y`, `yes`, `on`, `true`, `fat`, or no value: perform "fat" LTO which attempts to
   perform optimizations across all crates within the dependency graph.
-* `n`, `no`, `off`, `false`: disables LTO.
 * `thin`: perform ["thin"
   LTO](http://blog.llvm.org/2016/06/thinlto-scalable-and-incremental-lto.html).
   This is similar to "fat", but takes substantially less time to run while
   still achieving performance gains similar to "fat".
+  For larger projects like the Rust compiler, ThinLTO can even result in better performance than fat LTO.
+* `n`, `no`, `off`, `false`: disables LTO.
 
 If `-C lto` is not specified, then the compiler will attempt to perform "thin
 local LTO" which performs "thin" LTO on the local crate only across its
@@ -336,6 +408,8 @@ between two different versions of the same crate being linked.
 
 This flag tells the pass manager to use an empty list of passes, instead of the
 usual pre-populated list of passes.
+
+When combined with `-O --emit llvm-ir`, it can be used to see the optimized LLVM IR emitted by rustc before any optimizations are applied by LLVM.
 
 ## no-redzone
 
@@ -373,9 +447,9 @@ This flag controls the optimization level.
 * `2`: some optimizations.
 * `3`: all optimizations.
 * `s`: optimize for binary size.
-* `z`: optimize for binary size, but also turn off loop vectorization.
+* `z`: optimize for binary size, but more aggressively. Often results in larger binaries than `s`
 
-Note: The [`-O` flag][option-o-optimize] is an alias for `-C opt-level=2`.
+Note: The [`-O` flag][option-o-optimize] is an alias for `-C opt-level=3`.
 
 The default is `0`.
 
@@ -397,9 +471,14 @@ If not specified, overflow checks are enabled if
 This option lets you control what happens when the code panics.
 
 * `abort`: terminate the process upon panic
+* `immediate-abort`: terminate the process upon panic, and do not call any panic hooks
 * `unwind`: unwind the stack upon panic
 
 If not specified, the default depends on the target.
+
+If any crate in the crate graph uses `abort`, the final binary (`bin`, `dylib`, `cdylib`, `staticlib`) must also use `abort`.
+If any crate in the crate graph uses `immediate-abort`, every crate in the graph must use `immediate-abort`.
+If `std` is used as a `dylib` with `unwind`, the final binary must also use `unwind`.
 
 ## passes
 
@@ -410,17 +489,26 @@ The list must be separated by spaces.
 
 See also the [`no-prepopulate-passes`](#no-prepopulate-passes) flag.
 
+<div class="warning">
+
+Because this flag directly talks to LLVM, it not subject to the usual stability guarantees of rustc's CLI interface.
+
+</div>
+
 ## prefer-dynamic
 
 By default, `rustc` prefers to statically link dependencies. This option will
 indicate that dynamic linking should be used if possible if both a static and
-dynamic versions of a library are available. There is an internal algorithm
-for determining whether or not it is possible to statically or dynamically
-link with a dependency. For example, `cdylib` crate types may only use static
-linkage. This flag takes one of the following values:
+dynamic versions of a library are available.
 
-* `y`, `yes`, `on`, `true` or no value: use dynamic linking.
-* `n`, `no`, `off` or `false`: use static linking (the default).
+There is [an internal algorithm](https://github.com/rust-lang/rust/blob/master/compiler/rustc_metadata/src/dependency_format.rs)
+for determining whether or not it is possible to statically or dynamically link
+with a dependency.
+
+This flag takes one of the following values:
+
+* `y`, `yes`, `on`, `true` or no value: prefer dynamic linking.
+* `n`, `no`, `off` or `false`: prefer static linking (the default).
 
 ## profile-generate
 
@@ -484,6 +572,26 @@ then `-C target-feature=+crt-static` "wins" over `-C relocation-model=pic`,
 and the linker is instructed (`-static`) to produce a statically linked
 but not position-independent executable.
 
+## relro-level
+
+This flag controls what level of RELRO (Relocation Read-Only) is enabled. RELRO is an exploit
+mitigation which makes the Global Offset Table (GOT) read-only.
+
+Supported values for this option are:
+
+- `off`: Dynamically linked functions are resolved lazily and the GOT is writable.
+- `partial`: Dynamically linked functions are resolved lazily and written into the Procedure
+  Linking Table (PLT) part of the GOT (`.got.plt`). The non-PLT part of the GOT (`.got`) is made
+  read-only and both are moved to prevent writing from buffer overflows.
+- `full`: Dynamically linked functions are resolved at the start of program execution and the
+  Global Offset Table (`.got`/`.got.plt`) is populated eagerly and then made read-only. The GOT is
+  also moved to prevent writing from buffer overflows. Full RELRO uses more memory and increases
+  process startup time.
+
+This flag is ignored on platforms where RELRO is not supported (targets which do not use the ELF
+binary format), such as Windows or macOS. Each rustc target has its own default for RELRO. rustc
+enables Full RELRO by default on platforms where it is supported.
+
 ## remark
 
 This flag lets you print remarks for optimization passes.
@@ -494,11 +602,29 @@ The list of passes should be separated by spaces.
 
 ## rpath
 
-This flag controls whether [`rpath`](https://en.wikipedia.org/wiki/Rpath) is
-enabled. It takes one of the following values:
+This flag controls whether rustc sets an [`rpath`](https://en.wikipedia.org/wiki/Rpath) for the binary.
+It takes one of the following values:
 
 * `y`, `yes`, `on`, `true` or no value: enable rpath.
 * `n`, `no`, `off` or `false`: disable rpath (the default).
+
+This flag only does something on Unix-like platforms (Mach-O and ELF), it is ignored on other platforms.
+
+If enabled, rustc will add output-relative (using `@load_path` on Mach-O and `$ORIGIN` on ELF respectively) rpaths to all `dylib` dependencies.
+
+For example, for the following directory structure, with `libdep.so` being a `dylib` crate compiled with `-Cprefer-dynamic`:
+
+```text
+dep
+ |- libdep.so
+a.rs
+```
+
+`rustc a.rs --extern dep=dep/libdep.so -Crpath` will, on x86-64 Linux, result in approximately the following `DT_RUNPATH`: `$ORIGIN/dep:$ORIGIN/$RELATIVE_PATH_TO_SYSROOT/lib/rustlib/x86_64-unknown-linux-gnu/lib` (where `RELATIVE_PATH_TO_SYSROOT` depends on the build directory location).
+
+This is primarily useful for local development, to ensure that all the `dylib` dependencies can be found appropriately.
+
+To set the rpath to a different value (which can be useful for distribution), `-Clink-arg` with a platform-specific linker argument can be used to set the rpath directly.
 
 ## save-temps
 
@@ -515,6 +641,8 @@ point instructions in software. It takes one of the following values:
 
 * `y`, `yes`, `on`, `true` or no value: use soft floats.
 * `n`, `no`, `off` or `false`: use hardware floats (the default).
+
+This flag only works on `*eabihf` targets and **is unsound and deprecated**.
 
 ## split-debuginfo
 
@@ -553,14 +681,23 @@ data from binaries during linking.
 
 Supported values for this option are:
 
-- `none` - debuginfo and symbols (if they exist) are copied to the produced
-  binary or separate files depending on the target (e.g. `.pdb` files in case
-  of MSVC).
+- `none` - debuginfo and symbols are not modified.
 - `debuginfo` - debuginfo sections and debuginfo symbols from the symbol table
-  section are stripped at link time and are not copied to the produced binary
-  or separate files.
+  section are stripped at link time and are not copied to the produced binary.
+  This should leave backtraces mostly-intact but may make using a debugger like
+  gdb or lldb ineffectual. Prior to 1.79, this unintentionally disabled the
+  generation of `*.pdb` files on MSVC, resulting in the absence of symbols.
 - `symbols` - same as `debuginfo`, but the rest of the symbol table section is
-  stripped as well if the linker supports it.
+  stripped as well, depending on platform support. On platforms which depend on
+  this symbol table for backtraces, profiling, and similar, this can affect
+  them so negatively as to make the trace incomprehensible. Programs which may
+  be combined with others, such as CLI pipelines and developer tooling, or even
+  anything which wants crash-reporting, should usually avoid `-Cstrip=symbols`.
+
+Note that, at any level, removing debuginfo only necessarily impacts "friendly"
+introspection. `-Cstrip` cannot be relied on as a meaningful security or
+obfuscation measure, as disassemblers and decompilers can extract considerable
+information even in the absence of symbols.
 
 ## symbol-mangling-version
 
@@ -569,20 +706,22 @@ for the purpose of generating object code and linking.
 
 Supported values for this option are:
 
-* `v0` — The "v0" mangling scheme. The specific format is not specified at
-  this time.
+* `v0` — The "v0" mangling scheme.
 
 The default, if not specified, will use a compiler-chosen default which may
 change in the future.
 
+See the [Symbol Mangling] chapter for details on symbol mangling and the mangling format.
+
 [name mangling]: https://en.wikipedia.org/wiki/Name_mangling
+[Symbol Mangling]: ../symbol-mangling/index.md
 
 ## target-cpu
 
 This instructs `rustc` to generate code specifically for a particular processor.
 
 You can run `rustc --print target-cpus` to see the valid options to pass
-and the default target CPU for the current buid target.
+and the default target CPU for the current build target.
 Each target has a default base CPU. Special values include:
 
 * `native` can be passed to use the processor of the host machine.

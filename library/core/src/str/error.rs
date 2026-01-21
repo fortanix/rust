@@ -100,7 +100,7 @@ impl Utf8Error {
     #[must_use]
     #[inline]
     pub const fn error_len(&self) -> Option<usize> {
-        // FIXME: This should become `map` again, once it's `const`
+        // FIXME(const-hack): This should become `map` again, once it's `const`
         match self.error_len {
             Some(len) => Some(len as usize),
             None => None,
@@ -124,12 +124,7 @@ impl fmt::Display for Utf8Error {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Error for Utf8Error {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        "invalid utf-8: corrupt contents"
-    }
-}
+impl Error for Utf8Error {}
 
 /// An error returned when parsing a `bool` using [`from_str`] fails
 ///
@@ -147,9 +142,4 @@ impl fmt::Display for ParseBoolError {
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
-impl Error for ParseBoolError {
-    #[allow(deprecated)]
-    fn description(&self) -> &str {
-        "failed to parse bool"
-    }
-}
+impl Error for ParseBoolError {}

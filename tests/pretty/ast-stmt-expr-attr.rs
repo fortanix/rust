@@ -1,8 +1,8 @@
-// pp-exact
+//@ pp-exact
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 fn syntax() {
     let _ = #[attr] [];
     let _ = #[attr] [0];

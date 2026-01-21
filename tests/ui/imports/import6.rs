@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(unused_imports)]
 
 use foo::zed;
@@ -10,6 +10,6 @@ mod foo {
     }
 }
 mod bar {
-    pub use foo::zed::baz;
+    pub use crate::foo::zed::baz;
 }
 pub fn main() { baz(); }

@@ -1,4 +1,6 @@
-// ignore-wasm32 compiled with panic=abort by default
+// skip-filecheck
+//@ compile-flags: -C debuginfo=full
+// EMIT_MIR_FOR_EACH_PANIC_STRATEGY
 // Check that inliner handles various forms of recursion and doesn't fall into
 // an infinite inlining cycle. The particular outcome of inlining is not
 // crucial otherwise.
@@ -29,7 +31,6 @@ impl<T: Call> Call for A<T> {
         <B<T> as Call>::call()
     }
 }
-
 
 impl<T: Call> Call for B<T> {
     #[inline]

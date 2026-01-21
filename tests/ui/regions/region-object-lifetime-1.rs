@@ -1,7 +1,7 @@
 // Various tests related to testing how region inference works
 // with respect to the object receivers.
 
-// check-pass
+//@ check-pass
 #![allow(warnings)]
 
 trait Foo {
@@ -10,7 +10,7 @@ trait Foo {
 
 // Here the receiver and return value all have the same lifetime,
 // so no error results.
-fn borrowed_receiver_same_lifetime<'a>(x: &'a Foo) -> &'a () {
+fn borrowed_receiver_same_lifetime<'a>(x: &'a dyn Foo) -> &'a () {
     x.borrowed()
 }
 

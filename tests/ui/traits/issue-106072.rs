@@ -1,5 +1,6 @@
-#[derive(Clone)] //~  trait objects must include the `dyn` keyword
-                 //~| trait objects must include the `dyn` keyword
+#[derive(Clone)]
+//~^ ERROR expected a type, found a trait
+//~| ERROR expected a type, found a trait
 struct Foo;
-trait Foo {} //~ the name `Foo` is defined multiple times
+trait Foo {} //~ ERROR the name `Foo` is defined multiple times
 fn main() {}

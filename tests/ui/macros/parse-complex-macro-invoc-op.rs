@@ -1,13 +1,13 @@
-// run-pass
+//@ run-pass
 #![allow(unused_must_use)]
 #![allow(dead_code)]
 #![allow(unused_assignments)]
 #![allow(unused_variables)]
 #![allow(stable_features)]
+#![allow(dropping_copy_types)]
 
 // Test parsing binary operators after macro invocations.
 
-// pretty-expanded FIXME #23616
 
 #![feature(macro_rules)]
 

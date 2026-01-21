@@ -1,9 +1,12 @@
-#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
-#![feature(proc_macro_diagnostic)]
-#![feature(proc_macro_span)]
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
+// tidy-alphabetical-start
+#![allow(internal_features)]
 #![allow(rustc::default_hash_types)]
+#![doc(html_root_url = "https://doc.rust-lang.org/nightly/nightly-rustc/")]
+#![doc(rust_logo)]
+#![feature(proc_macro_diagnostic)]
+#![feature(rustdoc_internals)]
+#![feature(track_path)]
+// tidy-alphabetical-end
 
 use proc_macro::TokenStream;
 
@@ -34,10 +37,10 @@ mod fluent;
 ///
 /// mod fluent_generated {
 ///     mod typeck {
-///         pub const field_multiply_specified_in_initializer: DiagnosticMessage =
-///             DiagnosticMessage::fluent("typeck_field_multiply_specified_in_initializer");
-///         pub const field_multiply_specified_in_initializer_label_previous_use: DiagnosticMessage =
-///             DiagnosticMessage::fluent_attr(
+///         pub const field_multiply_specified_in_initializer: DiagMessage =
+///             DiagMessage::fluent("typeck_field_multiply_specified_in_initializer");
+///         pub const field_multiply_specified_in_initializer_label_previous_use: DiagMessage =
+///             DiagMessage::fluent_attr(
 ///                 "typeck_field_multiply_specified_in_initializer",
 ///                 "previous_use_label"
 ///             );
@@ -58,6 +61,10 @@ mod fluent;
 /// );
 /// err.emit();
 /// ```
+///
+/// Note: any crate using this macro must also have a dependency on
+/// `rustc_errors`, because the generated code refers to things from that
+/// crate.
 #[proc_macro]
 pub fn fluent_messages(input: TokenStream) -> TokenStream {
     fluent::fluent_messages(input)

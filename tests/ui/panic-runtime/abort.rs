@@ -1,13 +1,11 @@
-// run-pass
-#![allow(unused_variables)]
-// compile-flags:-C panic=abort
-// no-prefer-dynamic
-// ignore-emscripten no processes
-// ignore-sgx no processes
-// ignore-macos
+//@ run-pass
+//@ compile-flags:-C panic=abort
+//@ no-prefer-dynamic
+//@ needs-subprocess
+//@ ignore-backends: gcc
 
-use std::process::Command;
 use std::env;
+use std::process::Command;
 
 struct Bomb;
 
@@ -19,11 +17,10 @@ impl Drop for Bomb {
 
 fn main() {
     let mut args = env::args_os();
-    let me = args.next().unwrap();
+    let _ = args.next().unwrap();
 
     if let Some(s) = args.next() {
         if &*s == "foo" {
-
             let _bomb = Bomb;
 
             panic!("try to catch me");

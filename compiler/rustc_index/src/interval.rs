@@ -1,7 +1,6 @@
 use std::iter::Step;
 use std::marker::PhantomData;
-use std::ops::RangeBounds;
-use std::ops::{Bound, Range};
+use std::ops::{Bound, Range, RangeBounds};
 
 use smallvec::SmallVec;
 
@@ -18,8 +17,8 @@ mod tests;
 /// first value of the following element.
 #[derive(Debug, Clone)]
 pub struct IntervalSet<I> {
-    // Start, end
-    map: SmallVec<[(u32, u32); 4]>,
+    // Start, end (both inclusive)
+    map: SmallVec<[(u32, u32); 2]>,
     domain: usize,
     _data: PhantomData<I>,
 }
@@ -52,7 +51,7 @@ impl<I: Idx> IntervalSet<I> {
         self.map.clear();
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = I> + '_
+    pub fn iter(&self) -> impl Iterator<Item = I>
     where
         I: Step,
     {
@@ -60,7 +59,7 @@ impl<I: Idx> IntervalSet<I> {
     }
 
     /// Iterates through intervals stored in the set, in order.
-    pub fn iter_intervals(&self) -> impl Iterator<Item = std::ops::Range<I>> + '_
+    pub fn iter_intervals(&self) -> impl Iterator<Item = std::ops::Range<I>>
     where
         I: Step,
     {
@@ -141,6 +140,30 @@ impl<I: Idx> IntervalSet<I> {
         result
     }
 
+    /// Specialized version of `insert` when we know that the inserted point is *after* any
+    /// contained.
+    pub fn append(&mut self, point: I) {
+        let point = point.index() as u32;
+
+        if let Some((_, last_end)) = self.map.last_mut() {
+            assert!(*last_end <= point);
+            if point == *last_end {
+                // The point is already in the set.
+            } else if point == *last_end + 1 {
+                *last_end = point;
+            } else {
+                self.map.push((point, point));
+            }
+        } else {
+            self.map.push((point, point));
+        }
+
+        debug_assert!(
+            self.check_invariants(),
+            "wrong intervals after append {point:?} to {self:?}"
+        );
+    }
+
     pub fn contains(&self, needle: I) -> bool {
         let needle = needle.index() as u32;
         let Some(last) = self.map.partition_point(|r| r.0 <= needle).checked_sub(1) else {
@@ -177,8 +200,58 @@ impl<I: Idx> IntervalSet<I> {
         })
     }
 
+    pub fn disjoint(&self, other: &IntervalSet<I>) -> bool
+    where
+        I: Step,
+    {
+        let helper = move || {
+            let mut self_iter = self.iter_intervals();
+            let mut other_iter = other.iter_intervals();
+
+            let mut self_current = self_iter.next()?;
+            let mut other_current = other_iter.next()?;
+
+            loop {
+                if self_current.end <= other_current.start {
+                    self_current = self_iter.next()?;
+                    continue;
+                }
+                if other_current.end <= self_current.start {
+                    other_current = other_iter.next()?;
+                    continue;
+                }
+                return Some(false);
+            }
+        };
+        helper().unwrap_or(true)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.map.is_empty()
+    }
+
+    /// Equivalent to `range.iter().find(|i| !self.contains(i))`.
+    pub fn first_unset_in(&self, range: impl RangeBounds<I> + Clone) -> Option<I> {
+        let start = inclusive_start(range.clone());
+        let Some(end) = inclusive_end(self.domain, range) else {
+            // empty range
+            return None;
+        };
+        if start > end {
+            return None;
+        }
+        let Some(last) = self.map.partition_point(|r| r.0 <= start).checked_sub(1) else {
+            // All ranges in the map start after the new range's end
+            return Some(I::new(start as usize));
+        };
+        let (_, prev_end) = self.map[last];
+        if start > prev_end {
+            Some(I::new(start as usize))
+        } else if prev_end < end {
+            Some(I::new(prev_end as usize + 1))
+        } else {
+            None
+        }
     }
 
     /// Returns the maximum (last) element present in the set from `range`.
@@ -212,6 +285,12 @@ impl<I: Idx> IntervalSet<I> {
         I: Step,
     {
         assert_eq!(self.domain, other.domain);
+        if self.map.len() < other.map.len() {
+            let backup = self.clone();
+            self.map.clone_from(&other.map);
+            return self.union(&backup);
+        }
+
         let mut did_insert = false;
         for range in other.iter_intervals() {
             did_insert |= self.insert_range(range);
@@ -224,12 +303,12 @@ impl<I: Idx> IntervalSet<I> {
     fn check_invariants(&self) -> bool {
         let mut current: Option<u32> = None;
         for (start, end) in &self.map {
-            if start > end || current.map_or(false, |x| x + 1 >= *start) {
+            if start > end || current.is_some_and(|x| x + 1 >= *start) {
                 return false;
             }
             current = Some(*end);
         }
-        current.map_or(true, |x| x < self.domain as u32)
+        current.is_none_or(|x| x < self.domain as u32)
     }
 }
 
@@ -296,7 +375,11 @@ impl<R: Idx, C: Step + Idx> SparseIntervalMatrix<R, C> {
         self.ensure_row(row).insert(point)
     }
 
+    pub fn append(&mut self, row: R, point: C) {
+        self.ensure_row(row).append(point)
+    }
+
     pub fn contains(&self, row: R, point: C) -> bool {
-        self.row(row).map_or(false, |r| r.contains(point))
+        self.row(row).is_some_and(|r| r.contains(point))
     }
 }

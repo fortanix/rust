@@ -1,6 +1,4 @@
 //~ NOTE: not an `extern crate` item
-//~^ NOTE: not a free function, impl method or static
-//~^^ NOTE: not a function or closure
 // This is testing whether various builtin attributes signals an
 // error or warning when put in "weird" places.
 //
@@ -10,50 +8,48 @@
 
 
 #![macro_export]
-//~^ ERROR: `macro_export` attribute cannot be used at crate level
-#![rustc_main] //~ ERROR: the `#[rustc_main]` attribute is used internally to specify
+//~^ ERROR:  `#[macro_export]` attribute cannot be used on crates
+#![rustc_main]
 //~^ ERROR: `rustc_main` attribute cannot be used at crate level
-#![start]
-//~^ ERROR: `start` attribute cannot be used at crate level
+//~| ERROR: use of an internal attribute [E0658]
+//~| NOTE: the `#[rustc_main]` attribute is an internal implementation detail that will never be stable
+//~| NOTE: the `#[rustc_main]` attribute is used internally to specify test entry point function
 #![repr()]
 //~^ ERROR: `repr` attribute cannot be used at crate level
 #![path = "3800"]
-//~^ ERROR: `path` attribute cannot be used at crate level
+//~^ ERROR: attribute cannot be used on
 #![automatically_derived]
-//~^ ERROR: `automatically_derived` attribute cannot be used at crate level
+//~^ ERROR: attribute cannot be used on
 #![no_mangle]
 #![no_link]
 //~^ ERROR: attribute should be applied to an `extern crate` item
 #![export_name = "2200"]
-//~^ ERROR: attribute should be applied to a free function, impl method or static
+//~^ ERROR: attribute cannot be used on
 #![inline]
-//~^ ERROR: attribute should be applied to function or closure
+//~^ ERROR: attribute cannot be used on
 #[inline]
-//~^ ERROR attribute should be applied to function or closure
+//~^ ERROR attribute cannot be used on
 mod inline {
-    //~^ NOTE not a function or closure
+    //~^ NOTE the inner attribute doesn't annotate this module
+    //~| NOTE the inner attribute doesn't annotate this module
 
     mod inner { #![inline] }
-    //~^ ERROR attribute should be applied to function or closure
-    //~| NOTE not a function or closure
+    //~^ ERROR attribute cannot be used on
 
     #[inline = "2100"] fn f() { }
-    //~^ ERROR attribute must be of the form
+    //~^ ERROR valid forms for the attribute are
     //~| WARN this was previously accepted
-    //~| NOTE #[deny(ill_formed_attribute_input)]` on by default
+    //~| NOTE `#[deny(ill_formed_attribute_input)]` (part of `#[deny(future_incompatible)]`) on by default
     //~| NOTE for more information, see issue #57571 <https://github.com/rust-lang/rust/issues/57571>
 
     #[inline] struct S;
-    //~^ ERROR attribute should be applied to function or closure
-    //~| NOTE not a function or closure
+    //~^ ERROR attribute cannot be used on
 
     #[inline] type T = S;
-    //~^ ERROR attribute should be applied to function or closure
-    //~| NOTE not a function or closure
+    //~^ ERROR attribute cannot be used on
 
     #[inline] impl S { }
-    //~^ ERROR attribute should be applied to function or closure
-    //~| NOTE not a function or closure
+    //~^ ERROR attribute cannot be used on
 }
 
 #[no_link]
@@ -83,55 +79,28 @@ mod no_link {
 }
 
 #[export_name = "2200"]
-//~^ ERROR attribute should be applied to a free function, impl method or static
+//~^ ERROR attribute cannot be used on
 mod export_name {
-    //~^ NOTE not a free function, impl method or static
-
     mod inner { #![export_name="2200"] }
-    //~^ ERROR attribute should be applied to a free function, impl method or static
-    //~| NOTE not a free function, impl method or static
+    //~^ ERROR attribute cannot be used on
 
     #[export_name = "2200"] fn f() { }
 
     #[export_name = "2200"] struct S;
-    //~^ ERROR attribute should be applied to a free function, impl method or static
-    //~| NOTE not a free function, impl method or static
+    //~^ ERROR attribute cannot be used on
 
     #[export_name = "2200"] type T = S;
-    //~^ ERROR attribute should be applied to a free function, impl method or static
-    //~| NOTE not a free function, impl method or static
+    //~^ ERROR attribute cannot be used on
 
     #[export_name = "2200"] impl S { }
-    //~^ ERROR attribute should be applied to a free function, impl method or static
-    //~| NOTE not a free function, impl method or static
+    //~^ ERROR attribute cannot be used on
 
     trait Tr {
         #[export_name = "2200"] fn foo();
-        //~^ ERROR attribute should be applied to a free function, impl method or static
-        //~| NOTE not a free function, impl method or static
+        //~^ ERROR attribute cannot be used on
 
         #[export_name = "2200"] fn bar() {}
-        //~^ ERROR attribute should be applied to a free function, impl method or static
-        //~| NOTE not a free function, impl method or static
     }
-}
-
-#[start]
-//~^ ERROR: `start` attribute can only be used on functions
-mod start {
-    mod inner { #![start] }
-    //~^ ERROR: `start` attribute can only be used on functions
-
-    // for `fn f()` case, see feature-gate-start.rs
-
-    #[start] struct S;
-    //~^ ERROR: `start` attribute can only be used on functions
-
-    #[start] type T = S;
-    //~^ ERROR: `start` attribute can only be used on functions
-
-    #[start] impl S { }
-    //~^ ERROR: `start` attribute can only be used on functions
 }
 
 #[repr(C)]
@@ -153,6 +122,30 @@ mod repr {
     //~| NOTE not a struct, enum, or union
 
     #[repr(C)] impl S { }
+    //~^ ERROR: attribute should be applied to a struct, enum, or union
+    //~| NOTE not a struct, enum, or union
+}
+
+
+#[repr(Rust)]
+//~^ ERROR: attribute should be applied to a struct, enum, or union
+mod repr_rust {
+//~^ NOTE not a struct, enum, or union
+    mod inner { #![repr(Rust)] }
+    //~^ ERROR: attribute should be applied to a struct, enum, or union
+    //~| NOTE not a struct, enum, or union
+
+    #[repr(Rust)] fn f() { }
+    //~^ ERROR: attribute should be applied to a struct, enum, or union
+    //~| NOTE not a struct, enum, or union
+
+    struct S;
+
+    #[repr(Rust)] type T = S;
+    //~^ ERROR: attribute should be applied to a struct, enum, or union
+    //~| NOTE not a struct, enum, or union
+
+    #[repr(Rust)] impl S { }
     //~^ ERROR: attribute should be applied to a struct, enum, or union
     //~| NOTE not a struct, enum, or union
 }

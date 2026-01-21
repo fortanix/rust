@@ -1,6 +1,6 @@
-// edition:2018
+//@ edition:2018
 #![crate_type = "lib"]
-#![feature(type_ascription)]
+#![feature(type_ascription, const_index, const_trait_impl)]
 use std::future::Future;
 use std::pin::Pin;
 

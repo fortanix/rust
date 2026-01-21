@@ -1,6 +1,6 @@
-// check-pass
-// compile-flags: -Z validate-mir
-#![feature(let_chains)]
+//@ check-pass
+//@ compile-flags: -Z lint-mir -Z validate-mir
+//@ edition: 2024
 
 fn let_chains(entry: std::io::Result<std::fs::DirEntry>) {
     if let Ok(entry) = entry

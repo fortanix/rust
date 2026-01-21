@@ -2,11 +2,14 @@
 
 **Tier: 3**
 
-This tier supports the ARMv7 processor running a Linux kernel and uClibc-ng standard library.  It provides full support for rust and the rust standard library.
+This tier supports the Armv7-A processor running a Linux kernel and uClibc-ng standard library.  It provides full support for rust and the rust standard library.
 
-## Designated Developers
+See [`arm-linux`](arm-linux.md) for information applicable to all Arm Linux
+targets.
 
-* [@skrap](https://github.com/skrap)
+## Target Maintainers
+
+[@skrap](https://github.com/skrap)
 
 ## Requirements
 
@@ -22,7 +25,7 @@ If you don't already have a suitable toolchain, download one [here](https://tool
 
 ### Configure rust
 
-The target can be built by enabling it for a `rustc` build, by placing the following in `config.toml`:
+The target can be built by enabling it for a `rustc` build, by placing the following in `bootstrap.toml`:
 
 ```toml
 [build]

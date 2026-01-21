@@ -9,7 +9,7 @@
 
 fn main() {}
 
-#[cfg(FALSE)]
+#[cfg(false)]
 fn syntax() {
     match scrutinee {
         ...X => {} //~ ERROR range-to patterns with `...` are not allowed
@@ -23,6 +23,7 @@ fn syntax2() {
     macro_rules! mac {
         ($e:expr) => {
             let ...$e; //~ ERROR range-to patterns with `...` are not allowed
+            //~^ ERROR refutable pattern in local binding
         }
     }
 

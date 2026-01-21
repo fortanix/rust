@@ -3,7 +3,7 @@
 use ide_db::SymbolKind;
 use syntax::ast;
 
-use crate::{context::CompletionContext, item::CompletionItem, Completions};
+use crate::{Completions, context::CompletionContext, item::CompletionItem};
 
 pub(super) fn complete_repr(
     acc: &mut Completions,
@@ -30,14 +30,19 @@ pub(super) fn complete_repr(
                 continue;
             }
 
-            let mut item = CompletionItem::new(SymbolKind::BuiltinAttr, ctx.source_range(), label);
+            let mut item = CompletionItem::new(
+                SymbolKind::BuiltinAttr,
+                ctx.source_range(),
+                label,
+                ctx.edition,
+            );
             if let Some(lookup) = lookup {
                 item.lookup_by(lookup);
             }
             if let Some((snippet, cap)) = snippet.zip(ctx.config.snippet_cap) {
                 item.insert_snippet(cap, snippet);
             }
-            item.add_to(acc);
+            item.add_to(acc, ctx.db);
         }
     }
 }

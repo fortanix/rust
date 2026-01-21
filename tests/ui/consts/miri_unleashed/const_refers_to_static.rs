@@ -1,33 +1,42 @@
-// compile-flags: -Zunleash-the-miri-inside-of-you
-// stderr-per-bitwidth
+//@ compile-flags: -Zunleash-the-miri-inside-of-you
+//@ normalize-stderr: "(the raw bytes of the constant) \(size: [0-9]*, align: [0-9]*\)" -> "$1 (size: $$SIZE, align: $$ALIGN)"
+//@ normalize-stderr: "([0-9a-f][0-9a-f] |╾─*ALLOC[0-9]+(\+[a-z0-9]+)?(<imm>)?─*╼ )+ *│.*" -> "HEX_DUMP"
+//@ dont-require-annotations: NOTE
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
 const MUTATE_INTERIOR_MUT: usize = {
     static FOO: AtomicUsize = AtomicUsize::new(0);
-    FOO.fetch_add(1, Ordering::Relaxed) //~ERROR evaluation of constant value failed
+    FOO.fetch_add(1, Ordering::Relaxed) //~ERROR calling non-const function `AtomicUsize::fetch_add`
 };
 
 const READ_INTERIOR_MUT: usize = {
     static FOO: AtomicUsize = AtomicUsize::new(0);
-    unsafe { *(&FOO as *const _ as *const usize) } //~ERROR evaluation of constant value failed
+    unsafe { *(&FOO as *const _ as *const usize) } //~ERROR constant accesses mutable global memory
 };
 
 static mut MUTABLE: u32 = 0;
-const READ_MUT: u32 = unsafe { MUTABLE }; //~ERROR evaluation of constant value failed
+const READ_MUT: u32 = unsafe { MUTABLE }; //~ERROR constant accesses mutable global memory
 
-const REF_INTERIOR_MUT: &usize = { //~ ERROR undefined behavior to use this value
-//~| encountered a reference pointing to a static variable
+// Evaluating this does not read anything mutable, but validation does, so this should error.
+const REF_INTERIOR_MUT: &usize = {
     static FOO: AtomicUsize = AtomicUsize::new(0);
     unsafe { &*(&FOO as *const _ as *const usize) }
 };
 
-// ok some day perhaps
-const READ_IMMUT: &usize = { //~ ERROR it is undefined behavior to use this value
-//~| encountered a reference pointing to a static variable
-    static FOO: usize = 0;
-    &FOO
-};
+// Not actually reading from anything mutable, so these are fine.
+static MY_STATIC: u8 = 4;
+const REF_IMMUT: &u8 = &MY_STATIC;
+const READ_IMMUT: u8 = *REF_IMMUT;
+
+fn foo() {
+    match &0 {
+        REF_INTERIOR_MUT => {}, //~ ERROR cannot be used as pattern
+        _ => {},
+    }
+}
 
 fn main() {}
+
+//~? WARN skipping const checks

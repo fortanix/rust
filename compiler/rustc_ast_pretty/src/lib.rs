@@ -1,9 +1,10 @@
-#![deny(rustc::untranslatable_diagnostic)]
-#![deny(rustc::diagnostic_outside_of_impl)]
-#![feature(associated_type_bounds)]
+// tidy-alphabetical-start
+#![allow(internal_features)]
+#![doc(rust_logo)]
 #![feature(box_patterns)]
-#![feature(with_negative_coherence)]
-#![recursion_limit = "256"]
+#![feature(negative_impls)]
+#![feature(rustdoc_internals)]
+// tidy-alphabetical-end
 
 mod helpers;
 pub mod pp;

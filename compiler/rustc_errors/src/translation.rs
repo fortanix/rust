@@ -1,20 +1,21 @@
-use crate::error::{TranslateError, TranslateErrorKind};
-use crate::snippet::Style;
-use crate::{DiagnosticArg, DiagnosticMessage, FluentBundle};
-use rustc_data_structures::sync::Lrc;
-use rustc_error_messages::FluentArgs;
 use std::borrow::Cow;
 use std::env;
 use std::error::Report;
+use std::sync::Arc;
+
+pub use rustc_error_messages::{FluentArgs, LazyFallbackBundle};
+use tracing::{debug, trace};
+
+use crate::error::{TranslateError, TranslateErrorKind};
+use crate::snippet::Style;
+use crate::{DiagArg, DiagMessage, FluentBundle};
 
 /// Convert diagnostic arguments (a rustc internal type that exists to implement
 /// `Encodable`/`Decodable`) into `FluentArgs` which is necessary to perform translation.
 ///
 /// Typically performed once for each diagnostic at the start of `emit_diagnostic` and then
 /// passed around as a reference thereafter.
-pub fn to_fluent_args<'iter, 'arg: 'iter>(
-    iter: impl Iterator<Item = DiagnosticArg<'iter, 'arg>>,
-) -> FluentArgs<'arg> {
+pub fn to_fluent_args<'iter>(iter: impl Iterator<Item = DiagArg<'iter>>) -> FluentArgs<'static> {
     let mut args = if let Some(size) = iter.size_hint().1 {
         FluentArgs::with_capacity(size)
     } else {
@@ -28,21 +29,35 @@ pub fn to_fluent_args<'iter, 'arg: 'iter>(
     args
 }
 
-pub trait Translate {
-    /// Return `FluentBundle` with localized diagnostics for the locale requested by the user. If no
-    /// language was requested by the user then this will be `None` and `fallback_fluent_bundle`
-    /// should be used.
-    fn fluent_bundle(&self) -> Option<&Lrc<FluentBundle>>;
-
+#[derive(Clone)]
+pub struct Translator {
+    /// Localized diagnostics for the locale requested by the user. If no language was requested by
+    /// the user then this will be `None` and `fallback_fluent_bundle` should be used.
+    pub fluent_bundle: Option<Arc<FluentBundle>>,
     /// Return `FluentBundle` with localized diagnostics for the default locale of the compiler.
     /// Used when the user has not requested a specific language or when a localized diagnostic is
     /// unavailable for the requested locale.
-    fn fallback_fluent_bundle(&self) -> &FluentBundle;
+    pub fallback_fluent_bundle: LazyFallbackBundle,
+}
 
-    /// Convert `DiagnosticMessage`s to a string, performing translation if necessary.
-    fn translate_messages(
+impl Translator {
+    pub fn with_fallback_bundle(
+        resources: Vec<&'static str>,
+        with_directionality_markers: bool,
+    ) -> Translator {
+        Translator {
+            fluent_bundle: None,
+            fallback_fluent_bundle: crate::fallback_fluent_bundle(
+                resources,
+                with_directionality_markers,
+            ),
+        }
+    }
+
+    /// Convert `DiagMessage`s to a string, performing translation if necessary.
+    pub fn translate_messages(
         &self,
-        messages: &[(DiagnosticMessage, Style)],
+        messages: &[(DiagMessage, Style)],
         args: &FluentArgs<'_>,
     ) -> Cow<'_, str> {
         Cow::Owned(
@@ -53,18 +68,18 @@ pub trait Translate {
         )
     }
 
-    /// Convert a `DiagnosticMessage` to a string, performing translation if necessary.
-    fn translate_message<'a>(
+    /// Convert a `DiagMessage` to a string, performing translation if necessary.
+    pub fn translate_message<'a>(
         &'a self,
-        message: &'a DiagnosticMessage,
+        message: &'a DiagMessage,
         args: &'a FluentArgs<'_>,
-    ) -> Result<Cow<'_, str>, TranslateError<'_>> {
+    ) -> Result<Cow<'a, str>, TranslateError<'a>> {
         trace!(?message, ?args);
         let (identifier, attr) = match message {
-            DiagnosticMessage::Str(msg) | DiagnosticMessage::Eager(msg) => {
+            DiagMessage::Str(msg) | DiagMessage::Translated(msg) => {
                 return Ok(Cow::Borrowed(msg));
             }
-            DiagnosticMessage::FluentIdentifier(identifier, attr) => (identifier, attr),
+            DiagMessage::FluentIdentifier(identifier, attr) => (identifier, attr),
         };
         let translate_with_bundle =
             |bundle: &'a FluentBundle| -> Result<Cow<'_, str>, TranslateError<'_>> {
@@ -91,7 +106,7 @@ pub trait Translate {
             };
 
         try {
-            match self.fluent_bundle().map(|b| translate_with_bundle(b)) {
+            match self.fluent_bundle.as_ref().map(|b| translate_with_bundle(b)) {
                 // The primary bundle was present and translation succeeded
                 Some(Ok(t)) => t,
 
@@ -102,7 +117,7 @@ pub trait Translate {
                     primary @ TranslateError::One {
                         kind: TranslateErrorKind::MessageMissing, ..
                     },
-                )) => translate_with_bundle(self.fallback_fluent_bundle())
+                )) => translate_with_bundle(&self.fallback_fluent_bundle)
                     .map_err(|fallback| primary.and(fallback))?,
 
                 // Always yeet out for errors on debug (unless
@@ -118,11 +133,11 @@ pub trait Translate {
 
                 // ..otherwise, for end users, an error about this wouldn't be useful or actionable, so
                 // just hide it and try with the fallback bundle.
-                Some(Err(primary)) => translate_with_bundle(self.fallback_fluent_bundle())
+                Some(Err(primary)) => translate_with_bundle(&self.fallback_fluent_bundle)
                     .map_err(|fallback| primary.and(fallback))?,
 
                 // The primary bundle is missing, proceed to the fallback bundle
-                None => translate_with_bundle(self.fallback_fluent_bundle())
+                None => translate_with_bundle(&self.fallback_fluent_bundle)
                     .map_err(|fallback| TranslateError::primary(identifier, args).and(fallback))?,
             }
         }

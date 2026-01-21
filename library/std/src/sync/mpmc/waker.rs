@@ -2,10 +2,9 @@
 
 use super::context::Context;
 use super::select::{Operation, Selected};
-
 use crate::ptr;
-use crate::sync::atomic::{AtomicBool, Ordering};
 use crate::sync::Mutex;
+use crate::sync::atomic::{Atomic, AtomicBool, Ordering};
 
 /// Represents a thread blocked on a specific channel operation.
 pub(crate) struct Entry {
@@ -66,26 +65,32 @@ impl Waker {
     /// Attempts to find another thread's entry, select the operation, and wake it up.
     #[inline]
     pub(crate) fn try_select(&mut self) -> Option<Entry> {
-        self.selectors
-            .iter()
-            .position(|selector| {
-                // Does the entry belong to a different thread?
-                selector.cx.thread_id() != current_thread_id()
-                    && selector // Try selecting this operation.
-                        .cx
-                        .try_select(Selected::Operation(selector.oper))
-                        .is_ok()
-                    && {
-                        // Provide the packet.
-                        selector.cx.store_packet(selector.packet);
-                        // Wake the thread up.
-                        selector.cx.unpark();
-                        true
-                    }
-            })
-            // Remove the entry from the queue to keep it clean and improve
-            // performance.
-            .map(|pos| self.selectors.remove(pos))
+        if self.selectors.is_empty() {
+            None
+        } else {
+            let thread_id = current_thread_id();
+
+            self.selectors
+                .iter()
+                .position(|selector| {
+                    // Does the entry belong to a different thread?
+                    selector.cx.thread_id() != thread_id
+                        && selector // Try selecting this operation.
+                            .cx
+                            .try_select(Selected::Operation(selector.oper))
+                            .is_ok()
+                        && {
+                            // Provide the packet.
+                            selector.cx.store_packet(selector.packet);
+                            // Wake the thread up.
+                            selector.cx.unpark();
+                            true
+                        }
+                })
+                // Remove the entry from the queue to keep it clean and improve
+                // performance.
+                .map(|pos| self.selectors.remove(pos))
+        }
     }
 
     /// Notifies all operations waiting to be ready.
@@ -132,7 +137,7 @@ pub(crate) struct SyncWaker {
     inner: Mutex<Waker>,
 
     /// `true` if the waker is empty.
-    is_empty: AtomicBool,
+    is_empty: Atomic<bool>,
 }
 
 impl SyncWaker {
@@ -199,6 +204,6 @@ impl Drop for SyncWaker {
 pub fn current_thread_id() -> usize {
     // `u8` is not drop so this variable will be available during thread destruction,
     // whereas `thread::current()` would not be
-    thread_local! { static DUMMY: u8 = 0 }
+    thread_local! { static DUMMY: u8 = const { 0 } }
     DUMMY.with(|x| (x as *const u8).addr())
 }

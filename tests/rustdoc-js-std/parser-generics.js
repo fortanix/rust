@@ -1,22 +1,14 @@
-const QUERY = [
-    'A<B<C<D>,  E>',
-    'p<> u8',
-    '"p"<a>',
-    'p<u<x>>',
-    'p<u<x>, r>',
-    'p<u<x, r>>',
-];
-
 const PARSED = [
     {
+        query: 'A<B<C<D>,  E>',
         elems: [],
         foundElems: 0,
-        original: 'A<B<C<D>,  E>',
+        userQuery: 'A<B<C<D>,  E>',
         returned: [],
-        userQuery: 'a<b<c<d>,  e>',
         error: 'Unclosed `<`',
     },
     {
+        query: 'p<>,u8',
         elems: [
             {
                 name: "p",
@@ -24,7 +16,7 @@ const PARSED = [
                 pathWithoutLast: [],
                 pathLast: "p",
                 generics: [],
-                typeFilter: -1,
+                typeFilter: null,
             },
             {
                 name: "u8",
@@ -32,16 +24,16 @@ const PARSED = [
                 pathWithoutLast: [],
                 pathLast: "u8",
                 generics: [],
-                typeFilter: -1,
+                typeFilter: null,
             },
         ],
         foundElems: 2,
-        original: "p<> u8",
+        userQuery: "p<>,u8",
         returned: [],
-        userQuery: "p<> u8",
         error: null,
     },
     {
+        query: '"p"<a>',
         elems: [
             {
                 name: "p",
@@ -57,16 +49,16 @@ const PARSED = [
                         generics: [],
                     },
                 ],
-                typeFilter: -1,
+                typeFilter: null,
             },
         ],
         foundElems: 1,
-        original: '"p"<a>',
-        returned: [],
         userQuery: '"p"<a>',
+        returned: [],
         error: null,
     },
     {
+        query: 'p<u<x>>',
         elems: [
             {
                 name: "p",
@@ -90,16 +82,16 @@ const PARSED = [
                         ],
                     },
                 ],
-                typeFilter: -1,
+                typeFilter: null,
             },
         ],
         foundElems: 1,
-        original: 'p<u<x>>',
-        returned: [],
         userQuery: 'p<u<x>>',
+        returned: [],
         error: null,
     },
     {
+        query: 'p<u<x>, r>',
         elems: [
             {
                 name: "p",
@@ -130,16 +122,16 @@ const PARSED = [
                         generics: [],
                     },
                 ],
-                typeFilter: -1,
+                typeFilter: null,
             },
         ],
         foundElems: 1,
-        original: 'p<u<x>, r>',
-        returned: [],
         userQuery: 'p<u<x>, r>',
+        returned: [],
         error: null,
     },
     {
+        query: 'p<u<x, r>>',
         elems: [
             {
                 name: "p",
@@ -170,13 +162,12 @@ const PARSED = [
                         ],
                     },
                 ],
-                typeFilter: -1,
+                typeFilter: null,
             },
         ],
         foundElems: 1,
-        original: 'p<u<x, r>>',
-        returned: [],
         userQuery: 'p<u<x, r>>',
+        returned: [],
         error: null,
     },
 ];

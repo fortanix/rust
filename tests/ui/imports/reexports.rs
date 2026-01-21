@@ -5,9 +5,12 @@ mod a {
     mod foo {}
 
     mod a {
-        pub use super::foo; //~ ERROR cannot be re-exported
+        pub use super::foo;
+        //~^ ERROR cannot be re-exported
+        //~| WARNING unused import: `super::foo`
         pub use super::*;
-        //~^ WARNING glob import doesn't reexport anything because no candidate is public enough
+        //~^ WARNING glob import doesn't reexport anything with visibility `pub` because no imported item is public enough
+        //~| WARNING unused import: `super::*`
     }
 }
 
@@ -30,8 +33,8 @@ mod b {
 
 mod c {
     // Test that `foo` is not re-exported.
-    use b::a::foo::S; //~ ERROR `foo`
-    use b::b::foo::S as T; //~ ERROR `foo`
+    use crate::b::a::foo::S; //~ ERROR `foo`
+    use crate::b::b::foo::S as T; //~ ERROR `foo`
 }
 
 fn main() {}

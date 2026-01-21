@@ -1,5 +1,5 @@
-// run-pass
-// compile-flags: -Zunleash-the-miri-inside-of-you
+//@ run-pass
+//@ compile-flags: -Zunleash-the-miri-inside-of-you
 
 fn double(x: usize) -> usize { x * 2 }
 const fn double_const(x: usize) -> usize { x * 2 }
@@ -34,3 +34,5 @@ fn main() {
     let z = foo(double, 2);
     assert_eq!(z, 4);
 }
+
+//~? WARN skipping const checks

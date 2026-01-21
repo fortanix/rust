@@ -1,4 +1,4 @@
-// run-pass
+//@ run-pass
 #![allow(dead_code)]
 #![allow(deprecated)]
 
@@ -12,11 +12,11 @@ enum Foo {
 }
 
 // NOTE(eddyb) Don't make this a const, needs to be a static
-// so it is always instantiated as a LLVM constant value.
+// so it is always instantiated as an LLVM constant value.
 static FOO: Foo = Foo::C;
 
 fn main() {
     assert_eq!(FOO, Foo::C);
     assert_eq!(mem::size_of::<Foo>(), 12);
-    assert_eq!(mem::min_align_of::<Foo>(), 4);
+    assert_eq!(mem::align_of::<Foo>(), 4);
 }

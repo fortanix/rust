@@ -1,5 +1,5 @@
-// run-pass
-// compile-flags: -C codegen-units=3
+//@ run-pass
+//@ compile-flags: -C codegen-units=3
 
 // Test basic separate compilation functionality.  The functions should be able
 // to call each other even though they will be placed in different compilation
@@ -13,13 +13,13 @@ fn one() -> usize { 1 }
 
 mod a {
     pub fn two() -> usize {
-        ::one() + ::one()
+        crate::one() + crate::one()
     }
 }
 
 mod b {
     pub fn three() -> usize {
-        ::one() + ::a::two()
+        crate::one() + crate::a::two()
     }
 }
 
