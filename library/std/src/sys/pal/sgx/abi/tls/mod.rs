@@ -20,9 +20,20 @@ static TLS_KEY_IN_USE: SyncBitset = SYNC_BITSET_INIT;
 #[unsafe(export_name = "_ZN16__rust_internals3std3sys3pal3sgx3abi3tls14TLS_DESTRUCTORE")]
 static TLS_DESTRUCTOR: [Atomic<usize>; TLS_KEYS] = [const { AtomicUsize::new(0) }; TLS_KEYS];
 
+// Use TCS Local Storage to store various thread specific data at
+// indices definied by the TlsIndex enum below.
+#[repr(u8)]
+pub enum TlsIndex {
+    AllocPtr = 0, /* Thread specific allocator address */
+    TlsPtr = 1,   /* TLS address */
+}
+
+// Functions to access TLS data from the TCSLS. Use TlsIndex
+// enum to reference the desired field.
+// Function definition available in entry.S
 unsafe extern "C" {
-    fn get_tls_ptr() -> *const u8;
-    fn set_tls_ptr(tls: *const u8);
+    pub fn get_tls_data(index: TlsIndex) -> *const u8;
+    pub fn set_tls_data(index: TlsIndex, tls: *const u8);
 }
 
 #[derive(Copy, Clone)]
@@ -84,21 +95,20 @@ impl Tls {
     }
 
     pub unsafe fn activate(&self) -> ActiveTls<'_> {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { set_tls_ptr(self as *const Tls as _) };
+        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        unsafe { set_tls_data(TlsIndex::TlsPtr, self as *const Tls as _) };
         ActiveTls { tls: self }
     }
 
     #[allow(unused)]
     pub unsafe fn activate_persistent(self: Box<Self>) {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        let ptr = Box::into_raw(self).cast_const().cast::<u8>();
-        unsafe { set_tls_ptr(ptr) };
+        // FIXME: Needs safety information. See entry.S for `set_tls_data` definition.
+        unsafe { set_tls_data(TlsIndex::TlsPtr, core::ptr::addr_of!(*self) as _) };
     }
 
     unsafe fn current<'a>() -> &'a Tls {
-        // FIXME: Needs safety information. See entry.S for `set_tls_ptr` definition.
-        unsafe { &*(get_tls_ptr() as *const Tls) }
+        // FIXME: Needs safety information. See entry.S for `get_tls_data` definition.
+        unsafe { &*(get_tls_data(TlsIndex::TlsPtr) as *const Tls) }
     }
 
     pub fn create(dtor: Option<unsafe extern "C" fn(*mut u8)>) -> Key {

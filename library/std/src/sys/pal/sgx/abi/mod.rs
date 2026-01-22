@@ -3,6 +3,8 @@
 use core::arch::global_asm;
 use core::sync::atomic::{Atomic, AtomicUsize, Ordering};
 
+use snmalloc_edp::*;
+
 use crate::io::Write;
 
 // runtime features
@@ -42,6 +44,12 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
         // This thread just obtained the lock and other threads will observe BUSY
         Ok(_) => {
             reloc::relocate_elf_rela();
+
+            // Snmalloc global allocator initialization
+            unsafe {
+                sn_global_init(mem::heap_base(), mem::heap_size());
+            }
+
             RELOC_STATE.store(DONE, Ordering::Release);
         }
         // We need to wait until the initialization is done.
@@ -62,6 +70,13 @@ unsafe extern "C" fn tcs_init(secondary: bool) {
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64) -> EntryReturn {
+    // Initialize thread local allocator
+    let mut allocator = core::mem::MaybeUninit::<snmalloc_edp::Alloc>::uninit();
+    unsafe {
+        sn_thread_init(allocator.as_mut_ptr());
+        tls::set_tls_data(tls::TlsIndex::AllocPtr, allocator.as_mut_ptr() as *const u8);
+    }
+
     // FIXME: how to support TLS in library mode?
     let tls = Box::new(tls::Tls::new());
     let tls_guard = unsafe { tls.activate() };
@@ -70,6 +85,9 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
         let join_notifier = crate::sys::thread::Thread::entry();
         drop(tls_guard);
         drop(join_notifier);
+        drop(tls);
+
+        alloc_thread_cleanup();
 
         EntryReturn(0, 0)
     } else {
@@ -88,8 +106,21 @@ extern "C" fn entry(p1: u64, p2: u64, p3: u64, secondary: bool, p4: u64, p5: u64
             // main function, so we pass these in as the standard pointer-sized
             // values in `argc` and `argv`.
             let ret = main(p2 as _, p1 as _);
+            if ret == 0 {
+                drop(tls_guard);
+                drop(tls);
+                alloc_thread_cleanup();
+            }
             exit_with_code(ret)
         }
+    }
+}
+
+pub(super) fn alloc_thread_cleanup() {
+    unsafe {
+        let allocator = tls::get_tls_data(crate::sys::abi::tls::TlsIndex::AllocPtr) as *mut Alloc;
+        tls::set_tls_data(tls::TlsIndex::AllocPtr, core::ptr::null_mut());
+        sn_thread_cleanup(allocator);
     }
 }
 

@@ -1,8 +1,12 @@
+use insecure_time::{Freq, LearningFreqTscBuilder, NativeTime, NoRdtscTscBuilder, Tsc, TscBuilder};
+
 use crate::cmp;
 use crate::io::{
     BorrowedCursor, Error as IoError, ErrorKind, IoSlice, IoSliceMut, Result as IoResult,
 };
+use crate::ops::Add;
 use crate::random::random;
+use crate::sync::OnceLock;
 use crate::time::{Duration, Instant};
 
 pub(crate) mod alloc;
@@ -11,6 +15,7 @@ pub(crate) mod raw;
 #[cfg(test)]
 mod tests;
 
+use self::alloc::UserRef;
 use self::raw::*;
 
 /// Usercall `read`. See the ABI documentation for more information.
@@ -264,11 +269,80 @@ pub fn send(event_set: u64, tcs: Option<Tcs>) -> IoResult<()> {
     unsafe { raw::send(event_set, tcs).from_sgx_result() }
 }
 
+#[derive(Copy, Clone, Debug, PartialOrd, PartialEq)]
+struct SgxTime(u64);
+
+impl SgxTime {
+    const NANOS_PER_SEC: u32 = 1_000_000_000;
+
+    pub fn as_duration(&self) -> Duration {
+        Duration::new(
+            self.0 / Self::NANOS_PER_SEC as u64,
+            (self.0 % Self::NANOS_PER_SEC as u64) as _,
+        )
+    }
+}
+
+impl Add<Duration> for SgxTime {
+    type Output = SgxTime;
+
+    fn add(self, other: Duration) -> Self::Output {
+        let t = self.0 + other.as_secs() * Self::NANOS_PER_SEC as u64 + other.subsec_nanos() as u64;
+        SgxTime(t)
+    }
+}
+
+impl NativeTime for SgxTime {
+    fn minimum() -> SgxTime {
+        SgxTime(0)
+    }
+
+    fn abs_diff(&self, other: &Self) -> Duration {
+        Duration::from_nanos(self.0.abs_diff(other.0))
+    }
+
+    fn now() -> Self {
+        let (t, _info) = unsafe { raw::insecure_time() };
+        SgxTime(t)
+    }
+}
+
 /// Usercall `insecure_time`. See the ABI documentation for more information.
 #[unstable(feature = "sgx_platform", issue = "56975")]
 pub fn insecure_time() -> Duration {
-    let t = unsafe { raw::insecure_time().0 };
-    Duration::new(t / 1_000_000_000, (t % 1_000_000_000) as _)
+    static TSC: OnceLock<Tsc<SgxTime>> = OnceLock::new();
+
+    let tsc = TSC.get_or_init(|| {
+        let (_t, info) = unsafe { raw::insecure_time() };
+        let freq = if !info.is_null() {
+            let info = unsafe { UserRef::<InsecureTimeInfo>::from_ptr(info).to_enclave() };
+            if info.frequency != 0 {
+                Some(Freq::from_u64(info.frequency))
+            } else {
+                // Enclave runner passed in info, but the host didn't report frequency. In
+                // the current implementation of the runner, that can't happen, but we may need
+                // something like that in the future when we pass in additional info. Just being
+                // very defensive here.
+                None
+            }
+        } else {
+            // Old enclave runner that doesn't pass in information
+            None
+        };
+
+        if let Some(freq) = freq {
+            LearningFreqTscBuilder::new()
+                .set_initial_frequency(freq)
+                .set_frequency_learning_period(Duration::from_secs(120))
+                .set_max_acceptable_drift(Duration::from_millis(1))
+                .set_max_sync_interval(Duration::from_secs(60))
+                .set_monotonic_time()
+                .build()
+        } else {
+            NoRdtscTscBuilder::new().set_monotonic_time().build()
+        }
+    });
+    tsc.now().as_duration()
 }
 
 /// Usercall `alloc`. See the ABI documentation for more information.
