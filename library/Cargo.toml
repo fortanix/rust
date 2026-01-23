@@ -12,7 +12,8 @@ members = [
 exclude = [
   # stdarch has its own Cargo workspace
   "stdarch",
-  "windows_targets"
+  "windows_targets",
+  "snmalloc-edp"
 ]
 
 [profile.release.package.compiler_builtins]
@@ -67,3 +68,6 @@ libc = { git = "https://github.com/fortanix/libc.git", branch = "fortanixvme-202
 serde = { git = "https://github.com/fortanix/serde.git", branch = "master" }
 serde_cbor = { git = "https://github.com/fortanix/cbor.git", branch = "fortanixvme" }
 vsock = { git = "https://github.com/fortanix/vsock-rs.git", branch = "fortanixvme-2023-05-07-alpha" }
+
+# x86_64-fortanix-unknown-sgx related patches
+insecure-time = { git = "https://github.com/fortanix/rust-sgx.git", branch = "master" }

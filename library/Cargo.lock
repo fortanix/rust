@@ -57,6 +57,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmake"
+version = "0.1.51"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb1e43aa7fd152b1f968787f7dbcdeb306d1867ff373c69955211876c053f91a"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "compiler_builtins"
 version = "0.1.160"
 dependencies = [
@@ -89,6 +98,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "elf"
+version = "0.7.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
+
+[[package]]
 name = "fortanix-sgx-abi"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -100,7 +115,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#b984a5afc9678c0583f6690ba8e4f03f0c674189"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#e238cdf7505bc325b48b7e125a5f5db285e8609c"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
@@ -165,6 +180,15 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
+dependencies = [
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "insecure-time"
+version = "0.2.0"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#e238cdf7505bc325b48b7e125a5f5db285e8609c"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
@@ -394,6 +418,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "snmalloc-edp"
+version = "0.1.0"
+dependencies = [
+ "cc",
+ "cmake",
+ "compiler_builtins",
+ "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
 name = "std"
 version = "0.0.0"
 dependencies = [
@@ -406,6 +441,7 @@ dependencies = [
  "fortanix-vme-abi",
  "hashbrown",
  "hermit-abi",
+ "insecure-time",
  "libc 0.2.175",
  "miniz_oxide",
  "object",
@@ -418,6 +454,7 @@ dependencies = [
  "rustc-demangle",
  "serde",
  "serde_cbor",
+ "snmalloc-edp",
  "std_detect",
  "unwind",
  "vex-sdk",
