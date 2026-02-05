@@ -1,5 +1,5 @@
 use crate::spec::{
-    Cc, LinkerFlavor, Lld, SanitizerSet, StackProbeType, Target, TargetMetadata, base,
+    Cc, LinkerFlavor, Lld, SanitizerSet, StackProbeType, Target, TargetMetadata, base, cvs,
 };
 
 pub(crate) fn target() -> Target {
@@ -14,6 +14,8 @@ pub(crate) fn target() -> Target {
     base.supported_sanitizers =
         SanitizerSet::ADDRESS | SanitizerSet::LEAK | SanitizerSet::MEMORY | SanitizerSet::THREAD;
     base.crt_static_default = true;
+    base.features = "+rdrnd,+rdseed,+lvi-cfi,+lvi-load-hardening".into();
+    base.llvm_args = cvs!["--x86-experimental-lvi-inline-asm-hardening"];
 
     Target {
         llvm_target: "x86_64-unknown-linux-musl".into(),
