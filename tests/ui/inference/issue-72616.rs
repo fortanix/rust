@@ -21,6 +21,7 @@ pub fn main() {
     {
         if String::from("a") == "a".try_into().unwrap() {}
         //~^ ERROR type annotations needed
+        //~| ERROR type annotations needed
     }
     {
         let _: String = match "_".try_into() {

@@ -6,6 +6,7 @@ mod tests;
 pub use core::net::{SocketAddr, SocketAddrV4, SocketAddrV6};
 
 use crate::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use crate::sys::net::LookupHost;
 use crate::{io, iter, option, slice, vec};
 
 /// A trait for objects which can be converted or resolved to one or more
@@ -189,9 +190,15 @@ impl ToSocketAddrs for (Ipv6Addr, u16) {
     }
 }
 
-fn lookup_host(host: &str, port: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
-    let addrs = crate::sys::net::lookup_host(host, port)?;
-    Ok(Vec::from_iter(addrs).into_iter())
+fn resolve_socket_addr(lh: LookupHost) -> io::Result<vec::IntoIter<SocketAddr>> {
+    let p = lh.port();
+    let v: Vec<_> = lh
+        .map(|mut a| {
+            a.set_port(p);
+            a
+        })
+        .collect();
+    Ok(v.into_iter())
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -200,14 +207,17 @@ impl ToSocketAddrs for (&str, u16) {
     fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
         let (host, port) = *self;
 
-        // Try to parse the host as a regular IP address first
-        if let Ok(addr) = host.parse::<IpAddr>() {
-            let addr = SocketAddr::new(addr, port);
-            return Ok(vec![addr].into_iter());
+        // try to parse the host as a regular IP address first
+        if let Ok(addr) = host.parse::<Ipv4Addr>() {
+            let addr = SocketAddrV4::new(addr, port);
+            return Ok(vec![SocketAddr::V4(addr)].into_iter());
+        }
+        if let Ok(addr) = host.parse::<Ipv6Addr>() {
+            let addr = SocketAddrV6::new(addr, port, 0, 0);
+            return Ok(vec![SocketAddr::V6(addr)].into_iter());
         }
 
-        // Otherwise, make the system look it up.
-        lookup_host(host, port)
+        resolve_socket_addr((host, port).try_into()?)
     }
 }
 
@@ -224,21 +234,12 @@ impl ToSocketAddrs for (String, u16) {
 impl ToSocketAddrs for str {
     type Iter = vec::IntoIter<SocketAddr>;
     fn to_socket_addrs(&self) -> io::Result<vec::IntoIter<SocketAddr>> {
-        // Try to parse as a regular SocketAddr first
+        // try to parse as a regular SocketAddr first
         if let Ok(addr) = self.parse() {
             return Ok(vec![addr].into_iter());
         }
 
-        // Otherwise, split the string by ':' and convert the second part to u16...
-        let Some((host, port_str)) = self.rsplit_once(':') else {
-            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid socket address"));
-        };
-        let Ok(port) = port_str.parse::<u16>() else {
-            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid port value"));
-        };
-
-        // ... and make the system look up the host.
-        lookup_host(host, port)
+        resolve_socket_addr(self.try_into()?)
     }
 }
 

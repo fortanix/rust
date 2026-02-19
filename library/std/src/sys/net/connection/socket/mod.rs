@@ -307,13 +307,19 @@ fn to_ipv6mr_interface(value: u32) -> crate::ffi::c_uint {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// lookup_host
+// get_host_addresses
 ////////////////////////////////////////////////////////////////////////////////
 
 pub struct LookupHost {
     original: *mut c::addrinfo,
     cur: *mut c::addrinfo,
     port: u16,
+}
+
+impl LookupHost {
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 impl Iterator for LookupHost {
@@ -324,10 +330,7 @@ impl Iterator for LookupHost {
                 let cur = self.cur.as_ref()?;
                 self.cur = cur.ai_next;
                 match socket_addr_from_c(cur.ai_addr.cast(), cur.ai_addrlen as usize) {
-                    Ok(mut addr) => {
-                        addr.set_port(self.port);
-                        return Some(addr);
-                    }
+                    Ok(addr) => return Some(addr),
                     Err(_) => continue,
                 }
             }
@@ -344,17 +347,42 @@ impl Drop for LookupHost {
     }
 }
 
-pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
-    init();
-    run_with_cstr(host.as_bytes(), &|c_host| {
-        let mut hints: c::addrinfo = unsafe { mem::zeroed() };
-        hints.ai_socktype = c::SOCK_STREAM;
-        let mut res = ptr::null_mut();
-        unsafe {
-            cvt_gai(c::getaddrinfo(c_host.as_ptr(), ptr::null(), &hints, &mut res))
-                .map(|_| LookupHost { original: res, cur: res, port })
+impl TryFrom<&str> for LookupHost {
+    type Error = io::Error;
+
+    fn try_from(s: &str) -> io::Result<LookupHost> {
+        macro_rules! try_opt {
+            ($e:expr, $msg:expr) => {
+                match $e {
+                    Some(r) => r,
+                    None => return Err(io::const_error!(io::ErrorKind::InvalidInput, $msg)),
+                }
+            };
         }
-    })
+
+        // split the string by ':' and convert the second part to u16
+        let (host, port_str) = try_opt!(s.rsplit_once(':'), "invalid socket address");
+        let port: u16 = try_opt!(port_str.parse().ok(), "invalid port value");
+        (host, port).try_into()
+    }
+}
+
+impl<'a> TryFrom<(&'a str, u16)> for LookupHost {
+    type Error = io::Error;
+
+    fn try_from((host, port): (&'a str, u16)) -> io::Result<LookupHost> {
+        init();
+
+        run_with_cstr(host.as_bytes(), &|c_host| {
+            let mut hints: c::addrinfo = unsafe { mem::zeroed() };
+            hints.ai_socktype = c::SOCK_STREAM;
+            let mut res = ptr::null_mut();
+            unsafe {
+                cvt_gai(c::getaddrinfo(c_host.as_ptr(), ptr::null(), &hints, &mut res))
+                    .map(|_| LookupHost { original: res, cur: res, port })
+            }
+        })
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
