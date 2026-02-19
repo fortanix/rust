@@ -24,12 +24,6 @@ struct NonIpSockAddr {
     host: String,
 }
 
-impl NonIpSockAddr {
-    pub fn new(host: String) -> NonIpSockAddr {
-        NonIpSockAddr { host }
-    }
-}
-
 impl crate::error::Error for NonIpSockAddr {
     #[allow(deprecated)]
     fn description(&self) -> &str {
@@ -43,14 +37,17 @@ impl fmt::Display for NonIpSockAddr {
     }
 }
 
-pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
-    Err(io::Error::new(
-        io::ErrorKind::Uncategorized,
-        NonIpSockAddr { host: format!("{host}:{port}") },
-    ))
-}
-
 pub(crate) struct LookupHost(!);
+
+impl LookupHost {
+    fn new(host: String) -> io::Result<LookupHost> {
+        Err(io::Error::new(io::ErrorKind::Uncategorized, NonIpSockAddr { host }))
+    }
+
+    pub fn port(&self) -> u16 {
+        self.0
+    }
+}
 
 impl Iterator for LookupHost {
     type Item = SocketAddr;
@@ -66,16 +63,15 @@ impl TryFrom<&str> for LookupHost {
     type Error = io::Error;
 
     fn try_from(v: &str) -> io::Result<LookupHost> {
-        Err(io::Error::new(io::ErrorKind::Uncategorized, NonIpSockAddr::new(v.to_string())))
+        LookupHost::new(v.to_owned())
     }
 }
 
 impl<'a> TryFrom<(&'a str, u16)> for LookupHost {
     type Error = io::Error;
 
-    fn try_from(v: (&'a str, u16)) -> io::Result<LookupHost> {
-        let host = format!("{}:{}", v.0, v.1);
-        Err(io::Error::new(io::ErrorKind::Uncategorized, NonIpSockAddr::new(host)))
+    fn try_from((host, port): (&'a str, u16)) -> io::Result<LookupHost> {
+        LookupHost::new(format!("{host}:{port}"))
     }
 }
 
@@ -397,14 +393,11 @@ impl TcpStream {
     /// There is no guarantee that the `TcpStream` actually communicates with the returned `SocketAddr`.
     /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
-        println!("{}:{} peer_addr", file!(), line!());
         if let Some(ConnectionInfo::Stream { peer, .. }) =
             Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
         {
-            println!("{}:{} peer_addr", file!(), line!());
             Ok(peer.to_owned().into())
         } else {
-            println!("{}:{} peer_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
@@ -415,14 +408,11 @@ impl TcpStream {
     ///
     /// There is no guarantee that the `TcpStream` actually communicates from the `SocketAddr`.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
-        println!("{}:{} socket_addr", file!(), line!());
         if let Some(ConnectionInfo::Stream { local, .. }) =
             Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
         {
-            println!("{}:{} socket_addr", file!(), line!());
             Ok(local.to_owned().into())
         } else {
-            println!("{}:{} socket_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
@@ -519,14 +509,11 @@ impl TcpListener {
     }
 
     fn local_addr(&self) -> io::Result<Addr> {
-        println!("{}:{} local_addr", file!(), line!());
         if let Some(ConnectionInfo::Listener { local, .. }) =
             Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
         {
-            println!("{}:{} local_addr", file!(), line!());
             Ok(local.clone())
         } else {
-            println!("{}:{} local_addr", file!(), line!());
             Err(io::Error::new(ErrorKind::AddrNotAvailable, "Unexpected connection info"))
         }
     }
