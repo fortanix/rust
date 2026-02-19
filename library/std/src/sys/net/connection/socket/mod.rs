@@ -340,7 +340,8 @@ impl Drop for LookupHost {
     }
 }
 
-pub fn lookup_host(host: &str, port: u16) -> io::Result<LookupHost> {
+pub(crate) fn lookup_host(lh: crate::net::LookupHost<'_>) -> io::Result<LookupHost> {
+    let (host, port) = lh.split()?;
     init();
     run_with_cstr(host.as_bytes(), &|c_host| {
         let mut hints: c::addrinfo = unsafe { mem::zeroed() };

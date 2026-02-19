@@ -189,9 +189,39 @@ impl ToSocketAddrs for (Ipv6Addr, u16) {
     }
 }
 
-fn lookup_host(host: &str, port: u16) -> io::Result<vec::IntoIter<SocketAddr>> {
-    let addrs = crate::sys::net::lookup_host(host, port)?;
-    Ok(Vec::from_iter(addrs).into_iter())
+pub(crate) struct LookupHost<'a> {
+    pub(crate) host: &'a str,
+    pub(crate) port: Option<u16>,
+}
+
+impl<'a> LookupHost<'a> {
+    // allow(dead_code): This function is only used on some targets targets
+    #[allow(dead_code)]
+    pub(crate) fn split(&self) -> io::Result<(&'a str, u16)> {
+        match self.port {
+            Some(port) => Ok((self.host, port)),
+            None => {
+                let Some((host, port_str)) = self.host.rsplit_once(':') else {
+                    return Err(io::const_error!(
+                        io::ErrorKind::InvalidInput,
+                        "invalid socket address"
+                    ));
+                };
+                let Ok(port) = port_str.parse::<u16>() else {
+                    return Err(io::const_error!(
+                        io::ErrorKind::InvalidInput,
+                        "invalid port value"
+                    ));
+                };
+                Ok((host, port))
+            }
+        }
+    }
+
+    fn lookup(self) -> io::Result<vec::IntoIter<SocketAddr>> {
+        let addrs = crate::sys::net::lookup_host(self)?;
+        Ok(Vec::from_iter(addrs).into_iter())
+    }
 }
 
 #[stable(feature = "rust1", since = "1.0.0")]
@@ -207,7 +237,7 @@ impl ToSocketAddrs for (&str, u16) {
         }
 
         // Otherwise, make the system look it up.
-        lookup_host(host, port)
+        LookupHost { host, port: Some(port) }.lookup()
     }
 }
 
@@ -229,16 +259,8 @@ impl ToSocketAddrs for str {
             return Ok(vec![addr].into_iter());
         }
 
-        // Otherwise, split the string by ':' and convert the second part to u16...
-        let Some((host, port_str)) = self.rsplit_once(':') else {
-            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid socket address"));
-        };
-        let Ok(port) = port_str.parse::<u16>() else {
-            return Err(io::const_error!(io::ErrorKind::InvalidInput, "invalid port value"));
-        };
-
-        // ... and make the system look up the host.
-        lookup_host(host, port)
+        // Otherwise, make the system look it up.
+        LookupHost { host: self, port: None }.lookup()
     }
 }
 

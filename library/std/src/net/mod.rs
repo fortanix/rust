@@ -70,3 +70,5 @@ pub enum Shutdown {
     #[stable(feature = "rust1", since = "1.0.0")]
     Both,
 }
+
+pub(crate) use socket_addr::LookupHost;
