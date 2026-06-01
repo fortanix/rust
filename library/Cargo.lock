@@ -187,11 +187,13 @@ dependencies = [
 
 [[package]]
 name = "insecure-time"
-version = "0.2.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#e238cdf7505bc325b48b7e125a5f5db285e8609c"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "334c4528aa2a5e5ee096336fbad1430724b424f13da69152cb619ed93de09b22"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
+ "spin",
 ]
 
 [[package]]
@@ -425,6 +427,15 @@ dependencies = [
  "cmake",
  "compiler_builtins",
  "elf",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "spin"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "783f3f6f6b01e295a669edfc402133a5f2553d1f0e81284b3ba4594e80bdd4a2"
+dependencies = [
  "rustc-std-workspace-core",
 ]
 
