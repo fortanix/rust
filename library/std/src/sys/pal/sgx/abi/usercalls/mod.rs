@@ -330,12 +330,12 @@ pub fn insecure_time() -> Duration {
             None
         };
 
-        if let Some(freq) = freq {
+        // freq being None indicates that TSC doesn't have a stable frequency and is not reliable for time keeping
+        if freq.is_some() {
             LearningFreqTscBuilder::new()
-                .set_initial_frequency(freq)
-                .set_frequency_learning_period(Duration::from_secs(120))
+                .set_frequency_learning_period(Duration::from_secs(30))
                 .set_max_acceptable_drift(Duration::from_millis(1))
-                .set_max_sync_interval(Duration::from_secs(60))
+                .set_max_sync_interval(Duration::from_secs(30))
                 .set_monotonic_time()
                 .build()
         } else {
