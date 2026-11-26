@@ -252,14 +252,36 @@ impl Client {
         Ok(dup)
     }
 
+    /// Establishes a VSock connection to the enclave runner on the given port.
+    ///
+    /// Tries the conventional host CID first, followed by the local CID
+    /// for local execution and debugging. Falls back to the AWS Nitro
+    /// parent CID to support Nitro Enclaves.
+    ///
+    /// The connection order preserves compatibility with existing
+    /// non-Nitro environments.
+    ///
     fn connect(port: u32) -> Result<VsockStream<Fortanixvme>, io::Error> {
-        // Try to contact the enclave runner through the hypervisor
-        VsockStream::connect_with_cid_port(vsock::VMADDR_CID_HOST, port).or_else(|e0| {
-            // When debugging, there may not be a hypervisor. Fall back to local communication
-            // on the same host.
-            VsockStream::connect_with_cid_port(vsock::VMADDR_CID_LOCAL, port)
-                .map_err(|_e1| io::Error::new(ErrorKind::InvalidData, VsockErrorWrapper::from(e0)))
-        })
+        const AWS_NITRO_PARENT_CID: u32 = 3;
+
+        let host_error = match VsockStream::connect_with_cid_port(
+            vsock::VMADDR_CID_HOST,
+            port,
+        ) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => err,
+        };
+
+        for cid in [vsock::VMADDR_CID_LOCAL, AWS_NITRO_PARENT_CID] {
+            if let Ok(stream) = VsockStream::connect_with_cid_port(cid, port) {
+                return Ok(stream);
+            }
+        }
+
+        Err(io::Error::new(
+            ErrorKind::InvalidData,
+            VsockErrorWrapper::from(host_error),
+        ))
     }
 
     pub fn new(port: u32) -> Result<Self, io::Error> {
