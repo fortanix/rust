@@ -23,7 +23,7 @@ pub mod thread_parking;
 pub mod time;
 
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-use fortanixvme::client::Client as FortanixvmeClient;
+use enclave_runner_client::{Client};
 
 #[cfg(target_os = "espidf")]
 pub fn init(_argc: isize, _argv: *const *const u8, _sigpipe: u8) {}
@@ -232,7 +232,7 @@ pub(crate) fn on_broken_pipe_flag_used() -> bool {
 pub unsafe fn cleanup() {
     stack_overflow::cleanup();
     #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-    FortanixvmeClient::exit(0);
+    Client::exit(None, 0);
 }
 
 #[allow(unused_imports)]
@@ -375,7 +375,7 @@ pub fn cvt_nz(error: libc::c_int) -> crate::io::Result<()> {
 pub fn abort_internal() -> ! {
     cfg_if::cfg_if! {
         if #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))] {
-            FortanixvmeClient::exit(1)
+            Client::exit(None, 1)
         } else {
             unsafe { libc::abort() }
         }

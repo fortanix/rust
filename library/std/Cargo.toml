@@ -75,6 +75,11 @@ fortanix-sgx-abi = { version = "0.6.1", features = [
 insecure-time = { version = "0.3", default-features = false, features = ["rustc-dep-of-std"] }
 
 [target.x86_64-unknown-linux-fortanixvme.dependencies]
+enclave-runner-client = { version = "0.1", default-features = false, features = [
+    'rustc-dep-of-std'
+], public = true }
+# Not used directly: turns on std mode in the fortanix/serde fork,
+# patched in by library/Cargo.toml. The wrapper pulls serde in with upstream features only.
 fortanix-vme-abi = { version = "0.1", default-features = false, features = [
     'rustc-dep-of-std'
 ], public = true }

@@ -7,7 +7,7 @@ mod tests;
 
 use libc::{c_char, c_int, c_void};
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-use {super::fortanixvme::client::Client as FortanixvmeClient, fortanix_vme_abi};
+use enclave_runner_client::{Client};
 
 use crate::ffi::{CStr, OsStr, OsString};
 use crate::os::unix::prelude::*;
@@ -668,7 +668,7 @@ pub fn home_dir() -> Option<PathBuf> {
 pub fn exit(code: i32) -> ! {
     cfg_if::cfg_if! {
         if #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))] {
-            FortanixvmeClient::exit(code)
+            Client::exit(None, code)
         } else {
             crate::sys::exit_guard::unique_thread_exit();
             unsafe { libc::exit(code as c_int) }

@@ -104,6 +104,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 
 [[package]]
+name = "enclave-runner-client"
+version = "0.1.0"
+dependencies = [
+ "fortanix-vme-abi",
+ "libc 0.2.175",
+ "rustc-std-workspace-alloc",
+ "rustc-std-workspace-core",
+ "serde_cbor",
+ "vsock 0.2.4",
+]
+
+[[package]]
 name = "fortanix-sgx-abi"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -115,7 +127,6 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=master#e238cdf7505bc325b48b7e125a5f5db285e8609c"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",
@@ -448,6 +459,7 @@ dependencies = [
  "cfg-if",
  "core",
  "dlmalloc",
+ "enclave-runner-client",
  "fortanix-sgx-abi",
  "fortanix-vme-abi",
  "hashbrown",
@@ -469,7 +481,7 @@ dependencies = [
  "std_detect",
  "unwind",
  "vex-sdk",
- "vsock",
+ "vsock 0.2.4 (git+https://github.com/fortanix/vsock-rs.git?branch=gianlu33%2Frte-1352-fix-compiler-errors)",
  "wasi 0.11.1+wasi-snapshot-preview1",
  "wasi 0.14.4+wasi-0.2.4",
  "windows-targets 0.0.0",
@@ -552,7 +564,17 @@ dependencies = [
 [[package]]
 name = "vsock"
 version = "0.2.4"
-source = "git+https://github.com/fortanix/vsock-rs.git?branch=fortanixvme-2023-05-07-alpha#df72417cc649465071429824628ee758e9f8f9c1"
+dependencies = [
+ "compiler_builtins",
+ "getrandom",
+ "libc 0.2.175",
+ "rustc-std-workspace-core",
+]
+
+[[package]]
+name = "vsock"
+version = "0.2.4"
+source = "git+https://github.com/fortanix/vsock-rs.git?branch=gianlu33%2Frte-1352-fix-compiler-errors#aea29205bfbc87091c694bacbbbea9f19fe1244c"
 dependencies = [
  "compiler_builtins",
  "getrandom",
