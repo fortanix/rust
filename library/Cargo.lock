@@ -106,7 +106,7 @@ checksum = "4445909572dbd556c457c849c4ca58623d84b27c8fff1e74b0b4227d8b90d17b"
 [[package]]
 name = "enclave-runner-client"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=gianlu33%2Frte-1352-enclave-runner-client#01045d1f35f09e4c28c612731b1abec54e3f4488"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=gianlu33%2Frte-1352-enclave-runner-client#9b3ccfc0990976fd3c4169b1f964da81f85b215e"
 dependencies = [
  "fortanix-vme-abi",
  "libc 0.2.175",
@@ -128,7 +128,7 @@ dependencies = [
 [[package]]
 name = "fortanix-vme-abi"
 version = "0.1.0"
-source = "git+https://github.com/fortanix/rust-sgx.git?branch=gianlu33%2Frte-1352-enclave-runner-client#01045d1f35f09e4c28c612731b1abec54e3f4488"
+source = "git+https://github.com/fortanix/rust-sgx.git?branch=gianlu33%2Frte-1352-enclave-runner-client#9b3ccfc0990976fd3c4169b1f964da81f85b215e"
 dependencies = [
  "rustc-std-workspace-alloc",
  "rustc-std-workspace-core",

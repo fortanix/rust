@@ -1,4 +1,4 @@
-use enclave_runner_client::{ConnectionInfo, Client};
+use enclave_runner_client::{ConnectionInfo};
 
 use crate::collections::HashMap;
 use crate::io::{self};
@@ -6,6 +6,7 @@ use crate::ops::Deref;
 use crate::os::fd::raw::{AsRawFd, RawFd};
 use crate::sync::{Arc, OnceLock, RwLock};
 use crate::sys::cvt;
+use crate::sys::fortanixvme::client::RunnerClient;
 
 pub struct ConnectionGuard(ConnectionInfo);
 
@@ -19,7 +20,7 @@ impl Deref for ConnectionGuard {
 
 impl Drop for ConnectionGuard {
     fn drop(&mut self) {
-        let _ = Client::close_connection(self.enclave_port());
+        let _ = RunnerClient::close_connection(self.enclave_port());
     }
 }
 

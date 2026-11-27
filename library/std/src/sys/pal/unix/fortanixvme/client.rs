@@ -154,6 +154,10 @@ impl RunnerClient {
     pub fn local_vsock_addr(fd: i32) -> Result<VsockAddr, Error> {
         Client::local_vsock_addr(fd)
     }
+
+    pub fn close_connection(port: u32) -> Result<(), Error> {
+        Client::close_connection(None, port)
+    }
 }
 
 impl Deref for RunnerClient {
