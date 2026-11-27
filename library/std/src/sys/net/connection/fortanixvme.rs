@@ -1,7 +1,5 @@
 use core::convert::TryFrom;
 
-use enclave_runner_client::{Addr, VsockAddr, Client, ConnectionInfo};
-
 use libc::{self, MSG_PEEK, c_int, c_void};
 
 use crate::fmt::{self, Write};
@@ -14,7 +12,8 @@ use crate::os::fd::raw::AsRawFd;
 use crate::os::unix::prelude::{FromRawFd, IntoRawFd, RawFd};
 use crate::sync::{Mutex, OnceLock};
 use crate::sys::fd::FileDesc;
-use crate::sys::fortanixvme::registry::{ConnectionRegistry};
+use crate::sys::fortanixvme::registry::ConnectionRegistry;
+use crate::sys::fortanixvme::client::{Addr, VsockAddr, ConnectionInfo, RunnerClient};
 use crate::sys::{cvt, cvt_r};
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::time::Duration;
@@ -308,8 +307,10 @@ where
 impl TcpStream {
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
         each_addr(addr, |addr| {
-            let mut runner = Client::new(None)?;
-            let fd = runner.open_proxy_connection(addr.to_owned())?;
+            let mut runner = RunnerClient::new()?;
+            let info = runner.open_proxy_connection(addr.to_owned())?;
+            let fd = unsafe { FileDesc::from_raw_fd(info.fd()?) };
+            ConnectionRegistry::insert(&fd, info);
             Ok(TcpStream { inner: Socket::new(fd) })
         })
     }
@@ -494,8 +495,10 @@ pub struct TcpListener {
 impl TcpListener {
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         each_addr(addr, |addr| {
-            let mut runner = Client::new(None)?;
-            let fd = runner.bind_socket(addr.to_owned())?;
+            let mut runner = RunnerClient::new()?;
+            let info = runner.bind_socket(addr.to_owned())?;
+            let fd = unsafe { FileDesc::from_raw_fd(info.fd()?) };
+            ConnectionRegistry::insert(&fd, info);
             Ok(TcpListener { inner: Socket::new(fd) })
         })
     }
@@ -537,9 +540,9 @@ impl TcpListener {
          *     \    \-----  enclave ----/      / (3) Accept new incoming connection from runner
          *      \-------- proxy --------------/
          */
-        let local = Client::local_vsock_addr(self.inner.as_raw_fd())?;
+        let local = RunnerClient::local_vsock_addr(self.inner.as_raw_fd())?;
         // (1) Tell the runner to accept an incoming connection on a specific port.
-        let mut runner = Client::new(None)?;
+        let mut runner = RunnerClient::new()?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
         let (local, peer, runner_port) = runner.accept(local.port())?;
@@ -567,8 +570,8 @@ impl TcpListener {
         let IncomingInfo { local, peer, .. } = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
 
-        let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone());
-        Client::store_connection_info(&sock_runner, info);
+        let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone(), None);
+        ConnectionRegistry::insert(&sock_runner, info);
         let sock_runner = Socket::new(sock_runner);
         Ok((TcpStream { inner: sock_runner }, peer.into()))
     }

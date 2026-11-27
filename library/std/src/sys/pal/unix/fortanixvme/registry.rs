@@ -7,7 +7,7 @@ use crate::os::fd::raw::{AsRawFd, RawFd};
 use crate::sync::{Arc, OnceLock, RwLock};
 use crate::sys::cvt;
 
-pub(crate) struct ConnectionGuard(ConnectionInfo);
+pub struct ConnectionGuard(ConnectionInfo);
 
 impl Deref for ConnectionGuard {
     type Target = ConnectionInfo;
@@ -24,7 +24,7 @@ impl Drop for ConnectionGuard {
 }
 
 
-pub(crate) struct ConnectionRegistry;
+pub struct ConnectionRegistry;
 
 impl ConnectionRegistry {
     // FIXME: Use the FNV crate for the Fowler–Noll–Vo hash function for better performance (requires upstream changes).
@@ -34,7 +34,7 @@ impl ConnectionRegistry {
         CONNECTION_INFO.get_or_init(|| RwLock::new(HashMap::new()))
     }
 
-    pub(crate) fn insert<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
+    pub fn insert<FD: AsRawFd>(fd: &FD, info: ConnectionInfo) {
         let raw_fd = fd.as_raw_fd();
         let mut map = Self::map().write().expect("ConnectionInfo RwLock poisoned");
         if let Some(_prev) = map.insert(raw_fd, Arc::new(ConnectionGuard(info))) {
@@ -45,7 +45,7 @@ impl ConnectionRegistry {
         }
     }
 
-    pub(crate) fn remove<FD: AsRawFd>(fd: &FD) {
+    pub fn remove<FD: AsRawFd>(fd: &FD) {
         let raw_fd = fd.as_raw_fd();
         let mut map = Self::map().write().expect("ConnectionInfo RwLock poisoned");
         let info = map.remove(&raw_fd);
@@ -64,7 +64,7 @@ impl ConnectionRegistry {
         }
     }
 
-    pub(crate) fn get<FD: AsRawFd>(fd: &FD) -> Option<Arc<ConnectionGuard>> {
+    pub fn get<FD: AsRawFd>(fd: &FD) -> Option<Arc<ConnectionGuard>> {
         let raw_fd = fd.as_raw_fd();
         Self::map()
             .read()

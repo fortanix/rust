@@ -1,4 +1,4 @@
-use enclave_runner_client::{Client};
+use crate::sys::fortanixvme::client::RunnerClient;
 
 pub use super::common::Args;
 use crate::ffi::OsString;
@@ -19,7 +19,7 @@ pub fn args() -> Args {
 
 fn enclave_args() -> &'static Vec<OsString> {
     ARGS.get_or_init(|| {
-        Client::args(None)
+        RunnerClient::args()
             .expect("Failed to retrieve enclave arguments from runner")
             .iter()
             .map(|arg| OsString::from(arg))

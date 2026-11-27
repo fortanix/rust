@@ -75,21 +75,11 @@ fortanix-sgx-abi = { version = "0.6.1", features = [
 insecure-time = { version = "0.3", default-features = false, features = ["rustc-dep-of-std"] }
 
 [target.x86_64-unknown-linux-fortanixvme.dependencies]
-enclave-runner-client = { version = "0.1", default-features = false, features = [
-    'rustc-dep-of-std'
-], public = true }
+enclave-runner-client = { version = "0.1", default-features = false, features = ['rustc-dep-of-std'], public = true }
 # Not used directly: turns on std mode in the fortanix/serde fork,
 # patched in by library/Cargo.toml. The wrapper pulls serde in with upstream features only.
-fortanix-vme-abi = { version = "0.1", default-features = false, features = [
-    'rustc-dep-of-std'
-], public = true }
 serde = { version = "1.0.204", default-features = false, features = ["rustc-dep-of-std"] }
 serde_cbor = { version = "0.11.2", default-features = false, features = ["alloc", "rustc-dep-of-std"] }
-vsock = { version = "0.2.4", default-features = false, features = [
-    'rustc-dep-of-std',
-    'random_port'
-], public = true }
-
 
 [target.'cfg(target_os = "hermit")'.dependencies]
 hermit-abi = { version = "0.5.0", features = [
