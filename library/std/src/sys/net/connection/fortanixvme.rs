@@ -1,8 +1,6 @@
 use core::convert::TryFrom;
 
-use fortanix_vme_abi::{self, Addr};
 use libc::{self, MSG_PEEK, c_int, c_void};
-use vsock::SockAddr as VsockAddr;
 
 use crate::fmt::{self, Write};
 use crate::io::{self, BorrowedCursor, ErrorKind, IoSlice, IoSliceMut};
@@ -14,7 +12,8 @@ use crate::os::fd::raw::AsRawFd;
 use crate::os::unix::prelude::{FromRawFd, IntoRawFd, RawFd};
 use crate::sync::{Mutex, OnceLock};
 use crate::sys::fd::FileDesc;
-use crate::sys::fortanixvme::client::{Client, ConnectionInfo, Fortanixvme};
+use crate::sys::fortanixvme::registry::ConnectionRegistry;
+use crate::sys::fortanixvme::client::{Addr, VsockAddr, ConnectionInfo, RunnerClient};
 use crate::sys::{cvt, cvt_r};
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::time::Duration;
@@ -308,8 +307,10 @@ where
 impl TcpStream {
     pub fn connect<A: ToSocketAddrs>(addr: A) -> io::Result<TcpStream> {
         each_addr(addr, |addr| {
-            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-            let fd = runner.open_proxy_connection(addr.to_owned())?;
+            let mut runner = RunnerClient::new()?;
+            let info = runner.open_proxy_connection(addr.to_owned())?;
+            let fd = unsafe { FileDesc::from_raw_fd(info.fd()?) };
+            ConnectionRegistry::insert(&fd, info);
             Ok(TcpStream { inner: Socket::new(fd) })
         })
     }
@@ -394,7 +395,7 @@ impl TcpStream {
     /// Users should rely on additional security mechanisms such as TLS.
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         if let Some(ConnectionInfo::Stream { peer, .. }) =
-            Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
+            ConnectionRegistry::get(&self.inner).as_deref().map(|guard| guard.deref())
         {
             Ok(peer.to_owned().into())
         } else {
@@ -409,7 +410,7 @@ impl TcpStream {
     /// There is no guarantee that the `TcpStream` actually communicates from the `SocketAddr`.
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
         if let Some(ConnectionInfo::Stream { local, .. }) =
-            Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
+            ConnectionRegistry::get(&self.inner).as_deref().map(|guard| guard.deref())
         {
             Ok(local.to_owned().into())
         } else {
@@ -494,8 +495,10 @@ pub struct TcpListener {
 impl TcpListener {
     pub fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         each_addr(addr, |addr| {
-            let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
-            let fd = runner.bind_socket(addr.to_owned())?;
+            let mut runner = RunnerClient::new()?;
+            let info = runner.bind_socket(addr.to_owned())?;
+            let fd = unsafe { FileDesc::from_raw_fd(info.fd()?) };
+            ConnectionRegistry::insert(&fd, info);
             Ok(TcpListener { inner: Socket::new(fd) })
         })
     }
@@ -510,7 +513,7 @@ impl TcpListener {
 
     fn local_addr(&self) -> io::Result<Addr> {
         if let Some(ConnectionInfo::Listener { local, .. }) =
-            Client::connection_info(&self.inner).as_deref().map(|guard| guard.deref())
+            ConnectionRegistry::get(&self.inner).as_deref().map(|guard| guard.deref())
         {
             Ok(local.clone())
         } else {
@@ -520,14 +523,6 @@ impl TcpListener {
 
     pub fn socket_addr(&self) -> io::Result<SocketAddr> {
         self.local_addr().map(|e| e.into())
-    }
-
-    fn local_vsock_addr(&self) -> io::Result<VsockAddr> {
-        // It would've been cleaner to provide a way to turn `self.inner` into a `VsockListener`
-        // but we need to ensure that the `VsockListener` isn't dropped after the local address is
-        // retrieved.
-        let fd = self.inner.as_raw_fd();
-        VsockAddr::from_raw_fd::<Fortanixvme>(fd).map_err(|e| e.into())
     }
 
     pub fn accept(&self) -> io::Result<(TcpStream, SocketAddr)> {
@@ -545,9 +540,9 @@ impl TcpListener {
          *     \    \-----  enclave ----/      / (3) Accept new incoming connection from runner
          *      \-------- proxy --------------/
          */
-        let local = self.local_vsock_addr()?;
+        let local = RunnerClient::local_vsock_addr(self.inner.as_raw_fd())?;
         // (1) Tell the runner to accept an incoming connection on a specific port.
-        let mut runner = Client::new(fortanix_vme_abi::SERVER_PORT)?;
+        let mut runner = RunnerClient::new()?;
         // When `accept` returns, the runner has accepted a new connection for peer. It will try
         // to connect to the enclave from `runner_port`
         let (local, peer, runner_port) = runner.accept(local.port())?;
@@ -575,8 +570,8 @@ impl TcpListener {
         let IncomingInfo { local, peer, .. } = take_incoming_connection_info(runner_addr.port())
             .ok_or(io::Error::new(ErrorKind::Other, "Internal error"))?;
 
-        let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone());
-        Client::store_connection_info(&sock_runner, info);
+        let info = ConnectionInfo::new_stream_info(runner_port, local, peer.clone(), None);
+        ConnectionRegistry::insert(&sock_runner, info);
         let sock_runner = Socket::new(sock_runner);
         Ok((TcpStream { inner: sock_runner }, peer.into()))
     }

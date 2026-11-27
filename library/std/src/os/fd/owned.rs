@@ -17,7 +17,7 @@ use crate::mem::ManuallyDrop;
 )))]
 use crate::sys::cvt;
 #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-use crate::sys::fortanixvme::client::Client as FortanixvmeClient;
+use crate::sys::fortanixvme::registry::ConnectionRegistry;
 #[cfg(not(target_os = "trusty"))]
 use crate::sys_common::{AsInner, FromInner, IntoInner};
 use crate::{fmt, io};
@@ -119,7 +119,7 @@ impl BorrowedFd<'_> {
         let fd = cvt(unsafe { libc::fcntl(self.as_raw_fd(), cmd, 3) })?;
 
         #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-        let fd = FortanixvmeClient::duplicate_fd(self.as_raw_fd())?;
+        let fd = ConnectionRegistry::duplicate_fd(self.as_raw_fd())?;
         Ok(unsafe { OwnedFd::from_raw_fd(fd) })
     }
 
@@ -180,7 +180,7 @@ impl Drop for OwnedFd {
         // We can't handle errors properly here and ignore them. Worst case the runner keeps listening on the TCP socket. The
         // enclave won't ever accept a new connection, but the port may not be released.
         #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme"))]
-        let _ = FortanixvmeClient::remove_connection_info(self);
+        let _ = ConnectionRegistry::remove(self);
 
         #[cfg(not(all(target_arch = "x86_64", target_os = "linux", target_env = "fortanixvme")))]
         unsafe {

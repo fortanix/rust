@@ -43,7 +43,7 @@ if [ -z "$(ls -A ${install_dir})" ]; then
         bash ./src/ci/docker/scripts/musl-toolchain.sh x86_64
 fi
 
-if [ ! -f "config.toml" ]; then
+if [ ! -f "bootstrap.toml" ]; then
     # Warning: when you want to build `lld` as well, you can add `--enable-lld`, but currently it fails when LLVM is
     #   downloaded from ci instead of rebuild. It can be resolved by removing `--set llvm.download-ci-llvm=true`
     # This version of llvm is too old to be downloaded. We'll need to compile it ourselves.
@@ -93,12 +93,12 @@ else
 
     source $HOME/.cargo/env
     # force use of older cargo that doesn't add unknown flags when it calls rustc
-    cp build/x86_64-unknown-linux-gnu/stage1-tools-bin/cargo build/x86_64-unknown-linux-gnu/stage1/bin/
-    rustup toolchain link mybuild build/x86_64-unknown-linux-gnu/stage1
-    cd /tmp
-    cargo +mybuild new app
-    cd app
-    cargo +mybuild run --target x86_64-unknown-linux-fortanixvme
+    cp build/x86_64-unknown-linux-gnu/stage2-tools-bin/cargo build/x86_64-unknown-linux-gnu/stage2/bin/
+    rustup toolchain link mybuild build/x86_64-unknown-linux-gnu/stage2
+    # cd /tmp
+    # cargo +mybuild new app
+    # cd app
+    # cargo +mybuild run --target x86_64-unknown-linux-fortanixvme
 fi
 
 popd

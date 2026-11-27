@@ -1,7 +1,7 @@
 pub use super::common::Args;
 use crate::ffi::OsString;
 use crate::sync::OnceLock;
-use crate::sys::fortanixvme::client::Client as FortanixvmeClient;
+use crate::sys::fortanixvme::client::RunnerClient;
 
 static ARGS: OnceLock<Vec<OsString>> = OnceLock::new();
 
@@ -18,7 +18,7 @@ pub fn args() -> Args {
 
 fn enclave_args() -> &'static Vec<OsString> {
     ARGS.get_or_init(|| {
-        FortanixvmeClient::args()
+        RunnerClient::args()
             .expect("Failed to retrieve enclave arguments from runner")
             .iter()
             .map(|arg| OsString::from(arg))
