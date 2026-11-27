@@ -1,8 +1,7 @@
-use crate::sys::fortanixvme::client::RunnerClient;
-
 pub use super::common::Args;
 use crate::ffi::OsString;
 use crate::sync::OnceLock;
+use crate::sys::fortanixvme::client::RunnerClient;
 
 static ARGS: OnceLock<Vec<OsString>> = OnceLock::new();
 
